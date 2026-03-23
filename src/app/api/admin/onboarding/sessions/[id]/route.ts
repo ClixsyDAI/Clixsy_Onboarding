@@ -80,8 +80,30 @@ export async function GET(
       : computeAccessChecklist(answersByStep);
     const missingAccessText = generateMissingAccessText(accessChecklist);
 
+    // Fetch SOP routing if exists
+    const { data: sopRouting } = await supabase
+      .from('onboarding_sop_routing')
+      .select('*')
+      .eq('session_id', id)
+      .single();
+
+    // Fetch work order if exists
+    const { data: workOrder } = await supabase
+      .from('onboarding_work_orders')
+      .select('*')
+      .eq('session_id', id)
+      .single();
+
+    // Fetch site intelligence snapshots
+    const { data: siSnapshots } = await supabase
+      .from('onboarding_sessions')
+      .select('si_branding_snapshot, si_insights_snapshot, si_prefill_snapshot, si_overrides_snapshot')
+      .eq('id', id)
+      .single();
+
     return NextResponse.json({
       session: transformedSession,
+      client: Array.isArray(sessionData.clients) ? sessionData.clients[0] : sessionData.clients,
       answers: answersData || [],
       accessChecklist: {
         items: accessChecklist.items,
@@ -92,6 +114,12 @@ export async function GET(
         presentKeys: accessChecklist.presentKeys,
         missingAccessText,
       },
+      sopRouting: sopRouting || null,
+      workOrder: workOrder || null,
+      siteIntelligence: siSnapshots ? {
+        branding: siSnapshots.si_branding_snapshot,
+        insights: siSnapshots.si_insights_snapshot,
+      } : null,
     });
   } catch (error) {
     console.error('Error:', error);

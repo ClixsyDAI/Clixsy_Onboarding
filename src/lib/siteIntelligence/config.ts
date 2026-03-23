@@ -1,7 +1,12 @@
-// Site Intelligence feature flags and configuration
+// Site Intelligence + SOP Routing feature flags and configuration
 
 export function isSiteIntelligenceEnabled(): boolean {
-  return process.env.ENABLE_SITE_INTELLIGENCE_PREFILL !== 'false';
+  return process.env.ENABLE_SITE_INTELLIGENCE !== 'false' &&
+    process.env.ENABLE_SITE_INTELLIGENCE_PREFILL !== 'false';
+}
+
+export function isSOPRoutingEnabled(): boolean {
+  return process.env.ENABLE_SOP_ROUTING !== 'false';
 }
 
 export function hasFirecrawlKey(): boolean {

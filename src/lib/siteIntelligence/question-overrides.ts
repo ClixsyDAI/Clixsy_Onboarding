@@ -145,6 +145,17 @@ export function buildQuestionOverrides(
       ui_pattern: 'confirmation',
       original_label: 'What platform is your website built on?',
     };
+
+    // Big 5: WordPress confirmation in Pre-Contract Readiness step
+    const isWP = cmsName.toLowerCase().includes('wordpress');
+    overrides['is_wordpress'] = {
+      label_override: isWP
+        ? `We detected that your site runs on WordPress. Can you confirm?`
+        : `We detected that your site runs on ${cmsName}, not WordPress. Is that correct?`,
+      help_override: 'Our platform runs on WordPress. If your site uses a different platform, we will rebuild it.',
+      ui_pattern: 'confirmation',
+      original_label: 'Is your website built on WordPress?',
+    };
   }
 
   return overrides;

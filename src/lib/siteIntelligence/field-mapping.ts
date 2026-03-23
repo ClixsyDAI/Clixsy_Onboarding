@@ -159,6 +159,21 @@ const MAPPING_RULES: MappingRule[] = [
       };
     },
   },
+
+  // Pre-Contract Readiness: WordPress detection -> is_wordpress field
+  {
+    field_key: 'is_wordpress',
+    step_key: 'pre_contract_readiness',
+    extract: (_insights, techStack) => {
+      if (!techStack?.cms) return null;
+      const isWP = techStack.cms.toLowerCase().includes('wordpress');
+      return {
+        value: isWP ? 'yes' : 'no',
+        confidence: 0.90,
+        evidence: [{ source_url: '', excerpt: `Detected CMS: ${techStack.cms}` }],
+      };
+    },
+  },
 ];
 
 // =============================================

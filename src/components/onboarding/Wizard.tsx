@@ -6,6 +6,7 @@ import StepRenderer from './StepRenderer';
 import StepTransition from './StepTransition';
 import AccessChecklistStep from './AccessChecklistStep';
 import WebsiteSnapshot from './WebsiteSnapshot';
+import SOPRoutingSummary from './SOPRoutingSummary';
 import { getTransitionMessage, getWelcomeMessage } from '@/lib/onboarding/transition-messages';
 import type { TransitionMessage } from '@/lib/onboarding/transition-messages';
 
@@ -748,14 +749,24 @@ export default function Wizard({
             ) : currentStep.isReviewStep ? (
               renderAlmostThereStep()
             ) : (
-              <StepRenderer
-                step={currentStep}
-                values={stepAnswers}
-                errors={errors}
-                onChange={handleFieldChange}
-                questionOverrides={siteIntelligence?.question_overrides}
-                prefillMap={siteIntelligence?.prefill_map}
-              />
+              <>
+                <StepRenderer
+                  step={currentStep}
+                  values={stepAnswers}
+                  errors={errors}
+                  onChange={handleFieldChange}
+                  questionOverrides={siteIntelligence?.question_overrides}
+                  prefillMap={siteIntelligence?.prefill_map}
+                />
+                {/* Show SOP routing summary after Pre-Contract Readiness step fields */}
+                {currentStep.key === 'pre_contract_readiness' && Object.keys(stepAnswers).length > 0 && (
+                  <div className="mt-6">
+                    <SOPRoutingSummary
+                      answers={{ ...answers, [currentStep.key]: stepAnswers }}
+                    />
+                  </div>
+                )}
+              </>
             )}
           </div>
         </main>

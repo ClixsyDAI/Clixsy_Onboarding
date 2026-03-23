@@ -351,7 +351,93 @@ export const onboardingStepsV2: OnboardingStep[] = [
   },
 
   // -----------------------------------------------
-  // STEP 7: SEO & TARGETING (from v1 steps 14+15+16)
+  // STEP 7: PRE-CONTRACT READINESS (Big 5 SOP Gates + Migration)
+  // These answers drive SOP routing decisions
+  // -----------------------------------------------
+  {
+    key: 'pre_contract_readiness',
+    title: 'Pre-Contract Readiness',
+    shortTitle: 'READINESS',
+    description: 'A few quick questions to help us plan your setup correctly.',
+    estimatedTime: '2 min',
+    icon: STEP_ICONS.clipboardCheck,
+    fields: [
+      {
+        name: 'owns_domain_confirmed',
+        label: 'Do you own your domain name?',
+        type: 'radio',
+        required: true,
+        helpText: 'If not, we may need to help transfer domain ownership to you.',
+        options: [
+          { value: 'yes', label: 'Yes, I own it' },
+          { value: 'no', label: 'No' },
+          { value: 'not_sure', label: 'Not sure' },
+        ],
+      },
+      {
+        name: 'controls_dns_confirmed',
+        label: 'Do you have access to your DNS settings?',
+        type: 'radio',
+        required: true,
+        helpText: 'DNS controls where your domain points. We need this to set up hosting and email.',
+        options: [
+          { value: 'yes', label: 'Yes' },
+          { value: 'no', label: 'No' },
+          { value: 'not_sure', label: 'Not sure' },
+        ],
+      },
+      {
+        name: 'is_wordpress',
+        label: 'Is your website built on WordPress?',
+        type: 'radio',
+        required: true,
+        helpText: 'Our platform runs on WordPress. If your site uses a different platform, we will rebuild it.',
+        options: [
+          { value: 'yes', label: 'Yes, it\'s WordPress' },
+          { value: 'no', label: 'No, it\'s something else' },
+          { value: 'not_sure', label: 'Not sure' },
+        ],
+      },
+      {
+        name: 'own_written_content',
+        label: 'Do you own the written content on your current website?',
+        type: 'radio',
+        required: true,
+        helpText: 'If your content was provided by a previous agency and you don\'t own it, we\'ll need to replace it.',
+        options: [
+          { value: 'yes', label: 'Yes, we own it' },
+          { value: 'no', label: 'No, it was provided by someone else' },
+          { value: 'not_sure', label: 'Not sure' },
+        ],
+      },
+      {
+        name: 'own_license_images',
+        label: 'Do you own or license the images on your website?',
+        type: 'radio',
+        required: true,
+        helpText: 'Stock photos or images from a previous agency may not be licensed for continued use.',
+        options: [
+          { value: 'yes', label: 'Yes, we own/license them' },
+          { value: 'no', label: 'No' },
+          { value: 'not_sure', label: 'Not sure' },
+        ],
+      },
+      {
+        name: 'needs_website_migration',
+        label: 'Does your website need to be migrated to new hosting?',
+        type: 'radio',
+        helpText: 'If your site is on shared or unreliable hosting, we may recommend migration.',
+        options: [
+          { value: 'yes', label: 'Yes' },
+          { value: 'no', label: 'No' },
+          { value: 'not_sure', label: 'Not sure' },
+        ],
+      },
+    ],
+  },
+
+  // -----------------------------------------------
+  // STEP 8: SEO & TARGETING (from v1 steps 14+15+16)
   // Removed: has_multiple_locations, current_review_count, current_rating
   // -----------------------------------------------
   {
@@ -749,6 +835,14 @@ const stepValidationSchemasV2: Record<string, z.ZodSchema> = {
   brand_design: z.object({}).passthrough(),
 
   technical_setup: z.object({}).passthrough(),
+
+  pre_contract_readiness: z.object({
+    owns_domain_confirmed: z.string().min(1, 'Please answer whether you own your domain'),
+    controls_dns_confirmed: z.string().min(1, 'Please answer whether you control DNS'),
+    is_wordpress: z.string().min(1, 'Please answer whether your site is WordPress'),
+    own_written_content: z.string().min(1, 'Please answer about content ownership'),
+    own_license_images: z.string().min(1, 'Please answer about image ownership'),
+  }).passthrough(),
 
   seo_targeting: z.object({
     main_geographical_areas: z.string().min(1, 'Please enter your target areas'),

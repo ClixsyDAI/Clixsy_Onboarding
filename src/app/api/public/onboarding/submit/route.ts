@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSessionByToken, getSessionAnswers, updateSessionStep, createAuditEvent } from '@/lib/supabase/server';
+import { after } from 'next/server';
+import { getSessionByToken, getSessionAnswers, updateSessionStep, createAuditEvent, createServiceRoleClient } from '@/lib/supabase/server';
 import { getStepsForVersion } from '@/lib/onboarding/flow-version';
+import { isSOPRoutingEnabled } from '@/lib/siteIntelligence/config';
+import { computeSops, extractSOPInputFromAnswers } from '@/lib/sopRouting/computeSops';
+import { generateWorkOrder } from '@/lib/sopRouting/workOrders';
+import { getSiteIntelligence } from '@/lib/siteIntelligence/analyze';
 
 export async function POST(request: NextRequest) {
   try {
@@ -70,6 +75,66 @@ export async function POST(request: NextRequest) {
       totalStepsCompleted: answeredSteps.size,
       totalSteps: steps.length,
     });
+
+    // Generate SOP routing and work orders after response (non-blocking)
+    if (isSOPRoutingEnabled()) {
+      const sessionId = session.id;
+      const siId = (session as unknown as Record<string, unknown>).site_intelligence_id as string | null;
+
+      after(async () => {
+        try {
+          const supabase = createServiceRoleClient();
+
+          // Build answer map
+          const answerMap: Record<string, Record<string, unknown>> = {};
+          for (const a of answers) {
+            answerMap[a.step_key] = a.answers;
+          }
+
+          // Get detected CMS
+          let detectedCms: string | null = null;
+          if (siId) {
+            const si = await getSiteIntelligence(siId);
+            detectedCms = si?.tech_stack?.cms || null;
+          }
+
+          // Compute SOP routing
+          const input = extractSOPInputFromAnswers(answerMap, detectedCms);
+          const result = computeSops(input);
+
+          // Save routing
+          await supabase
+            .from('onboarding_sop_routing')
+            .upsert({
+              session_id: sessionId,
+              big5: input.big5,
+              migration: input.migration,
+              required_sops: result.required_sops,
+              notes: Object.values(result.explanations).join(' | '),
+              updated_at: new Date().toISOString(),
+            }, { onConflict: 'session_id' });
+
+          // Generate work order
+          const tasks = generateWorkOrder(result.required_sops);
+          await supabase
+            .from('onboarding_work_orders')
+            .upsert({
+              session_id: sessionId,
+              tasks,
+              generated_at: new Date().toISOString(),
+              final_report_status: 'pending',
+              assignees_defaulted: true,
+            }, { onConflict: 'session_id' });
+
+          await createAuditEvent(sessionId, 'work_order_generated', {
+            total_tasks: tasks.length,
+            required_sops: result.required_sops,
+          });
+        } catch (err) {
+          console.error('Post-submit work order generation failed:', err);
+        }
+      });
+    }
 
     return NextResponse.json({
       success: true,

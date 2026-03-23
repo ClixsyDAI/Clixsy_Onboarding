@@ -115,9 +115,21 @@ Providers are loaded dynamically based on available API keys.
 7. Create link → open in new tab
 8. Verify Website Snapshot and personalized questions
 
+## Integration with SOP Routing
+
+Site intelligence feeds into SOP routing:
+- **CMS detection** → Pre-fills the `is_wordpress` Big 5 question (confidence 0.90)
+- **Question override** → Personalizes the WordPress question: "We detected your site runs on {CMS}..."
+- **SOP routing engine** uses the confirmed CMS answer to determine if Website Rebuild SOP is needed
+
+See [docs/sop-routing.md](sop-routing.md) for full SOP routing documentation.
+See [docs/work-order-and-final-report.md](work-order-and-final-report.md) for post-submit work orders.
+See [docs/security-and-privacy.md](security-and-privacy.md) for data handling policies.
+
 ## Safe Fallback
 
-When `ENABLE_SITE_INTELLIGENCE_PREFILL=false` or no API keys are set:
+When `ENABLE_SITE_INTELLIGENCE=false` or no API keys are set:
 - Admin create page still works (analysis panel doesn't show)
 - Client onboarding works exactly as before
 - No prefill, no overrides, no snapshot
+- SOP routing still works (just without CMS inference)
