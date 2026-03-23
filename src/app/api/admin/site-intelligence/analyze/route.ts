@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { after } from 'next/server';
 import { isSiteIntelligenceEnabled } from '@/lib/siteIntelligence/config';
 import { createSiteIntelligenceRecord, runSiteAnalysis, linkSiteIntelligenceToSession } from '@/lib/siteIntelligence/analyze';
+
+// Allow up to 60 seconds for Firecrawl crawl + extract
+export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
   try {
@@ -24,10 +28,11 @@ export async function POST(request: NextRequest) {
     // Create the record
     const recordId = await createSiteIntelligenceRecord(websiteUrl);
 
-    // Run analysis asynchronously (don't await — return immediately)
-    // The client will poll the status endpoint
-    runSiteAnalysis(recordId)
-      .then(async () => {
+    // Use Next.js after() to run analysis after the response is sent
+    // This keeps the serverless function alive on Vercel
+    after(async () => {
+      try {
+        await runSiteAnalysis(recordId);
         // If sessionId provided, auto-link when done
         if (sessionId) {
           try {
@@ -36,10 +41,10 @@ export async function POST(request: NextRequest) {
             console.error('Failed to auto-link site intelligence to session:', err);
           }
         }
-      })
-      .catch((err) => {
+      } catch (err) {
         console.error('Analysis failed:', err);
-      });
+      }
+    });
 
     return NextResponse.json({
       success: true,
