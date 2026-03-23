@@ -4,10 +4,8 @@ import { getFirecrawlKey } from '../config';
 
 const FIRECRAWL_BASE = 'https://api.firecrawl.dev/v1';
 
-// Priority pages to scrape (ordered by importance)
 const PRIORITY_PATTERNS = [
-  '', // homepage
-  'about', 'about-us', 'about-our-firm',
+  '', 'about', 'about-us', 'about-our-firm',
   'services', 'practice-areas', 'what-we-do',
   'locations', 'service-area', 'offices', 'areas-we-serve',
   'contact', 'contact-us',
@@ -15,64 +13,155 @@ const PRIORITY_PATTERNS = [
 ];
 
 function extractDomain(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return url.replace(/^https?:\/\//, '').split('/')[0];
-  }
+  try { return new URL(url).hostname; } catch { return url.replace(/^https?:\/\//, '').split('/')[0]; }
 }
 
 async function firecrawlFetch(endpoint: string, body: Record<string, unknown>): Promise<unknown> {
   const key = getFirecrawlKey();
   const res = await fetch(`${FIRECRAWL_BASE}${endpoint}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${key}`,
-    },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
     body: JSON.stringify(body),
   });
-
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Firecrawl ${endpoint} failed (${res.status}): ${text}`);
   }
-
   return res.json();
 }
 
 function prioritizeUrls(urls: string[], baseUrl: string): string[] {
   const domain = extractDomain(baseUrl);
   const scored: { url: string; score: number }[] = [];
-
   for (const url of urls) {
     try {
       const parsed = new URL(url);
       if (parsed.hostname !== domain) continue;
       const path = parsed.pathname.toLowerCase().replace(/\/$/, '');
-
       let score = 100;
       for (let i = 0; i < PRIORITY_PATTERNS.length; i++) {
         const pattern = PRIORITY_PATTERNS[i];
-        if (pattern === '' && path === '') {
-          score = 0;
-          break;
-        }
-        if (pattern && path.includes(pattern)) {
-          score = i;
-          break;
-        }
+        if (pattern === '' && path === '') { score = 0; break; }
+        if (pattern && path.includes(pattern)) { score = i; break; }
       }
       scored.push({ url, score });
-    } catch {
-      // skip invalid URLs
-    }
+    } catch { /* skip */ }
   }
-
   scored.sort((a, b) => a.score - b.score);
   return scored.slice(0, 12).map(s => s.url);
 }
 
+// =============================================
+// Parse structured data from markdown content
+// =============================================
+function parseMarkdownForInsights(
+  allContent: string,
+  pageTitle: string,
+  websiteUrl: string,
+) {
+  const services: { name: string; confidence: number; evidence: Evidence[] }[] = [];
+  const locations: { name: string; type: 'city' | 'state' | 'region' | 'country'; confidence: number; evidence: Evidence[] }[] = [];
+  let phone: string | undefined;
+  let email: string | undefined;
+  let address: string | undefined;
+  let businessSummary: string | undefined;
+
+  // Extract phone numbers (US format)
+  const phoneMatches = allContent.match(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g);
+  if (phoneMatches) phone = phoneMatches[0];
+
+  // Extract email
+  const emailMatch = allContent.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+  if (emailMatch) email = emailMatch[0];
+
+  // Extract address patterns (number + street + city/state)
+  const addressMatch = allContent.match(/\d{1,5}\s+[\w\s]+(?:St|Ave|Blvd|Dr|Rd|Way|Ln|Ct|Pl|Pkwy|Hwy)[\w\s,]+(?:WA|CA|TX|NY|FL|IL|OH|PA|GA|NC|MI|NJ|VA|AZ|MA|TN|IN|MO|MD|WI|CO|MN|SC|AL|LA|KY|OR|OK|CT|UT|IA|NV|AR|MS|KS|NM|NE|HI|WV|ID|ME|NH|RI|MT|DE|SD|ND|AK|VT|WY|DC)\s+\d{5}/i);
+  if (addressMatch) address = addressMatch[0].trim();
+
+  // Extract services from headings and list items
+  // Look for patterns like "## Services", "### Our Services", "Practice Areas"
+  const serviceHeaders = allContent.match(/#{1,3}\s*(?:our\s+)?(?:services|practice\s*areas|what\s+we\s+(?:do|offer)|specialties|expertise)[^\n]*/gi) || [];
+
+  // Get list items after service headers
+  const serviceBlockMatch = allContent.match(/(?:services|practice\s*areas|what\s+we\s+(?:do|offer))[\s\S]*?(?=\n#{1,3}\s|\n\n\n|$)/gi);
+  if (serviceBlockMatch) {
+    for (const block of serviceBlockMatch) {
+      // Extract bullet points and linked items
+      const items = block.match(/(?:^|\n)\s*[-*]\s*\[?([^\]\n]+)\]?/g) || [];
+      for (const item of items) {
+        const cleaned = item.replace(/^\s*[-*]\s*\[?/, '').replace(/\].*$/, '').trim();
+        if (cleaned.length > 2 && cleaned.length < 80 && !cleaned.match(/^(services|our|the|and|more|learn|read|view|see|contact|call|get)/i)) {
+          services.push({
+            name: cleaned,
+            confidence: 0.75,
+            evidence: [{ source_url: websiteUrl, excerpt: `Service found in page content` }],
+          });
+        }
+      }
+    }
+  }
+
+  // Also look for services in navigation-style links: [Service Name](/services/...)
+  const navServices = allContent.match(/\[([^\]]+)\]\(\/(?:services|practice-areas)[^)]*\)/gi) || [];
+  for (const match of navServices) {
+    const name = match.match(/\[([^\]]+)\]/)?.[1]?.trim();
+    if (name && name.length > 2 && name.length < 80 && !services.some(s => s.name.toLowerCase() === name.toLowerCase())) {
+      services.push({
+        name,
+        confidence: 0.80,
+        evidence: [{ source_url: websiteUrl, excerpt: `Linked as service in site navigation` }],
+      });
+    }
+  }
+
+  // Extract locations from content
+  // Look for "serving [city]", "located in [city]", or city names near state abbreviations
+  const locationPatterns = allContent.match(/(?:serving|located\s+in|based\s+in|offices?\s+in|service\s+area[s]?\s*:?\s*)\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:,\s*[A-Z]{2})?)/gi) || [];
+  for (const match of locationPatterns) {
+    const city = match.replace(/^(?:serving|located\s+in|based\s+in|offices?\s+in|service\s+area[s]?\s*:?\s*)\s*/i, '').trim();
+    if (city.length > 2 && !locations.some(l => l.name.toLowerCase() === city.toLowerCase())) {
+      locations.push({
+        name: city,
+        type: 'city',
+        confidence: 0.75,
+        evidence: [{ source_url: websiteUrl, excerpt: `Location mentioned in content: "${match.trim().slice(0, 80)}"` }],
+      });
+    }
+  }
+
+  // Extract from page title: "Business Name in City, State" or "City Service Provider"
+  const titleLocationMatch = pageTitle.match(/in\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:,\s*[A-Z]{2})?)/i);
+  if (titleLocationMatch) {
+    const city = titleLocationMatch[1].trim();
+    if (!locations.some(l => l.name.toLowerCase() === city.toLowerCase())) {
+      locations.push({
+        name: city,
+        type: 'city',
+        confidence: 0.85,
+        evidence: [{ source_url: websiteUrl, excerpt: `City mentioned in page title` }],
+      });
+    }
+  }
+
+  // Try to build a summary from the first meaningful paragraph
+  const paragraphs = allContent.split('\n\n').filter(p =>
+    p.length > 50 && p.length < 500 &&
+    !p.startsWith('#') && !p.startsWith('[') && !p.startsWith('|') &&
+    !p.match(/^\s*[-*]/)
+  );
+  if (paragraphs.length > 0) {
+    businessSummary = paragraphs[0].replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').trim();
+    if (businessSummary.length > 300) {
+      businessSummary = businessSummary.slice(0, 297) + '...';
+    }
+  }
+
+  return { services, locations, phone, email, address, businessSummary };
+}
+
+// =============================================
+// Main provider
+// =============================================
 export class FirecrawlProvider implements SiteIntelligenceProvider {
   name = 'firecrawl';
 
@@ -84,13 +173,14 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
     let logoUrl: string | undefined;
     const colors: string[] = [];
     const fonts: string[] = [];
-    const services: { name: string; confidence: number; evidence: Evidence[] }[] = [];
-    const locations: { name: string; type: 'city' | 'state' | 'region' | 'country'; confidence: number; evidence: Evidence[] }[] = [];
+    let services: { name: string; confidence: number; evidence: Evidence[] }[] = [];
+    let locations: { name: string; type: 'city' | 'state' | 'region' | 'country'; confidence: number; evidence: Evidence[] }[] = [];
     const socialLinks: { platform: string; url: string }[] = [];
     const keyPages: { url: string; title: string; reason: string }[] = [];
     let phone: string | undefined;
     let email: string | undefined;
     let address: string | undefined;
+    let cmsDetected: string | undefined;
 
     // Step 1: Map the site to discover URLs
     let urlsToScrape: string[] = [websiteUrl];
@@ -108,8 +198,9 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
       console.warn('[Firecrawl] /map failed:', err);
     }
 
-    // Step 2: Scrape homepage for markdown content + metadata
+    // Step 2: Scrape homepage for markdown + screenshot + metadata
     let homepageMarkdown = '';
+    let pageTitle = '';
     try {
       const scrapeResult = await firecrawlFetch('/scrape', {
         url: websiteUrl,
@@ -117,41 +208,33 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
         onlyMainContent: true,
       }) as { success: boolean; data?: Record<string, unknown> };
 
-      console.log(`[Firecrawl] /scrape success=${scrapeResult.success}, hasData=${!!scrapeResult.data}`);
+      console.log(`[Firecrawl] /scrape homepage success=${scrapeResult.success}`);
 
       if (scrapeResult.success && scrapeResult.data) {
         const d = scrapeResult.data;
 
-        // Screenshot
-        if (d.screenshot && typeof d.screenshot === 'string') {
-          screenshotUrl = d.screenshot;
-        }
+        if (d.screenshot && typeof d.screenshot === 'string') screenshotUrl = d.screenshot;
+        if (d.markdown && typeof d.markdown === 'string') homepageMarkdown = d.markdown;
 
-        // Markdown content for later parsing
-        if (d.markdown && typeof d.markdown === 'string') {
-          homepageMarkdown = d.markdown;
-        }
-
-        // Metadata
         const metadata = d.metadata as Record<string, unknown> | undefined;
         if (metadata) {
           if (metadata.title && typeof metadata.title === 'string') {
+            pageTitle = metadata.title;
             const titleParts = metadata.title.split(/[|\-–—:]/);
             brandName = titleParts[0]?.trim();
           }
-          if (metadata.ogImage && typeof metadata.ogImage === 'string') {
-            logoUrl = metadata.ogImage;
-          }
+          if (metadata.ogImage && typeof metadata.ogImage === 'string') logoUrl = metadata.ogImage;
           if (metadata.sourceURL && typeof metadata.sourceURL === 'string') {
-            keyPages.push({
-              url: metadata.sourceURL,
-              title: (metadata.title as string) || 'Homepage',
-              reason: 'Homepage',
-            });
+            keyPages.push({ url: metadata.sourceURL, title: pageTitle || 'Homepage', reason: 'Homepage' });
           }
         }
 
-        // Links for social profiles
+        // Check for WordPress indicators in the HTML/markdown
+        if (homepageMarkdown.includes('wp-content') || homepageMarkdown.includes('wordpress')) {
+          cmsDetected = 'WordPress';
+        }
+
+        // Social links
         const links = d.links as string[] | undefined;
         if (Array.isArray(links)) {
           for (const link of links) {
@@ -167,135 +250,83 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
         }
       }
     } catch (err) {
-      console.warn('[Firecrawl] /scrape failed:', err);
+      console.warn('[Firecrawl] /scrape homepage failed:', err);
     }
 
-    // Step 3: Use /extract with the domain wildcard for structured extraction
-    // This is the primary way to get business insights
+    // Step 3: Try /extract with domain wildcard
     try {
       const domain = extractDomain(websiteUrl);
       const extractResult = await firecrawlFetch('/extract', {
         urls: [`https://${domain}/*`],
-        prompt: `Extract structured business information from this website. Include: the business name, a 2-4 sentence client-friendly summary of what they do, their main services or practice areas, cities/areas they serve, contact details (phone, email, address), and any brand colors or fonts visible on the site.`,
+        prompt: `Extract structured business information from this website. Include: the business name, a 2-4 sentence client-friendly summary of what they do, their main services or practice areas, cities/areas they serve, contact details (phone, email, address), brand colors, fonts, and CMS platform.`,
         schema: {
           type: 'object',
           properties: {
-            business_name: { type: 'string', description: 'The official business or company name' },
-            business_summary: { type: 'string', description: 'A 2-4 sentence summary of what this business does, written in a friendly professional tone' },
-            primary_services: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Main services, practice areas, or product categories offered',
-            },
-            secondary_services: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Additional or minor services mentioned on the site',
-            },
-            locations_cities: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Cities, metros, or geographic areas served or mentioned',
-            },
-            phone: { type: 'string', description: 'Main business phone number' },
-            email: { type: 'string', description: 'Main contact email address' },
-            address: { type: 'string', description: 'Physical business address' },
-            brand_colors: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Hex color codes (e.g. #1a2b3c) used prominently on the site',
-            },
-            fonts: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Font family names used on the site',
-            },
-            cms_platform: { type: 'string', description: 'The CMS or website platform (e.g. WordPress, Squarespace, Wix, custom)' },
+            business_name: { type: 'string' },
+            business_summary: { type: 'string' },
+            primary_services: { type: 'array', items: { type: 'string' } },
+            secondary_services: { type: 'array', items: { type: 'string' } },
+            locations_cities: { type: 'array', items: { type: 'string' } },
+            phone: { type: 'string' },
+            email: { type: 'string' },
+            address: { type: 'string' },
+            brand_colors: { type: 'array', items: { type: 'string' } },
+            fonts: { type: 'array', items: { type: 'string' } },
+            cms_platform: { type: 'string' },
           },
           required: ['business_name'],
         },
       }) as { success: boolean; data?: Record<string, unknown> };
 
-      console.log(`[Firecrawl] /extract success=${extractResult.success}, hasData=${!!extractResult.data}, keys=${extractResult.data ? Object.keys(extractResult.data).join(',') : 'none'}`);
+      console.log(`[Firecrawl] /extract success=${extractResult.success}, keys=${extractResult.data ? Object.keys(extractResult.data).join(',') : 'none'}`);
 
       if (extractResult.success && extractResult.data) {
         const d = extractResult.data;
-
-        if (d.business_name && typeof d.business_name === 'string') {
-          brandName = d.business_name;
-        }
-        if (d.business_summary && typeof d.business_summary === 'string') {
-          businessSummary = d.business_summary;
-        }
+        if (d.business_name && typeof d.business_name === 'string') brandName = d.business_name;
+        if (d.business_summary && typeof d.business_summary === 'string') businessSummary = d.business_summary;
+        if (d.cms_platform && typeof d.cms_platform === 'string') cmsDetected = d.cms_platform;
 
         if (Array.isArray(d.primary_services)) {
           for (const svc of d.primary_services) {
             if (typeof svc === 'string' && svc.trim()) {
-              services.push({
-                name: svc.trim(),
-                confidence: 0.85,
-                evidence: [{ source_url: websiteUrl, excerpt: 'Listed as primary service on website' }],
-              });
+              services.push({ name: svc.trim(), confidence: 0.85, evidence: [{ source_url: websiteUrl, excerpt: 'Primary service from website' }] });
             }
           }
         }
-
         if (Array.isArray(d.secondary_services)) {
           for (const svc of d.secondary_services) {
             if (typeof svc === 'string' && svc.trim()) {
-              services.push({
-                name: svc.trim(),
-                confidence: 0.60,
-                evidence: [{ source_url: websiteUrl, excerpt: 'Mentioned as additional service' }],
-              });
+              services.push({ name: svc.trim(), confidence: 0.60, evidence: [{ source_url: websiteUrl, excerpt: 'Secondary service from website' }] });
             }
           }
         }
-
         if (Array.isArray(d.locations_cities)) {
           for (let i = 0; i < d.locations_cities.length; i++) {
             const loc = d.locations_cities[i];
             if (typeof loc === 'string' && loc.trim()) {
-              locations.push({
-                name: loc.trim(),
-                type: 'city',
-                confidence: i === 0 ? 0.85 : 0.70,
-                evidence: [{ source_url: websiteUrl, excerpt: 'Location mentioned on website' }],
-              });
+              locations.push({ name: loc.trim(), type: 'city', confidence: i === 0 ? 0.85 : 0.70, evidence: [{ source_url: websiteUrl, excerpt: 'Location from website' }] });
             }
           }
         }
-
         if (d.phone && typeof d.phone === 'string') phone = d.phone;
         if (d.email && typeof d.email === 'string') email = d.email;
         if (d.address && typeof d.address === 'string') address = d.address;
+        if (Array.isArray(d.brand_colors)) for (const c of d.brand_colors) { if (typeof c === 'string') colors.push(c); }
+        if (Array.isArray(d.fonts)) for (const f of d.fonts) { if (typeof f === 'string') fonts.push(f); }
 
-        if (Array.isArray(d.brand_colors)) {
-          for (const c of d.brand_colors) {
-            if (typeof c === 'string') colors.push(c);
-          }
-        }
-        if (Array.isArray(d.fonts)) {
-          for (const f of d.fonts) {
-            if (typeof f === 'string') fonts.push(f);
-          }
-        }
-
-        evidence.push({
-          source_url: websiteUrl,
-          excerpt: `Structured extraction via Firecrawl /extract on ${domain}/*`,
-        });
+        evidence.push({ source_url: websiteUrl, excerpt: `Structured extraction via Firecrawl /extract` });
       }
     } catch (err) {
       console.warn('[Firecrawl] /extract failed:', err);
     }
 
-    // Step 4: Fallback — if /extract gave us nothing, parse the homepage markdown
-    if (!brandName && !businessSummary && services.length === 0 && homepageMarkdown) {
-      console.log('[Firecrawl] /extract returned no data, falling back to markdown parsing');
+    // Step 4: If /extract didn't give us services/locations, scrape priority pages and parse markdown
+    if (services.length === 0 || locations.length === 0) {
+      console.log(`[Firecrawl] Missing data (services=${services.length}, locations=${locations.length}), scraping priority pages...`);
 
-      // Try to scrape a few more priority pages for content
-      const pagesContent: string[] = [homepageMarkdown];
+      const pagesContent: string[] = homepageMarkdown ? [homepageMarkdown] : [];
+
+      // Scrape up to 4 additional priority pages
       for (const pageUrl of urlsToScrape.slice(1, 5)) {
         try {
           const pageResult = await firecrawlFetch('/scrape', {
@@ -306,39 +337,47 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
 
           if (pageResult.success && pageResult.data?.markdown) {
             pagesContent.push(pageResult.data.markdown);
+            console.log(`[Firecrawl] Scraped ${pageUrl} (${pageResult.data.markdown.length} chars)`);
           }
         } catch {
           // skip failed pages
         }
       }
 
-      // Basic extraction from markdown content
-      const allContent = pagesContent.join('\n\n');
+      if (pagesContent.length > 0) {
+        const allContent = pagesContent.join('\n\n');
+        const parsed = parseMarkdownForInsights(allContent, pageTitle, websiteUrl);
 
-      // Extract phone numbers
-      const phoneMatch = allContent.match(/(?:\+1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
-      if (phoneMatch) phone = phoneMatch[0];
+        if (services.length === 0 && parsed.services.length > 0) {
+          services = parsed.services;
+          console.log(`[Firecrawl] Parsed ${services.length} services from markdown`);
+        }
+        if (locations.length === 0 && parsed.locations.length > 0) {
+          locations = parsed.locations;
+          console.log(`[Firecrawl] Parsed ${locations.length} locations from markdown`);
+        }
+        if (!phone && parsed.phone) phone = parsed.phone;
+        if (!email && parsed.email) email = parsed.email;
+        if (!address && parsed.address) address = parsed.address;
+        if (!businessSummary && parsed.businessSummary) businessSummary = parsed.businessSummary;
 
-      // Extract email
-      const emailMatch = allContent.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-      if (emailMatch) email = emailMatch[0];
-
-      evidence.push({
-        source_url: websiteUrl,
-        excerpt: `Fallback extraction from ${pagesContent.length} scraped pages`,
-      });
+        evidence.push({ source_url: websiteUrl, excerpt: `Parsed ${pagesContent.length} pages for business data` });
+      }
     }
 
-    // Build key pages list from scraped URLs
+    // Detect WordPress from logo URL or known patterns
+    if (!cmsDetected && logoUrl?.includes('wp-content')) {
+      cmsDetected = 'WordPress';
+    }
+
+    // Build key pages list
     for (const url of urlsToScrape.slice(1, 8)) {
       try {
         const path = new URL(url).pathname;
         const pageName = path.split('/').filter(Boolean).pop() || 'page';
         const title = pageName.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
         keyPages.push({ url, title, reason: 'High-signal page' });
-      } catch {
-        // skip
-      }
+      } catch { /* skip */ }
     }
 
     const primaryServices = services.filter(s => s.confidence >= 0.75);
@@ -346,15 +385,10 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
     const primaryLocations = locations.filter(l => l.confidence >= 0.75);
     const secondaryLocations = locations.filter(l => l.confidence < 0.75);
 
-    console.log(`[Firecrawl] Final results: brand=${brandName || 'none'}, services=${services.length}, locations=${locations.length}, screenshot=${!!screenshotUrl}`);
+    console.log(`[Firecrawl] Final: brand="${brandName}", services=${services.length}, locations=${locations.length}, screenshot=${!!screenshotUrl}, cms=${cmsDetected || 'none'}`);
 
     return {
-      branding: {
-        screenshot_url: screenshotUrl,
-        logo_url: logoUrl,
-        colors,
-        fonts,
-      },
+      branding: { screenshot_url: screenshotUrl, logo_url: logoUrl, colors, fonts },
       insights: {
         brand_name: brandName,
         business_summary: businessSummary,
@@ -366,6 +400,7 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
         social_links: socialLinks,
         key_pages: keyPages,
       },
+      tech_stack: cmsDetected ? { cms: cmsDetected } : undefined,
       evidence,
     };
   }
