@@ -182,6 +182,55 @@ export async function createAuditEvent(
   });
 }
 
+// Get site intelligence snapshots from session
+export async function getSiteIntelligenceSnapshots(sessionId: string): Promise<{
+  prefill_map: Record<string, unknown> | null;
+  question_overrides: Record<string, unknown> | null;
+  branding: Record<string, unknown> | null;
+  insights: Record<string, unknown> | null;
+} | null> {
+  const supabase = createServiceRoleClient();
+
+  const { data, error } = await supabase
+    .from('onboarding_sessions')
+    .select('si_prefill_snapshot, si_overrides_snapshot, si_branding_snapshot, si_insights_snapshot, site_intelligence_id')
+    .eq('id', sessionId)
+    .single();
+
+  if (error || !data) return null;
+
+  // Return snapshots if they exist
+  if (data.si_prefill_snapshot || data.si_branding_snapshot || data.si_insights_snapshot) {
+    return {
+      prefill_map: data.si_prefill_snapshot,
+      question_overrides: data.si_overrides_snapshot,
+      branding: data.si_branding_snapshot,
+      insights: data.si_insights_snapshot,
+    };
+  }
+
+  // If no snapshots but we have a linked record, try to fetch from the record
+  if (data.site_intelligence_id) {
+    const { data: si } = await supabase
+      .from('onboarding_site_intelligence')
+      .select('prefill_map, question_overrides, branding, insights')
+      .eq('id', data.site_intelligence_id)
+      .eq('status', 'completed')
+      .single();
+
+    if (si) {
+      return {
+        prefill_map: si.prefill_map,
+        question_overrides: si.question_overrides,
+        branding: si.branding,
+        insights: si.insights,
+      };
+    }
+  }
+
+  return null;
+}
+
 // Generate signed URL for logo
 export async function getSignedLogoUrl(logoPath: string): Promise<string | null> {
   if (!logoPath) return null;

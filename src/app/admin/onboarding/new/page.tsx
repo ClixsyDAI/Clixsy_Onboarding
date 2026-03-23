@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import Link from 'next/link';
+import SiteIntelligencePanel from '@/components/admin/SiteIntelligencePanel';
 
 const CLIXSY_LOGO_URL = 'https://res.cloudinary.com/dovgh19xr/image/upload/v1766427227/new_logo_nvrux0.svg';
 
@@ -9,9 +10,21 @@ export default function NewOnboardingPage() {
   const [clientName, setClientName] = useState('');
   const [contactName, setContactName] = useState('');
   const [contactEmail, setContactEmail] = useState('');
+  const [websiteUrl, setWebsiteUrl] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [generatedUrl, setGeneratedUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Site intelligence state
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [siRecordId, setSiRecordId] = useState<string | null>(null);
+  const [siComplete, setSiComplete] = useState(false);
+  const [skipAnalysis, setSkipAnalysis] = useState(false);
+
+  const handleAnalysisComplete = useCallback((recordId: string) => {
+    setSiRecordId(recordId);
+    setSiComplete(true);
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,6 +42,8 @@ export default function NewOnboardingPage() {
           clientName,
           contactName,
           contactEmail,
+          websiteUrl: websiteUrl || undefined,
+          siteIntelligenceId: siRecordId || undefined,
         }),
       });
 
@@ -36,6 +51,22 @@ export default function NewOnboardingPage() {
 
       if (!response.ok) {
         throw new Error(data.error || 'Failed to create session');
+      }
+
+      // If we have a completed analysis but haven't linked it yet, link now
+      if (siRecordId && data.sessionId) {
+        try {
+          await fetch('/api/admin/site-intelligence/link', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sessionId: data.sessionId,
+              siteIntelligenceId: siRecordId,
+            }),
+          });
+        } catch (linkErr) {
+          console.warn('Failed to link site intelligence:', linkErr);
+        }
       }
 
       // Generate the onboarding URL
@@ -80,9 +111,14 @@ export default function NewOnboardingPage() {
               <h1 className="text-2xl font-extrabold text-center text-[#0B0B0B] mb-4">
                 Onboarding Link Created!
               </h1>
-              <p className="text-center text-[#6B6B6B] mb-6">
+              <p className="text-center text-[#6B6B6B] mb-2">
                 Share this link with your client to begin their onboarding:
               </p>
+              {siComplete && (
+                <p className="text-center text-[#25DC7F] text-sm mb-4 font-medium">
+                  Website intelligence is attached — the client will see personalized questions.
+                </p>
+              )}
 
               <div className="bg-[#F4F5F6] rounded-lg p-4 mb-6">
                 <div className="flex items-center gap-2">
@@ -108,6 +144,11 @@ export default function NewOnboardingPage() {
                     setClientName('');
                     setContactName('');
                     setContactEmail('');
+                    setWebsiteUrl('');
+                    setSiRecordId(null);
+                    setSiComplete(false);
+                    setSkipAnalysis(false);
+                    setSessionId(null);
                   }}
                   className="flex-1 px-6 py-3 border border-[#E6E8EA] text-[#0B0B0B] rounded-lg font-semibold hover:bg-[#F4F5F6] transition-colors"
                 >
@@ -127,6 +168,8 @@ export default function NewOnboardingPage() {
     );
   }
 
+  const canCreateLink = clientName && (siComplete || skipAnalysis || !websiteUrl);
+
   return (
     <div className="min-h-screen bg-[#F4F5F6]">
       {/* Header */}
@@ -142,7 +185,8 @@ export default function NewOnboardingPage() {
       </header>
 
       <div className="flex items-center justify-center py-16 px-4">
-        <div className="max-w-2xl w-full mx-auto">
+        <div className="max-w-2xl w-full mx-auto space-y-6">
+          {/* Client Details Form */}
           <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-8">
             <h1 className="text-2xl font-extrabold text-[#0B0B0B] mb-2">
               Create New Onboarding Session
@@ -204,14 +248,69 @@ export default function NewOnboardingPage() {
                 />
               </div>
 
+              {/* Website URL */}
+              <div>
+                <label htmlFor="websiteUrl" className="block text-sm font-semibold text-[#0B0B0B] mb-2">
+                  Client Website URL
+                </label>
+                <input
+                  type="url"
+                  id="websiteUrl"
+                  value={websiteUrl}
+                  onChange={(e) => {
+                    setWebsiteUrl(e.target.value);
+                    // Reset analysis state if URL changes
+                    setSiRecordId(null);
+                    setSiComplete(false);
+                    setSkipAnalysis(false);
+                  }}
+                  placeholder="https://acme.com"
+                  className="w-full px-4 py-3 border border-[#E6E8EA] rounded-lg focus:ring-2 focus:ring-[#25DC7F]/20 focus:border-[#25DC7F] transition-all"
+                />
+                <p className="mt-1 text-xs text-[#6B6B6B]">
+                  Providing a URL enables website analysis to pre-fill onboarding fields.
+                </p>
+              </div>
+
+              {/* Site Intelligence Panel */}
+              {websiteUrl && !skipAnalysis && (
+                <SiteIntelligencePanel
+                  websiteUrl={websiteUrl}
+                  sessionId={sessionId || undefined}
+                  onAnalysisComplete={handleAnalysisComplete}
+                />
+              )}
+
+              {/* Skip Analysis Option */}
+              {websiteUrl && !siComplete && (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="skipAnalysis"
+                    checked={skipAnalysis}
+                    onChange={(e) => setSkipAnalysis(e.target.checked)}
+                    className="w-4 h-4 text-[#25DC7F] rounded border-[#E6E8EA]"
+                  />
+                  <label htmlFor="skipAnalysis" className="text-sm text-[#6B6B6B]">
+                    Skip website analysis and create link without pre-filled data
+                  </label>
+                </div>
+              )}
+
               {/* Submit Button */}
               <button
                 type="submit"
-                disabled={isLoading || !clientName}
+                disabled={isLoading || !canCreateLink}
                 className="w-full px-6 py-3 bg-[#25DC7F] text-white rounded-lg font-semibold hover:bg-[#1DB96A] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isLoading ? 'Creating...' : 'Create Onboarding Link'}
               </button>
+
+              {websiteUrl && !siComplete && !skipAnalysis && (
+                <p className="text-xs text-[#F5A524] text-center">
+                  Run the website analysis above or skip it to enable the create button.
+                </p>
+              )}
             </form>
           </div>
         </div>

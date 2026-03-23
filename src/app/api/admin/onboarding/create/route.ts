@@ -6,7 +6,7 @@ import crypto from 'crypto';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { clientName, contactName, contactEmail } = body;
+    const { clientName, contactName, contactEmail, websiteUrl, siteIntelligenceId } = body;
 
     if (!clientName) {
       return NextResponse.json(
@@ -59,6 +59,7 @@ export async function POST(request: NextRequest) {
         client_name: clientName,
         primary_contact_name: contactName || null,
         primary_contact_email: contactEmail || null,
+        website_url: websiteUrl || null,
       });
 
     if (clientError) {
@@ -70,17 +71,24 @@ export async function POST(request: NextRequest) {
     }
 
     // Create onboarding session
+    const sessionData: Record<string, unknown> = {
+      id: sessionId,
+      agency_id: agencyId,
+      client_id: clientId,
+      token,
+      status: 'draft',
+      current_step: 0,
+      flow_version: 'v2',
+    };
+
+    // Link site intelligence if provided
+    if (siteIntelligenceId) {
+      sessionData.site_intelligence_id = siteIntelligenceId;
+    }
+
     const { error: sessionError } = await supabase
       .from('onboarding_sessions')
-      .insert({
-        id: sessionId,
-        agency_id: agencyId,
-        client_id: clientId,
-        token,
-        status: 'draft',
-        current_step: 0,
-        flow_version: 'v2',
-      });
+      .insert(sessionData);
 
     if (sessionError) {
       console.error('Session creation error:', sessionError);

@@ -41,6 +41,7 @@ export default async function OnboardingPage({ params }: OnboardingPageProps) {
       flowVersion={data.session.flowVersion || 'v1'}
       clientName={data.client?.name || ''}
       contactName={data.client?.contactName || ''}
+      siteIntelligence={data.siteIntelligence || null}
     />
   );
 }
