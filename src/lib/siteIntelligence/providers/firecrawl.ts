@@ -41,48 +41,6 @@ async function firecrawlFetch(endpoint: string, body: Record<string, unknown>): 
   return res.json();
 }
 
-async function firecrawlGet(endpoint: string): Promise<unknown> {
-  const key = getFirecrawlKey();
-  const res = await fetch(`${FIRECRAWL_BASE}${endpoint}`, {
-    method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${key}`,
-    },
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Firecrawl GET ${endpoint} failed (${res.status}): ${text}`);
-  }
-
-  return res.json();
-}
-
-interface MapResult {
-  success: boolean;
-  links?: string[];
-}
-
-interface ScrapeResult {
-  success: boolean;
-  data?: {
-    markdown?: string;
-    metadata?: {
-      title?: string;
-      description?: string;
-      ogImage?: string;
-      sourceURL?: string;
-    };
-    screenshot?: string;
-    links?: string[];
-  };
-}
-
-interface ExtractResult {
-  success: boolean;
-  data?: Record<string, unknown>;
-}
-
 function prioritizeUrls(urls: string[], baseUrl: string): string[] {
   const domain = extractDomain(baseUrl);
   const scored: { url: string; score: number }[] = [];
@@ -93,11 +51,11 @@ function prioritizeUrls(urls: string[], baseUrl: string): string[] {
       if (parsed.hostname !== domain) continue;
       const path = parsed.pathname.toLowerCase().replace(/\/$/, '');
 
-      let score = 100; // default low priority
+      let score = 100;
       for (let i = 0; i < PRIORITY_PATTERNS.length; i++) {
         const pattern = PRIORITY_PATTERNS[i];
         if (pattern === '' && path === '') {
-          score = 0; // homepage = highest priority
+          score = 0;
           break;
         }
         if (pattern && path.includes(pattern)) {
@@ -140,42 +98,65 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
       const mapResult = await firecrawlFetch('/map', {
         url: websiteUrl,
         limit: 50,
-      }) as MapResult;
+      }) as { success: boolean; links?: string[] };
 
       if (mapResult.success && mapResult.links?.length) {
         urlsToScrape = prioritizeUrls(mapResult.links, websiteUrl);
+        console.log(`[Firecrawl] /map found ${mapResult.links.length} URLs, selected ${urlsToScrape.length}`);
       }
     } catch (err) {
-      console.warn('Firecrawl /map failed, falling back to homepage only:', err);
+      console.warn('[Firecrawl] /map failed:', err);
     }
 
-    // Step 2: Scrape homepage with screenshot + branding
+    // Step 2: Scrape homepage for markdown content + metadata
+    let homepageMarkdown = '';
     try {
-      const homeScrape = await firecrawlFetch('/scrape', {
+      const scrapeResult = await firecrawlFetch('/scrape', {
         url: websiteUrl,
-        formats: ['markdown', 'screenshot', 'links'],
+        formats: ['markdown', 'screenshot'],
         onlyMainContent: true,
-        screenshot: true,
-      }) as ScrapeResult;
+      }) as { success: boolean; data?: Record<string, unknown> };
 
-      if (homeScrape.success && homeScrape.data) {
-        const d = homeScrape.data;
-        screenshotUrl = d.screenshot || undefined;
+      console.log(`[Firecrawl] /scrape success=${scrapeResult.success}, hasData=${!!scrapeResult.data}`);
 
-        if (d.metadata?.title) {
-          // Extract brand name from title (before | or - or :)
-          const titleParts = d.metadata.title.split(/[|\-–—:]/);
-          brandName = titleParts[0]?.trim();
+      if (scrapeResult.success && scrapeResult.data) {
+        const d = scrapeResult.data;
+
+        // Screenshot
+        if (d.screenshot && typeof d.screenshot === 'string') {
+          screenshotUrl = d.screenshot;
         }
 
-        if (d.metadata?.ogImage) {
-          logoUrl = d.metadata.ogImage;
+        // Markdown content for later parsing
+        if (d.markdown && typeof d.markdown === 'string') {
+          homepageMarkdown = d.markdown;
         }
 
-        // Extract links for social profiles
-        if (d.links) {
-          for (const link of d.links) {
-            const lower = typeof link === 'string' ? link.toLowerCase() : '';
+        // Metadata
+        const metadata = d.metadata as Record<string, unknown> | undefined;
+        if (metadata) {
+          if (metadata.title && typeof metadata.title === 'string') {
+            const titleParts = metadata.title.split(/[|\-–—:]/);
+            brandName = titleParts[0]?.trim();
+          }
+          if (metadata.ogImage && typeof metadata.ogImage === 'string') {
+            logoUrl = metadata.ogImage;
+          }
+          if (metadata.sourceURL && typeof metadata.sourceURL === 'string') {
+            keyPages.push({
+              url: metadata.sourceURL,
+              title: (metadata.title as string) || 'Homepage',
+              reason: 'Homepage',
+            });
+          }
+        }
+
+        // Links for social profiles
+        const links = d.links as string[] | undefined;
+        if (Array.isArray(links)) {
+          for (const link of links) {
+            if (typeof link !== 'string') continue;
+            const lower = link.toLowerCase();
             if (lower.includes('facebook.com')) socialLinks.push({ platform: 'Facebook', url: link });
             else if (lower.includes('twitter.com') || lower.includes('x.com')) socialLinks.push({ platform: 'X/Twitter', url: link });
             else if (lower.includes('linkedin.com')) socialLinks.push({ platform: 'LinkedIn', url: link });
@@ -184,61 +165,58 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
             else if (lower.includes('yelp.com')) socialLinks.push({ platform: 'Yelp', url: link });
           }
         }
-
-        if (d.metadata?.sourceURL) {
-          keyPages.push({
-            url: d.metadata.sourceURL,
-            title: d.metadata.title || 'Homepage',
-            reason: 'Homepage',
-          });
-        }
       }
     } catch (err) {
-      console.warn('Firecrawl homepage scrape failed:', err);
+      console.warn('[Firecrawl] /scrape failed:', err);
     }
 
-    // Step 3: Use extract for structured data
+    // Step 3: Use /extract with the domain wildcard for structured extraction
+    // This is the primary way to get business insights
     try {
+      const domain = extractDomain(websiteUrl);
       const extractResult = await firecrawlFetch('/extract', {
-        urls: urlsToScrape.slice(0, 8),
-        prompt: 'Extract business information from this website.',
+        urls: [`https://${domain}/*`],
+        prompt: `Extract structured business information from this website. Include: the business name, a 2-4 sentence client-friendly summary of what they do, their main services or practice areas, cities/areas they serve, contact details (phone, email, address), and any brand colors or fonts visible on the site.`,
         schema: {
           type: 'object',
           properties: {
-            business_name: { type: 'string', description: 'The business or company name' },
-            business_summary: { type: 'string', description: 'A 2-4 sentence summary of what this business does, written in a friendly client-facing tone' },
+            business_name: { type: 'string', description: 'The official business or company name' },
+            business_summary: { type: 'string', description: 'A 2-4 sentence summary of what this business does, written in a friendly professional tone' },
             primary_services: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Main services or practice areas offered',
+              description: 'Main services, practice areas, or product categories offered',
             },
             secondary_services: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Additional or minor services mentioned',
+              description: 'Additional or minor services mentioned on the site',
             },
             locations_cities: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Cities or geographic areas served or mentioned',
+              description: 'Cities, metros, or geographic areas served or mentioned',
             },
-            phone: { type: 'string', description: 'Main phone number' },
-            email: { type: 'string', description: 'Main contact email' },
-            address: { type: 'string', description: 'Physical address' },
+            phone: { type: 'string', description: 'Main business phone number' },
+            email: { type: 'string', description: 'Main contact email address' },
+            address: { type: 'string', description: 'Physical business address' },
             brand_colors: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Hex color codes used prominently on the site',
+              description: 'Hex color codes (e.g. #1a2b3c) used prominently on the site',
             },
             fonts: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Font families used on the site',
+              description: 'Font family names used on the site',
             },
+            cms_platform: { type: 'string', description: 'The CMS or website platform (e.g. WordPress, Squarespace, Wix, custom)' },
           },
           required: ['business_name'],
         },
-      }) as ExtractResult;
+      }) as { success: boolean; data?: Record<string, unknown> };
+
+      console.log(`[Firecrawl] /extract success=${extractResult.success}, hasData=${!!extractResult.data}, keys=${extractResult.data ? Object.keys(extractResult.data).join(',') : 'none'}`);
 
       if (extractResult.success && extractResult.data) {
         const d = extractResult.data;
@@ -246,7 +224,6 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
         if (d.business_name && typeof d.business_name === 'string') {
           brandName = d.business_name;
         }
-
         if (d.business_summary && typeof d.business_summary === 'string') {
           businessSummary = d.business_summary;
         }
@@ -257,7 +234,7 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
               services.push({
                 name: svc.trim(),
                 confidence: 0.85,
-                evidence: [{ source_url: websiteUrl, excerpt: `Listed as primary service on website` }],
+                evidence: [{ source_url: websiteUrl, excerpt: 'Listed as primary service on website' }],
               });
             }
           }
@@ -269,7 +246,7 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
               services.push({
                 name: svc.trim(),
                 confidence: 0.60,
-                evidence: [{ source_url: websiteUrl, excerpt: `Mentioned as additional service` }],
+                evidence: [{ source_url: websiteUrl, excerpt: 'Mentioned as additional service' }],
               });
             }
           }
@@ -283,7 +260,7 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
                 name: loc.trim(),
                 type: 'city',
                 confidence: i === 0 ? 0.85 : 0.70,
-                evidence: [{ source_url: websiteUrl, excerpt: `Location mentioned on website` }],
+                evidence: [{ source_url: websiteUrl, excerpt: 'Location mentioned on website' }],
               });
             }
           }
@@ -298,7 +275,6 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
             if (typeof c === 'string') colors.push(c);
           }
         }
-
         if (Array.isArray(d.fonts)) {
           for (const f of d.fonts) {
             if (typeof f === 'string') fonts.push(f);
@@ -307,22 +283,53 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
 
         evidence.push({
           source_url: websiteUrl,
-          excerpt: `Structured extraction from ${urlsToScrape.length} pages via Firecrawl`,
+          excerpt: `Structured extraction via Firecrawl /extract on ${domain}/*`,
         });
       }
     } catch (err) {
-      console.warn('Firecrawl /extract failed:', err);
-
-      // Fallback: if extract fails, at least we have homepage data
-      if (brandName) {
-        evidence.push({
-          source_url: websiteUrl,
-          excerpt: `Basic info extracted from homepage metadata`,
-        });
-      }
+      console.warn('[Firecrawl] /extract failed:', err);
     }
 
-    // Build key pages from scraped URLs
+    // Step 4: Fallback — if /extract gave us nothing, parse the homepage markdown
+    if (!brandName && !businessSummary && services.length === 0 && homepageMarkdown) {
+      console.log('[Firecrawl] /extract returned no data, falling back to markdown parsing');
+
+      // Try to scrape a few more priority pages for content
+      const pagesContent: string[] = [homepageMarkdown];
+      for (const pageUrl of urlsToScrape.slice(1, 5)) {
+        try {
+          const pageResult = await firecrawlFetch('/scrape', {
+            url: pageUrl,
+            formats: ['markdown'],
+            onlyMainContent: true,
+          }) as { success: boolean; data?: { markdown?: string } };
+
+          if (pageResult.success && pageResult.data?.markdown) {
+            pagesContent.push(pageResult.data.markdown);
+          }
+        } catch {
+          // skip failed pages
+        }
+      }
+
+      // Basic extraction from markdown content
+      const allContent = pagesContent.join('\n\n');
+
+      // Extract phone numbers
+      const phoneMatch = allContent.match(/(?:\+1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+      if (phoneMatch) phone = phoneMatch[0];
+
+      // Extract email
+      const emailMatch = allContent.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+      if (emailMatch) email = emailMatch[0];
+
+      evidence.push({
+        source_url: websiteUrl,
+        excerpt: `Fallback extraction from ${pagesContent.length} scraped pages`,
+      });
+    }
+
+    // Build key pages list from scraped URLs
     for (const url of urlsToScrape.slice(1, 8)) {
       try {
         const path = new URL(url).pathname;
@@ -334,13 +341,12 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
       }
     }
 
-    // Separate primary vs secondary services by confidence
     const primaryServices = services.filter(s => s.confidence >= 0.75);
     const secondaryServices = services.filter(s => s.confidence < 0.75);
-
-    // Separate primary vs secondary locations
     const primaryLocations = locations.filter(l => l.confidence >= 0.75);
     const secondaryLocations = locations.filter(l => l.confidence < 0.75);
+
+    console.log(`[Firecrawl] Final results: brand=${brandName || 'none'}, services=${services.length}, locations=${locations.length}, screenshot=${!!screenshotUrl}`);
 
     return {
       branding: {
