@@ -5,10 +5,43 @@ import { getStepsForVersion, validateStepDataForVersion, getMissingRequiredField
 import StepRenderer from './StepRenderer';
 import StepTransition from './StepTransition';
 import AccessChecklistStep from './AccessChecklistStep';
+import WebsiteSnapshot from './WebsiteSnapshot';
 import { getTransitionMessage, getWelcomeMessage } from '@/lib/onboarding/transition-messages';
 import type { TransitionMessage } from '@/lib/onboarding/transition-messages';
 
 const CLIXSY_LOGO_URL = 'https://res.cloudinary.com/dovgh19xr/image/upload/v1766427227/new_logo_nvrux0.svg';
+
+interface SiteIntelligenceData {
+  prefill_map?: Record<string, {
+    suggested_value: unknown;
+    confidence: number;
+    policy: 'autofill' | 'suggest_only' | 'no_prefill';
+    evidence: { source_url: string; excerpt: string }[];
+  }>;
+  question_overrides?: Record<string, {
+    label_override: string;
+    help_override?: string;
+    ui_pattern: 'confirmation' | 'default';
+    original_label: string;
+  }>;
+  branding?: {
+    screenshot_url?: string;
+    logo_url?: string;
+    colors?: string[];
+    fonts?: string[];
+  };
+  insights?: {
+    brand_name?: string;
+    business_summary?: string;
+    primary_services?: { name: string; confidence: number }[];
+    secondary_services?: { name: string; confidence: number }[];
+    primary_locations?: { name: string; type: string; confidence: number }[];
+    secondary_locations?: { name: string; type: string; confidence: number }[];
+    contact_public?: { phone?: string; email?: string; address?: string };
+    social_links?: { platform: string; url: string }[];
+    key_pages?: { url: string; title: string; reason: string }[];
+  };
+}
 
 interface WizardProps {
   token: string;
@@ -18,6 +51,7 @@ interface WizardProps {
   flowVersion?: 'v1' | 'v2';
   clientName?: string;
   contactName?: string;
+  siteIntelligence?: SiteIntelligenceData | null;
 }
 
 export default function Wizard({
@@ -28,6 +62,7 @@ export default function Wizard({
   flowVersion = 'v1',
   clientName = '',
   contactName = '',
+  siteIntelligence = null,
 }: WizardProps) {
   const steps = useMemo(() => getStepsForVersion(flowVersion), [flowVersion]);
   const [currentStepIndex, setCurrentStepIndex] = useState(initialStep);
@@ -46,6 +81,7 @@ export default function Wizard({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [showSnapshot, setShowSnapshot] = useState(!!siteIntelligence?.insights);
 
   // Step transition state
   const [transitioning, setTransitioning] = useState(false);
@@ -79,6 +115,41 @@ export default function Wizard({
     const fromV2 = answers['business_overview']?.business_name as string | undefined;
     return fromV1 || fromV2 || clientName || '';
   }, [answers, clientName]);
+
+  // Apply site intelligence prefill on mount (only to empty fields, only once)
+  useEffect(() => {
+    if (!siteIntelligence?.prefill_map) return;
+    const prefillMap = siteIntelligence.prefill_map;
+
+    setAnswers(prev => {
+      const updated = { ...prev };
+      for (const [fieldKey, entry] of Object.entries(prefillMap)) {
+        if (entry.policy !== 'autofill') continue;
+
+        // Find which step this field belongs to
+        for (const step of steps) {
+          const field = step.fields.find(f => f.name === fieldKey);
+          if (!field) continue;
+
+          const stepKey = step.key;
+          const currentValue = updated[stepKey]?.[fieldKey];
+
+          // Only prefill if the field is currently empty
+          const isEmpty = currentValue === undefined || currentValue === null || currentValue === '' ||
+            (Array.isArray(currentValue) && currentValue.length === 0);
+
+          if (isEmpty) {
+            updated[stepKey] = {
+              ...updated[stepKey],
+              [fieldKey]: entry.suggested_value,
+            };
+          }
+          break;
+        }
+      }
+      return updated;
+    });
+  }, []); // Only run once on mount
 
   // Show welcome interstitial on first load
   const isReturning = useMemo(() => {
@@ -310,6 +381,7 @@ export default function Wizard({
   };
 
   // Auto-save on every change (short debounce to handle rapid typing)
+  // Preserves completed status - never downgrades a completed step
   const pendingSaveRef = useRef(false);
 
   useEffect(() => {
@@ -319,7 +391,8 @@ export default function Wizard({
     const timeout = setTimeout(() => {
       if (Object.keys(stepAnswers).length > 0 && !isSaving && !currentStep.isReviewStep && pendingSaveRef.current) {
         pendingSaveRef.current = false;
-        saveStep(false);
+        const isAlreadyCompleted = completedStepsState.includes(currentStep.key);
+        saveStep(isAlreadyCompleted);
       }
     }, 800); // Save after 800ms of inactivity - quick enough to feel instant
 
@@ -330,9 +403,10 @@ export default function Wizard({
   const navigateToStep = async (index: number) => {
     if (index === currentStepIndex) return;
 
-    // Save current step progress (not marked as completed) before navigating
+    // Save current step progress before navigating (preserve completed status)
     if (Object.keys(stepAnswers).length > 0 && !currentStep.isReviewStep) {
-      await saveStep(false);
+      const isAlreadyCompleted = completedStepsState.includes(currentStep.key);
+      await saveStep(isAlreadyCompleted);
     }
 
     setCurrentStepIndex(index);
@@ -625,6 +699,15 @@ export default function Wizard({
             transition: 'opacity 0.5s ease, transform 0.5s ease',
           }}
         >
+          {/* Website Snapshot (shown on first step only) */}
+          {showSnapshot && currentStepIndex === 0 && siteIntelligence && (
+            <WebsiteSnapshot
+              branding={siteIntelligence.branding}
+              insights={siteIntelligence.insights}
+              onDismiss={() => setShowSnapshot(false)}
+            />
+          )}
+
           {/* Step Title */}
           <div className="text-center mb-4">
             <h1 className="text-2xl font-extrabold text-[#0B0B0B] mb-1">
@@ -670,6 +753,8 @@ export default function Wizard({
                 values={stepAnswers}
                 errors={errors}
                 onChange={handleFieldChange}
+                questionOverrides={siteIntelligence?.question_overrides}
+                prefillMap={siteIntelligence?.prefill_map}
               />
             )}
           </div>

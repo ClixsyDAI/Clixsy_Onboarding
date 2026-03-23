@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionByToken, getSessionAnswers, getSignedLogoUrl, createAuditEvent, getClientById } from '@/lib/supabase/server';
 import { getStepsForVersion } from '@/lib/onboarding/flow-version';
+import { getSiteIntelligenceSnapshots } from '@/lib/supabase/server';
 
 export async function GET(request: NextRequest) {
   try {
@@ -35,6 +36,9 @@ export async function GET(request: NextRequest) {
     if (session.logo_path && !logoUrl) {
       logoUrl = await getSignedLogoUrl(session.logo_path);
     }
+
+    // Get site intelligence snapshots (from session snapshots)
+    const siteIntelligence = await getSiteIntelligenceSnapshots(session.id);
 
     // Create audit event for session access
     await createAuditEvent(session.id, 'session_accessed', {
@@ -75,6 +79,7 @@ export async function GET(request: NextRequest) {
         estimatedTime: step.estimatedTime,
       })),
       totalSteps: steps.length,
+      siteIntelligence: siteIntelligence || null,
     });
   } catch (error) {
     console.error('Error fetching session:', error);

@@ -1,30 +1,38 @@
 'use client';
 
+import { useState } from 'react';
 import { OnboardingStep, OnboardingField } from '@/lib/onboarding/steps';
+
+interface QuestionOverride {
+  label_override: string;
+  help_override?: string;
+  ui_pattern: 'confirmation' | 'default';
+  original_label: string;
+}
+
+interface PrefillEntry {
+  suggested_value: unknown;
+  confidence: number;
+  policy: 'autofill' | 'suggest_only' | 'no_prefill';
+  evidence: { source_url: string; excerpt: string }[];
+}
 
 interface StepRendererProps {
   step: OnboardingStep;
   values: Record<string, unknown>;
   errors: Record<string, string>;
   onChange: (name: string, value: unknown) => void;
+  questionOverrides?: Record<string, QuestionOverride> | null;
+  prefillMap?: Record<string, PrefillEntry> | null;
 }
 
 // Helper function to convert YouTube URL to embed URL
 function getYouTubeEmbedUrl(url: string): string | null {
-  // Handle youtu.be format
   const shortMatch = url.match(/youtu\.be\/([a-zA-Z0-9_-]+)/);
-  if (shortMatch) {
-    return `https://www.youtube.com/embed/${shortMatch[1]}`;
-  }
-  // Handle youtube.com/watch?v= format
+  if (shortMatch) return `https://www.youtube.com/embed/${shortMatch[1]}`;
   const longMatch = url.match(/youtube\.com\/watch\?v=([a-zA-Z0-9_-]+)/);
-  if (longMatch) {
-    return `https://www.youtube.com/embed/${longMatch[1]}`;
-  }
-  // Handle youtube.com/embed/ format (already embedded)
-  if (url.includes('youtube.com/embed/')) {
-    return url.split('?')[0]; // Remove any query params
-  }
+  if (longMatch) return `https://www.youtube.com/embed/${longMatch[1]}`;
+  if (url.includes('youtube.com/embed/')) return url.split('?')[0];
   return null;
 }
 
@@ -69,23 +77,53 @@ function VideoTutorial({ url, title }: { url: string; title: string }) {
   );
 }
 
+// Suggestion Chip — shown for suggest_only policy
+function SuggestionChip({ value, onAccept }: { value: string; onAccept: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onAccept}
+      className="inline-flex items-center gap-1.5 mt-1.5 px-3 py-1.5 bg-[#25DC7F]/10 border border-[#25DC7F]/30 rounded-full text-xs text-[#0B0B0B] font-medium hover:bg-[#25DC7F]/20 transition-colors"
+    >
+      <svg className="w-3 h-3 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+      </svg>
+      Use suggestion: {value}
+    </button>
+  );
+}
+
 // Determine if a field should span both columns (full width)
 function shouldSpanFullWidth(field: OnboardingField): boolean {
-  // Fields with video tutorials always span full width
   if (field.videoUrl) return true;
-  // Textarea always spans full width
   if (field.type === 'textarea') return true;
-  // Multiselect and radio with options span full width (they have vertical options)
   if (field.type === 'multiselect' || field.type === 'radio') return true;
-  // Fields with many options or long labels
   if (field.options && field.options.length > 4) return true;
   return false;
 }
 
-export default function StepRenderer({ step, values, errors, onChange }: StepRendererProps) {
+export default function StepRenderer({ step, values, errors, onChange, questionOverrides, prefillMap }: StepRendererProps) {
+  // Track dismissed confirmations so we show original field if user says "No"
+  const [dismissedOverrides, setDismissedOverrides] = useState<Set<string>>(new Set());
+
+  const getOverride = (fieldName: string): QuestionOverride | null => {
+    if (!questionOverrides) return null;
+    if (dismissedOverrides.has(fieldName)) return null;
+    return questionOverrides[fieldName] || null;
+  };
+
+  const getSuggestion = (fieldName: string): PrefillEntry | null => {
+    if (!prefillMap) return null;
+    const entry = prefillMap[fieldName];
+    if (!entry || entry.policy !== 'suggest_only') return null;
+    return entry;
+  };
+
   const renderField = (field: OnboardingField) => {
     const value = values[field.name];
     const error = errors[field.name];
+    const override = getOverride(field.name);
+    const suggestion = getSuggestion(field.name);
     const baseInputClasses = `w-full px-3 py-2.5 border rounded-lg transition-all duration-150 text-sm ${
       error
         ? 'border-[#E5484D] bg-red-50'
@@ -100,129 +138,154 @@ export default function StepRenderer({ step, values, errors, onChange }: StepRen
       }
     }
 
-    switch (field.type) {
-      case 'text':
-      case 'email':
-      case 'url':
-      case 'tel':
-        return (
-          <input
-            type={field.type}
-            id={field.name}
-            name={field.name}
-            value={(value as string) || ''}
-            onChange={(e) => onChange(field.name, e.target.value)}
-            placeholder={field.placeholder}
-            className={baseInputClasses}
-          />
-        );
+    // Show suggestion chip for suggest_only fields that are currently empty
+    const isEmpty = value === undefined || value === null || value === '' ||
+      (Array.isArray(value) && value.length === 0);
+    const showSuggestion = suggestion && isEmpty;
 
-      case 'textarea':
-        return (
-          <textarea
-            id={field.name}
-            name={field.name}
-            value={(value as string) || ''}
-            onChange={(e) => onChange(field.name, e.target.value)}
-            placeholder={field.placeholder}
-            rows={3}
-            className={baseInputClasses}
-          />
-        );
-
-      case 'select':
-        return (
-          <select
-            id={field.name}
-            name={field.name}
-            value={(value as string) || ''}
-            onChange={(e) => onChange(field.name, e.target.value)}
-            className={baseInputClasses}
-          >
-            <option value="">Select an option...</option>
-            {field.options?.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        );
-
-      case 'multiselect':
-        const selectedValues = (value as string[]) || [];
-        return (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {field.options?.map((option) => (
-              <label
-                key={option.value}
-                className={`flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer transition-all duration-150 text-sm ${
-                  selectedValues.includes(option.value)
-                    ? 'border-[#25DC7F] bg-[#25DC7F]/5'
-                    : 'border-[#E6E8EA] hover:border-[#A0A0A0]'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedValues.includes(option.value)}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      onChange(field.name, [...selectedValues, option.value]);
-                    } else {
-                      onChange(field.name, selectedValues.filter((v) => v !== option.value));
-                    }
-                  }}
-                  className="w-4 h-4 text-[#25DC7F] rounded border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
+    const fieldElement = (() => {
+      switch (field.type) {
+        case 'text':
+        case 'email':
+        case 'url':
+        case 'tel':
+          return (
+            <>
+              <input
+                type={field.type}
+                id={field.name}
+                name={field.name}
+                value={(value as string) || ''}
+                onChange={(e) => onChange(field.name, e.target.value)}
+                placeholder={field.placeholder}
+                className={baseInputClasses}
+              />
+              {showSuggestion && typeof suggestion.suggested_value === 'string' && (
+                <SuggestionChip
+                  value={suggestion.suggested_value}
+                  onAccept={() => onChange(field.name, suggestion.suggested_value)}
                 />
-                <span className="text-[#1A1A1A]">{option.label}</span>
-              </label>
-            ))}
-          </div>
-        );
+              )}
+            </>
+          );
 
-      case 'checkbox':
-        return (
-          <label className="flex items-start gap-3 cursor-pointer">
-            <input
-              type="checkbox"
+        case 'textarea':
+          return (
+            <>
+              <textarea
+                id={field.name}
+                name={field.name}
+                value={(value as string) || ''}
+                onChange={(e) => onChange(field.name, e.target.value)}
+                placeholder={field.placeholder}
+                rows={3}
+                className={baseInputClasses}
+              />
+              {showSuggestion && typeof suggestion.suggested_value === 'string' && (
+                <SuggestionChip
+                  value={suggestion.suggested_value.length > 60 ? suggestion.suggested_value.slice(0, 60) + '...' : suggestion.suggested_value}
+                  onAccept={() => onChange(field.name, suggestion.suggested_value)}
+                />
+              )}
+            </>
+          );
+
+        case 'select':
+          return (
+            <select
               id={field.name}
               name={field.name}
-              checked={(value as boolean) || false}
-              onChange={(e) => onChange(field.name, e.target.checked)}
-              className="w-5 h-5 mt-0.5 text-[#25DC7F] rounded border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
-            />
-            <span className="text-[#1A1A1A]">{field.label}</span>
-          </label>
-        );
+              value={(value as string) || ''}
+              onChange={(e) => onChange(field.name, e.target.value)}
+              className={baseInputClasses}
+            >
+              <option value="">Select an option...</option>
+              {field.options?.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          );
 
-      case 'radio':
-        return (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {field.options?.map((option) => (
-              <label
-                key={option.value}
-                className={`flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer transition-all duration-150 text-sm ${
-                  value === option.value
-                    ? 'border-[#25DC7F] bg-[#25DC7F]/5'
-                    : 'border-[#E6E8EA] hover:border-[#A0A0A0]'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name={field.name}
-                  value={option.value}
-                  checked={value === option.value}
-                  onChange={(e) => onChange(field.name, e.target.value)}
-                  className="w-4 h-4 text-[#25DC7F] border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
-                />
-                <span className="text-[#1A1A1A]">{option.label}</span>
-              </label>
-            ))}
-          </div>
-        );
+        case 'multiselect':
+          const selectedValues = (value as string[]) || [];
+          return (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {field.options?.map((option) => (
+                <label
+                  key={option.value}
+                  className={`flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer transition-all duration-150 text-sm ${
+                    selectedValues.includes(option.value)
+                      ? 'border-[#25DC7F] bg-[#25DC7F]/5'
+                      : 'border-[#E6E8EA] hover:border-[#A0A0A0]'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedValues.includes(option.value)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        onChange(field.name, [...selectedValues, option.value]);
+                      } else {
+                        onChange(field.name, selectedValues.filter((v) => v !== option.value));
+                      }
+                    }}
+                    className="w-4 h-4 text-[#25DC7F] rounded border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
+                  />
+                  <span className="text-[#1A1A1A]">{option.label}</span>
+                </label>
+              ))}
+            </div>
+          );
 
-      default:
-        return null;
-    }
+        case 'checkbox':
+          return (
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                id={field.name}
+                name={field.name}
+                checked={(value as boolean) || false}
+                onChange={(e) => onChange(field.name, e.target.checked)}
+                className="w-5 h-5 mt-0.5 text-[#25DC7F] rounded border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
+              />
+              <span className="text-[#1A1A1A]">{override?.label_override || field.label}</span>
+            </label>
+          );
+
+        case 'radio':
+          return (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {field.options?.map((option) => (
+                <label
+                  key={option.value}
+                  className={`flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer transition-all duration-150 text-sm ${
+                    value === option.value
+                      ? 'border-[#25DC7F] bg-[#25DC7F]/5'
+                      : 'border-[#E6E8EA] hover:border-[#A0A0A0]'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name={field.name}
+                    value={option.value}
+                    checked={value === option.value}
+                    onChange={(e) => onChange(field.name, e.target.value)}
+                    className="w-4 h-4 text-[#25DC7F] border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
+                  />
+                  <span className="text-[#1A1A1A]">{option.label}</span>
+                </label>
+              ))}
+            </div>
+          );
+
+        default:
+          return null;
+      }
+    })();
+
+    return fieldElement;
   };
 
   // Filter out hidden fields (based on dependsOn conditions)
@@ -240,18 +303,18 @@ export default function StepRenderer({ step, values, errors, onChange }: StepRen
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-x-6 md:gap-y-4">
         {visibleFields.map((field) => {
           const spanFull = shouldSpanFullWidth(field);
+          const override = getOverride(field.name);
 
           // For checkboxes, we handle the label differently
           if (field.type === 'checkbox') {
             return (
               <div key={field.name} className={spanFull ? 'md:col-span-2' : ''}>
-                {/* Video Tutorial - shown above the field */}
                 {field.videoUrl && field.videoTitle && (
                   <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
                 )}
                 {renderField(field)}
-                {field.helpText && (
-                  <p className="mt-1 text-xs text-[#6B6B6B] ml-8">{field.helpText}</p>
+                {(override?.help_override || field.helpText) && (
+                  <p className="mt-1 text-xs text-[#6B6B6B] ml-8">{override?.help_override || field.helpText}</p>
                 )}
                 {errors[field.name] && (
                   <p className="mt-1 text-xs text-[#E5484D] ml-8">{errors[field.name]}</p>
@@ -260,9 +323,28 @@ export default function StepRenderer({ step, values, errors, onChange }: StepRen
             );
           }
 
+          // Confirmation pattern — wrap field with Yes/No confirmation
+          if (override?.ui_pattern === 'confirmation') {
+            return (
+              <div key={field.name} className="md:col-span-2">
+                {field.videoUrl && field.videoTitle && (
+                  <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
+                )}
+                <ConfirmationField
+                  field={field}
+                  override={override}
+                  value={values[field.name]}
+                  error={errors[field.name]}
+                  onChange={onChange}
+                  onDismiss={() => setDismissedOverrides(prev => new Set(prev).add(field.name))}
+                  renderField={() => renderField(field)}
+                />
+              </div>
+            );
+          }
+
           return (
             <div key={field.name} className={spanFull ? 'md:col-span-2' : ''}>
-              {/* Video Tutorial - shown above the field */}
               {field.videoUrl && field.videoTitle && (
                 <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
               )}
@@ -270,12 +352,12 @@ export default function StepRenderer({ step, values, errors, onChange }: StepRen
                 htmlFor={field.name}
                 className="block text-sm font-semibold text-[#0B0B0B] mb-1.5"
               >
-                {field.label}
+                {override?.label_override || field.label}
                 {field.required && <span className="text-[#E5484D] ml-1">*</span>}
               </label>
               {renderField(field)}
-              {field.helpText && (
-                <p className="mt-1 text-xs text-[#6B6B6B]">{field.helpText}</p>
+              {(override?.help_override || field.helpText) && (
+                <p className="mt-1 text-xs text-[#6B6B6B]">{override?.help_override || field.helpText}</p>
               )}
               {errors[field.name] && (
                 <p className="mt-1 text-xs text-[#E5484D]">{errors[field.name]}</p>
@@ -284,6 +366,98 @@ export default function StepRenderer({ step, values, errors, onChange }: StepRen
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// =============================================
+// Confirmation Field Component
+// =============================================
+
+function ConfirmationField({
+  field,
+  override,
+  value,
+  error,
+  onChange,
+  onDismiss,
+  renderField,
+}: {
+  field: OnboardingField;
+  override: QuestionOverride;
+  value: unknown;
+  error?: string;
+  onChange: (name: string, value: unknown) => void;
+  onDismiss: () => void;
+  renderField: () => React.ReactNode;
+}) {
+  const [confirmed, setConfirmed] = useState<boolean | null>(null);
+
+  // If value exists and confirmation hasn't been answered yet, default to showing confirmation
+  const hasValue = value !== undefined && value !== null && value !== '' &&
+    !(Array.isArray(value) && value.length === 0);
+
+  return (
+    <div className="bg-[#25DC7F]/5 border border-[#25DC7F]/20 rounded-lg p-4">
+      <label className="block text-sm font-semibold text-[#0B0B0B] mb-3">
+        {override.label_override}
+        {field.required && <span className="text-[#E5484D] ml-1">*</span>}
+      </label>
+
+      {confirmed === null && hasValue && (
+        <div className="flex gap-2 mb-3">
+          <button
+            type="button"
+            onClick={() => setConfirmed(true)}
+            className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors"
+          >
+            Yes, that&apos;s correct
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setConfirmed(false);
+              onDismiss();
+            }}
+            className="px-4 py-2 border border-[#E6E8EA] text-[#0B0B0B] rounded-lg text-sm font-semibold hover:bg-[#F4F5F6] transition-colors"
+          >
+            No, let me edit
+          </button>
+        </div>
+      )}
+
+      {/* Show the field if:
+          - User said "No" (confirmed === false)
+          - No value exists yet
+          - or always show it below the confirmation for transparency */}
+      {(confirmed === false || !hasValue || confirmed === null) && (
+        <div>
+          {renderField()}
+          {override.help_override && (
+            <p className="mt-1 text-xs text-[#6B6B6B]">{override.help_override}</p>
+          )}
+        </div>
+      )}
+
+      {confirmed === true && hasValue && (
+        <div className="flex items-center gap-2 text-sm text-[#25DC7F]">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+          <span>Confirmed</span>
+          <button
+            type="button"
+            onClick={() => setConfirmed(null)}
+            className="text-xs text-[#6B6B6B] hover:text-[#0B0B0B] ml-2"
+          >
+            Change
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <p className="mt-1 text-xs text-[#E5484D]">{error}</p>
+      )}
     </div>
   );
 }
