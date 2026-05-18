@@ -143,13 +143,16 @@ const OVERRIDE_RULES: OverrideRule[] = [
     },
   },
 
-  // Phone confirmation
+  // Phone confirmation — embed the detected number in the prompt so the
+  // user actually knows what we're asking about (the underlying field is
+  // hidden until they click "No, let me edit" per Stage 4 S6.2 changes).
   {
     field_key: 'business_phone',
     generate: (insights) => {
-      if (!insights.contact_public?.phone) return null;
+      const phone = insights.contact_public?.phone;
+      if (!phone) return null;
       return {
-        label_override: `We found this phone number on your website. Is it your main business line?`,
+        label_override: `We found "${phone}" on your website. Is that your main business line?`,
         help_override: 'Update if this is not the best number for us to use.',
         ui_pattern: 'confirmation',
         original_label: 'Main Business Phone',

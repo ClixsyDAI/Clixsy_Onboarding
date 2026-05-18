@@ -2,6 +2,7 @@ import type { SiteIntelligenceProvider, ProviderResult } from './types';
 import type { Evidence } from '../schemas';
 import { getFirecrawlKey } from '../config';
 import { extractColorsFromHtml, extractFontsFromHtml } from '../branding-extractor';
+import { extractPhoneFromHtml } from '../phone-extractor';
 
 const FIRECRAWL_BASE = 'https://api.firecrawl.dev/v1';
 
@@ -451,6 +452,28 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
     for (const f of fonts) fontSources.push({ family: f, source: 'llm', confidence: 0.8 });
 
     if (homepageHtml) {
+      // S3.1: deterministic precedence-aware phone extraction. Header-first,
+      // then hero/above-fold, then tel: links, then footer. Beats the prior
+      // first-match-wins behaviour that surfaced back-office / fax numbers
+      // on most law-firm sites because the footer was first to match in
+      // markdown order on some renders. Deterministic top result OVERRIDES
+      // the LLM phone if it disagrees — the precedence rules give us a
+      // stronger signal than the LLM's prose-level guess.
+      try {
+        const detPhones = extractPhoneFromHtml(homepageHtml);
+        if (detPhones.length > 0) {
+          const top = detPhones[0];
+          if (!phone || phone.replace(/\D/g, '').slice(-10) !== top.digits) {
+            console.log(
+              `[Firecrawl] Phone override: deterministic ${top.phone} (${top.source} @ ${top.confidence}) replaces LLM ${phone || '(none)'}`
+            );
+            phone = top.phone;
+          }
+        }
+      } catch (err) {
+        console.warn('[Firecrawl] Deterministic phone extraction failed:', err);
+      }
+
       try {
         const detColors = extractColorsFromHtml(homepageHtml);
         const detFonts = extractFontsFromHtml(homepageHtml);
