@@ -241,7 +241,7 @@ export async function runSiteAnalysis(recordId: string): Promise<void> {
 
     // Build prefill map and question overrides
     const prefillMap = buildPrefillMap(merged.insights, merged.techStack, merged.branding);
-    const questionOverrides = buildQuestionOverrides(merged.insights, merged.techStack.cms);
+    const questionOverrides = buildQuestionOverrides(merged.insights, merged.techStack.cms, merged.techStack);
 
     // Save results
     await supabase

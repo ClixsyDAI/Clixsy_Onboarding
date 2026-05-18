@@ -540,6 +540,9 @@ export const onboardingStepsV2: OnboardingStep[] = [
         type: 'url',
         placeholder: 'https://business.google.com/...',
         dependsOn: { field: 'has_gbp', value: 'yes' },
+        // S7.3: inline button so the client can sanity-check the detected
+        // listing in a new tab without copy-pasting.
+        linkAction: { label: 'View GBP profile' },
       },
     ],
   },

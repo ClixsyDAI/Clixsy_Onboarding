@@ -1,5 +1,6 @@
 import type { SiteInsights, TechStack, Branding, PrefillMap, PrefillEntry, Evidence } from './schemas';
 import { getPolicy } from './schemas';
+import { detectCallTrackingProvider } from './question-overrides';
 
 // =============================================
 // Field Mapping: insight slots -> onboarding field keys
@@ -156,6 +157,36 @@ const MAPPING_RULES: MappingRule[] = [
         value: branding.fonts.join(', '),
         confidence: 0.80,
         evidence: [{ source_url: '', excerpt: 'Fonts detected from website CSS' }],
+      };
+    },
+  },
+
+  // S6.2: call tracking detection. When a recognised provider is found in
+  // techStack, autofill BOTH the yes/no gate AND the dropdown value so the
+  // ConfirmationField on call_tracking_provider has data to confirm against.
+  {
+    field_key: 'uses_call_tracking',
+    step_key: 'technical_setup',
+    extract: (_insights, techStack) => {
+      const detected = detectCallTrackingProvider(techStack);
+      if (!detected) return null;
+      return {
+        value: 'yes',
+        confidence: 0.90,
+        evidence: [{ source_url: '', excerpt: `Detected ${detected.displayName} in site tech stack` }],
+      };
+    },
+  },
+  {
+    field_key: 'call_tracking_provider',
+    step_key: 'technical_setup',
+    extract: (_insights, techStack) => {
+      const detected = detectCallTrackingProvider(techStack);
+      if (!detected) return null;
+      return {
+        value: detected.key,
+        confidence: 0.90,
+        evidence: [{ source_url: '', excerpt: `Detected ${detected.displayName} in site tech stack` }],
       };
     },
   },

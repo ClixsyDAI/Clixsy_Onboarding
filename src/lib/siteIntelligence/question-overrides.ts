@@ -1,5 +1,43 @@
-import type { SiteInsights, QuestionOverrides, QuestionOverride } from './schemas';
+import type { SiteInsights, QuestionOverrides, QuestionOverride, TechStack } from './schemas';
 import { CONFIDENCE_THRESHOLDS } from './schemas';
+
+// Known call-tracking provider names that the scrapers (Wappalyzer /
+// BuiltWith) surface in tech_stack.other. Used by S6.2 to drive both the
+// confirmation override and the call_tracking_provider prefill.
+// Keys MUST match the option values in steps-v2.ts.
+const CALL_TRACKING_NAMES: Record<string, string> = {
+  callrail: 'CallRail',
+  ctm: 'CallTrackingMetrics',
+  marchex: 'Marchex',
+  whatconverts: 'WhatConverts',
+  invoca: 'Invoca',
+};
+
+/**
+ * Inspect a TechStack for any known call-tracking provider name.
+ * Returns the canonical option key (e.g. 'callrail') and human display name,
+ * or `null` if nothing detected. Also exported so field-mapping.ts can
+ * derive the prefill_map entries from the same matching logic.
+ */
+export function detectCallTrackingProvider(
+  techStack: TechStack | null | undefined
+): { key: string; displayName: string } | null {
+  if (!techStack) return null;
+  const haystack = [
+    ...(techStack.other || []),
+    ...(techStack.analytics || []),
+    ...(techStack.frameworks || []),
+  ].map((s) => s.toLowerCase());
+
+  for (const [key, displayName] of Object.entries(CALL_TRACKING_NAMES)) {
+    if (haystack.some((s) => s.includes(key) || s.includes(displayName.toLowerCase()))) {
+      return { key, displayName };
+    }
+  }
+  // Anything in the option list other than the known ones — fall back to
+  // 'other'. We surface the literal scraper name for the confirmation prose.
+  return null;
+}
 
 // =============================================
 // Question personalization templates
@@ -127,6 +165,7 @@ const OVERRIDE_RULES: OverrideRule[] = [
 export function buildQuestionOverrides(
   insights: SiteInsights,
   cmsName?: string,
+  techStack?: TechStack | null,
 ): QuestionOverrides {
   const overrides: QuestionOverrides = {};
 
@@ -144,6 +183,21 @@ export function buildQuestionOverrides(
       help_override: 'Select the correct platform if this doesn\'t look right.',
       ui_pattern: 'confirmation',
       original_label: 'What platform is your website built on?',
+    };
+  }
+
+  // S6.2: call-tracking provider confirmation. When the scrape detects a
+  // known provider, present the dropdown as a Yes/No confirmation rather
+  // than asking the client to pick from a list they don't recognise. If
+  // they click "No, let me edit", StepRenderer's dismissedOverrides set
+  // takes over and the original dropdown reappears for manual selection.
+  const callTracking = detectCallTrackingProvider(techStack || null);
+  if (callTracking) {
+    overrides['call_tracking_provider'] = {
+      label_override: `We detected ${callTracking.displayName} on your website. Is that your call tracking provider?`,
+      help_override: 'Click "No, let me edit" if your firm actually uses a different provider.',
+      ui_pattern: 'confirmation',
+      original_label: 'Which call tracking provider?',
     };
   }
 

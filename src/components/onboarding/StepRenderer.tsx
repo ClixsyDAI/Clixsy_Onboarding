@@ -77,6 +77,51 @@ function VideoTutorial({ url, title }: { url: string; title: string }) {
   );
 }
 
+// External-link action button — small "open in new tab" affordance shown
+// alongside URL inputs that opt in via `linkAction`. Uses
+// `noopener noreferrer` to prevent reverse-tab-nabbing, and is disabled
+// until the field has a parseable URL.
+function ExternalLinkButton({ label, href }: { label: string; href: string }) {
+  const canOpen = (() => {
+    if (!href) return false;
+    try {
+      const u = new URL(href.includes('://') ? href : `https://${href}`);
+      return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  })();
+  const resolved = href.includes('://') ? href : `https://${href}`;
+  if (!canOpen) {
+    return (
+      <button
+        type="button"
+        disabled
+        className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg border border-[#E6E8EA] text-[#A0A0A0] cursor-not-allowed whitespace-nowrap"
+        title="Enter a valid URL to enable this button"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+        </svg>
+        {label}
+      </button>
+    );
+  }
+  return (
+    <a
+      href={resolved}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg border border-[#25DC7F] text-[#25DC7F] hover:bg-[#25DC7F]/10 transition-colors whitespace-nowrap"
+    >
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+      </svg>
+      {label}
+    </a>
+  );
+}
+
 // Suggestion Chip — shown for suggest_only policy
 function SuggestionChip({ value, onAccept }: { value: string; onAccept: () => void }) {
   return (
@@ -194,15 +239,26 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
         case 'tel':
           return (
             <>
-              <input
-                type={field.type}
-                id={field.name}
-                name={field.name}
-                value={(value as string) || ''}
-                onChange={(e) => onChange(field.name, e.target.value)}
-                placeholder={field.placeholder}
-                className={baseInputClasses}
-              />
+              <div className={field.linkAction && field.type === 'url' ? 'flex gap-2' : ''}>
+                <input
+                  type={field.type}
+                  id={field.name}
+                  name={field.name}
+                  value={(value as string) || ''}
+                  onChange={(e) => onChange(field.name, e.target.value)}
+                  placeholder={field.placeholder}
+                  className={baseInputClasses}
+                />
+                {field.linkAction && field.type === 'url' && (
+                  // S7.3: inline "open in new tab" button. Disabled until the
+                  // value parses as a usable URL so we never spawn `about:blank`
+                  // or send the user to a malformed href.
+                  <ExternalLinkButton
+                    label={field.linkAction.label}
+                    href={(value as string) || ''}
+                  />
+                )}
+              </div>
               {showSuggestion && typeof suggestion.suggested_value === 'string' && (
                 <SuggestionChip
                   value={suggestion.suggested_value}
@@ -511,11 +567,14 @@ function ConfirmationField({
         </div>
       )}
 
-      {/* Show the field if:
-          - User said "No" (confirmed === false)
-          - No value exists yet
-          - or always show it below the confirmation for transparency */}
-      {(confirmed === false || !hasValue || confirmed === null) && (
+      {/* S6.2: show the underlying field only when:
+          - User clicked "No, let me edit" (confirmed === false), or
+          - We never had a prefilled value to confirm against (!hasValue).
+        While the user hasn't decided yet (confirmed === null && hasValue)
+        the Yes/No buttons ARE the question — rendering the input alongside
+        is redundant (and was the source of the call-tracking dropdown
+        appearing twice). The detected value is already in label_override. */}
+      {(confirmed === false || !hasValue) && (
         <div>
           {renderField()}
           {override.help_override && (

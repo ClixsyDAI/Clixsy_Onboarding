@@ -41,6 +41,13 @@ export interface OnboardingField {
    * (e.g. the welcome-gift block at the bottom of "Other Contacts").
    */
   sectionHeader?: { title: string; subtitle?: string };
+  /**
+   * Render a small "open in new tab" action button next to the input.
+   * Only honoured on `url`-type fields. Disabled when the current value
+   * doesn't parse as a URL. Used by S7.3 to let admins confirm a detected
+   * Google Business Profile URL without copy-pasting.
+   */
+  linkAction?: { label: string };
   videoUrl?: string;
   videoTitle?: string;
 }
