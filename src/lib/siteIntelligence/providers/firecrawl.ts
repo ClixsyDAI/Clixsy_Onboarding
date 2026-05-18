@@ -13,6 +13,27 @@ const PRIORITY_PATTERNS = [
   'team', 'attorneys', 'our-team', 'staff',
 ];
 
+/**
+ * Strip markdown and raw-URL noise from a scraped paragraph before it
+ * lands in business_summary / the WHAT WE FOUND panel. Handles:
+ *   - `![alt](url)` markdown images           → removed entirely
+ *   - `[text](url)` markdown links            → kept text, dropped url
+ *   - bare http(s) URLs                       → removed
+ *   - CDN tracking-pixel domains in plain text → removed
+ *   - collapsed whitespace
+ * S1.1: the WHAT WE FOUND panel was rendering `![](https://static.wixstatic
+ * .com/…)` as raw text. Sanitise on the way in (and once more in the
+ * renderer as a backstop).
+ */
+export function cleanProseForDisplay(input: string): string {
+  return input
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')              // ![](url)
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')           // [text](url) -> text
+    .replace(/https?:\/\/\S+/g, '')                    // bare URLs
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function extractDomain(url: string): string {
   try { return new URL(url).hostname; } catch { return url.replace(/^https?:\/\//, '').split('/')[0]; }
 }
@@ -144,16 +165,28 @@ function parseMarkdownForInsights(
     }
   }
 
-  // Try to build a summary from the first meaningful paragraph
-  const paragraphs = allContent.split('\n\n').filter(p =>
+  // Try to build a summary from the first meaningful paragraph.
+  // S1.1: previous version stripped `[text](url)` link syntax but left raw
+  // `![](image-url)` image markdown intact, which then leaked through to
+  // the "WHAT WE FOUND" panel as e.g. `![](https://static.wixstatic.com/…)`.
+  // Reject paragraphs that are essentially URL/image salads, and strip any
+  // remaining markdown image / raw URL noise from what's left.
+  const paragraphs = allContent.split('\n\n').filter((p) =>
     p.length > 50 && p.length < 500 &&
     !p.startsWith('#') && !p.startsWith('[') && !p.startsWith('|') &&
-    !p.match(/^\s*[-*]/)
+    !p.startsWith('!') &&                    // raw markdown image
+    !p.match(/^\s*[-*]/) &&
+    !/^(?:!?\[[^\]]*\]\([^)]+\)\s*)+$/.test(p.trim()) // image+link salad
   );
   if (paragraphs.length > 0) {
-    businessSummary = paragraphs[0].replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').trim();
+    businessSummary = cleanProseForDisplay(paragraphs[0]);
     if (businessSummary.length > 300) {
       businessSummary = businessSummary.slice(0, 297) + '...';
+    }
+    // If after cleaning we're left with too little real prose, drop the
+    // summary entirely rather than ship a stub.
+    if (businessSummary.replace(/\s/g, '').length < 30) {
+      businessSummary = undefined;
     }
   }
 
@@ -296,7 +329,12 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
       if (extractResult.success && extractResult.data) {
         const d = extractResult.data;
         if (d.business_name && typeof d.business_name === 'string') brandName = d.business_name;
-        if (d.business_summary && typeof d.business_summary === 'string') businessSummary = d.business_summary;
+        if (d.business_summary && typeof d.business_summary === 'string') {
+          // LLM occasionally echoes markdown image/link syntax back into
+          // the summary field. Same sanitisation as the fallback parser.
+          const cleaned = cleanProseForDisplay(d.business_summary);
+          if (cleaned.length >= 30) businessSummary = cleaned;
+        }
         if (d.cms_platform && typeof d.cms_platform === 'string') cmsDetected = d.cms_platform;
 
         if (Array.isArray(d.primary_services)) {

@@ -2,6 +2,63 @@
 
 import { useState } from 'react';
 
+// S1.1: defensive cleanup of any markdown image / link / raw-URL noise in
+// the scraped business_summary BEFORE we render it. The pipeline now
+// sanitises on the way in too, but historical scrapes pre-Stage-6 may
+// still hold raw `![](https://static.wixstatic.com/…)` strings, and the
+// LLM has been observed echoing markdown back even after prompt
+// engineering. Keep this as a last-line backstop. Returns null if
+// nothing meaningful is left after cleaning.
+function cleanBusinessSummary(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const cleaned = raw
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // If cleaning leaves us with too little real prose, treat it as no summary.
+  return cleaned.replace(/\s/g, '').length >= 30 ? cleaned : null;
+}
+
+// Compose a fallback prose summary from the structured insights when
+// business_summary itself is missing or got cleaned away. We prefer the
+// pipeline's own summary, but a tidy "Personal Injury & Car Accidents
+// firm serving Houston, TX" is much better than an empty panel.
+function buildFallbackSummary(insights: WebsiteSnapshotProps['insights']): string | null {
+  if (!insights) return null;
+  const brand = insights.brand_name?.trim();
+  const serviceNames = (insights.primary_services ?? [])
+    .slice(0, 3)
+    .map((s) => s.name.trim())
+    .filter(Boolean);
+  const locationNames = (insights.primary_locations ?? [])
+    .slice(0, 2)
+    .map((l) => l.name.trim())
+    .filter(Boolean);
+  if (!brand && serviceNames.length === 0 && locationNames.length === 0) return null;
+
+  const parts: string[] = [];
+  if (brand && serviceNames.length > 0) {
+    parts.push(`${brand} focuses on ${joinWithAnd(serviceNames)}`);
+  } else if (brand) {
+    parts.push(brand);
+  } else if (serviceNames.length > 0) {
+    parts.push(`Focused on ${joinWithAnd(serviceNames)}`);
+  }
+  if (locationNames.length > 0) {
+    parts.push(`serving ${joinWithAnd(locationNames)}`);
+  }
+  return parts.join(' ') + '.';
+}
+
+function joinWithAnd(items: string[]): string {
+  if (items.length === 0) return '';
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
 interface WebsiteSnapshotProps {
   branding?: {
     screenshot_url?: string;
@@ -29,7 +86,14 @@ export default function WebsiteSnapshot({ branding, insights, techStack, onDismi
 
   if (dismissed) return null;
 
-  const hasData = insights?.business_summary || insights?.primary_services?.length || insights?.primary_locations?.length;
+  // S1.1: sanitise summary BEFORE deciding whether the panel has data.
+  // A raw markdown-image string should NOT count as "we have a summary".
+  const cleanedSummary = cleanBusinessSummary(insights?.business_summary);
+  const fallbackSummary = cleanedSummary ? null : buildFallbackSummary(insights);
+  const summaryToShow = cleanedSummary ?? fallbackSummary;
+
+  const hasData =
+    summaryToShow || insights?.primary_services?.length || insights?.primary_locations?.length;
   if (!hasData && !branding?.screenshot_url) return null;
 
   return (
@@ -71,11 +135,11 @@ export default function WebsiteSnapshot({ branding, insights, techStack, onDismi
           )}
 
           <div className="space-y-4">
-            {/* Summary */}
-            {insights?.business_summary && (
+            {/* Summary — sanitised pipeline string or built from insights */}
+            {summaryToShow && (
               <div>
                 <h3 className="text-xs font-semibold text-[#6B6B6B] uppercase mb-1">What we found</h3>
-                <p className="text-sm text-[#0B0B0B] leading-relaxed">{insights.business_summary}</p>
+                <p className="text-sm text-[#0B0B0B] leading-relaxed">{summaryToShow}</p>
               </div>
             )}
 
