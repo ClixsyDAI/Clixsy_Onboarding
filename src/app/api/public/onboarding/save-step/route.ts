@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionByToken, upsertAnswer, updateSessionStep, createAuditEvent } from '@/lib/supabase/server';
 import { validateStepDataForVersion } from '@/lib/onboarding/flow-version';
+import { checkSessionGuard } from '@/lib/onboarding/session-guard';
 
 export async function POST(request: NextRequest) {
   try {
@@ -23,6 +24,20 @@ export async function POST(request: NextRequest) {
         { error: 'Session not found' },
         { status: 404 }
       );
+    }
+
+    // Stage 7: PIN gate. Even though the page-level guard already keeps
+    // unauthorised users off the form, gate the write endpoint too — an
+    // attacker with just the token could otherwise POST answers directly.
+    const guard = await checkSessionGuard(session);
+    if (guard.kind === 'locked') {
+      return NextResponse.json(
+        { error: 'Session is locked. Contact your Clixsy account manager.' },
+        { status: guard.lock === 'permanent' ? 423 : 429 }
+      );
+    }
+    if (guard.kind === 'needs_pin') {
+      return NextResponse.json({ error: 'PIN verification required' }, { status: 401 });
     }
 
     // Check if session is already submitted

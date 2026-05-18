@@ -33,6 +33,13 @@ export interface OnboardingSession {
   logo_path: string | null;
   logo_url: string | null;
   created_at: string;
+  // Stage 1 (migration 005) — PIN gate state.
+  pin_hash: string | null;
+  pin_attempts: number;
+  pin_lockout_until: string | null;
+  pin_locked_at: string | null;
+  // Stage 7 (migration 006) — first-login welcome modal flag.
+  welcome_wizard_seen: boolean;
 }
 
 export interface OnboardingAnswer {

@@ -6,6 +6,7 @@ import StepRenderer from './StepRenderer';
 import StepTransition from './StepTransition';
 import AccessChecklistStep from './AccessChecklistStep';
 import WebsiteSnapshot from './WebsiteSnapshot';
+import WelcomeModal from './WelcomeModal';
 import { getTransitionMessage, getWelcomeMessage } from '@/lib/onboarding/transition-messages';
 import type { TransitionMessage } from '@/lib/onboarding/transition-messages';
 
@@ -51,6 +52,14 @@ interface WizardProps {
   flowVersion?: 'v1' | 'v2';
   clientName?: string;
   contactName?: string;
+  /**
+   * Stage 7 / P3+P4: when true, the first-login welcome modal has
+   * already been dismissed for this session. Gates BOTH the modal
+   * itself (only fires once per session, server-tracked) AND the
+   * P4 returning-user greeting (which uses the company name and
+   * only surfaces from the second login onward).
+   */
+  welcomeWizardSeen?: boolean;
   siteIntelligence?: SiteIntelligenceData | null;
 }
 
@@ -62,6 +71,7 @@ export default function Wizard({
   flowVersion = 'v1',
   clientName = '',
   contactName = '',
+  welcomeWizardSeen = true,
   siteIntelligence = null,
 }: WizardProps) {
   const steps = useMemo(() => getStepsForVersion(flowVersion), [flowVersion]);
@@ -160,21 +170,46 @@ export default function Wizard({
     });
   }, []); // Only run once on mount
 
-  // Show welcome interstitial on first load
+  // P4 (Stage 7): once the P3 modal has been dismissed, every subsequent
+  // visit is a "returning" visit by definition. The previous heuristic
+  // (initialStep > 0 || initialAnswers.length > 0) failed for users who
+  // dismissed the modal but quit before filling anything in. The flag is
+  // the right signal.
   const isReturning = useMemo(() => {
+    if (welcomeWizardSeen) return true;
     return initialStep > 0 || Object.keys(initialAnswers).length > 0;
-  }, [initialStep, initialAnswers]);
+  }, [welcomeWizardSeen, initialStep, initialAnswers]);
+
+  // P3 (Stage 7): first-login welcome wizard modal. Two-step popover
+  // that replaces the green interstitial on the very first PIN-authed
+  // session load. Gated on welcomeWizardSeen (server-tracked) so it
+  // truly only ever fires once per session — surviving cleared cookies.
+  // Local `welcomeModalOpen` lets the user dismiss within this render
+  // before the server flag round-trip completes.
+  const [welcomeModalOpen, setWelcomeModalOpen] = useState(!welcomeWizardSeen && sessionStatus !== 'submitted');
+  const showP3Modal = welcomeModalOpen;
 
   useEffect(() => {
+    // If we're going to show the P3 modal, skip the legacy green
+    // interstitial entirely (it would just play behind the modal).
+    if (showP3Modal) {
+      setContentVisible(true);
+      setShowWelcome(false);
+      return;
+    }
+
     if (!showWelcome || isSubmitted) {
       setContentVisible(true);
       return;
     }
 
-    const welcomeMsg = getWelcomeMessage(
-      contactName ? contactName.split(' ')[0] : '',
-      isReturning,
-    );
+    // P4 (Stage 7): use the CLIENT COMPANY NAME, not the personal
+    // contact's first name. Only fires when welcomeWizardSeen=true
+    // (the P3 modal handled the first login). The fallback to
+    // contact first name preserves a sensible greeting for legacy
+    // sessions where clientName isn't populated.
+    const greetingName = clientName || (contactName ? contactName.split(' ')[0] : '');
+    const welcomeMsg = getWelcomeMessage(greetingName, isReturning);
     setTransitionMessage(welcomeMsg);
     setTransitioning(true);
 
@@ -617,6 +652,17 @@ export default function Wizard({
 
   return (
     <>
+      {/* P3 (Stage 7): first-login welcome modal. Mounted before the
+          step interstitial so it sits on top of any in-flight transition
+          and the user always sees the welcome FIRST on a fresh session. */}
+      {showP3Modal && (
+        <WelcomeModal
+          companyName={clientName}
+          token={token}
+          onDismiss={() => setWelcomeModalOpen(false)}
+        />
+      )}
+
       {/* Step Transition Interstitial */}
       <StepTransition
         active={transitioning}
