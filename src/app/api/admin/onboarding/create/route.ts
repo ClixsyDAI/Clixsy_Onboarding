@@ -2,25 +2,57 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceRoleClient } from '@/lib/supabase/server';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
+import { generatePin, hashPin } from '@/lib/onboarding/pin';
+
+type Vertical = 'law_firm' | 'home_services';
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { clientName, contactName, contactEmail, websiteUrl, siteIntelligenceId } = body;
+    const {
+      clientName,
+      contactName,
+      contactEmail,
+      websiteUrl,
+      siteIntelligenceId,
+      accountManager,
+      vertical,
+    }: {
+      clientName?: string;
+      contactName?: string;
+      contactEmail?: string;
+      websiteUrl?: string;
+      siteIntelligenceId?: string;
+      accountManager?: string;
+      vertical?: string;
+    } = body;
 
-    if (!clientName) {
+    // --- Validation -------------------------------------------------
+    if (!clientName || !clientName.trim()) {
       return NextResponse.json(
         { error: 'Client name is required' },
         { status: 400 }
       );
     }
+    if (!accountManager || !accountManager.trim()) {
+      return NextResponse.json(
+        { error: 'Account manager is required' },
+        { status: 400 }
+      );
+    }
+    if (vertical !== 'law_firm' && vertical !== 'home_services') {
+      return NextResponse.json(
+        { error: 'Vertical must be one of: law_firm, home_services' },
+        { status: 400 }
+      );
+    }
+    const verticalValue: Vertical = vertical;
 
     const supabase = createServiceRoleClient();
 
-    // Use a fixed admin agency ID - create if doesn't exist
+    // --- Ensure admin agency exists --------------------------------
     const ADMIN_AGENCY_ID = '00000000-0000-0000-0000-000000000001';
 
-    // Check if admin agency exists, create if not
     const { data: existingAgency } = await supabase
       .from('agency_accounts')
       .select('id')
@@ -44,22 +76,28 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Generate IDs and token
+    // --- Generate IDs, session token, and 6-digit PIN --------------
     const agencyId = ADMIN_AGENCY_ID;
     const clientId = uuidv4();
     const sessionId = uuidv4();
     const token = crypto.randomBytes(32).toString('hex');
 
-    // Create client
+    // PIN is shown to the admin in plaintext exactly ONCE in the
+    // success response. The hash is stored on the session row.
+    // Regenerating later (admin session-detail) replaces both.
+    const pin = generatePin();
+    const pinHash = await hashPin(pin);
+
+    // --- Create client --------------------------------------------
     const { error: clientError } = await supabase
       .from('clients')
       .insert({
         id: clientId,
         agency_id: agencyId,
-        client_name: clientName,
-        primary_contact_name: contactName || null,
-        primary_contact_email: contactEmail || null,
-        website_url: websiteUrl || null,
+        client_name: clientName.trim(),
+        primary_contact_name: contactName?.trim() || null,
+        primary_contact_email: contactEmail?.trim() || null,
+        website_url: websiteUrl?.trim() || null,
       });
 
     if (clientError) {
@@ -70,7 +108,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create onboarding session
+    // --- Create onboarding session --------------------------------
     const sessionData: Record<string, unknown> = {
       id: sessionId,
       agency_id: agencyId,
@@ -79,9 +117,12 @@ export async function POST(request: NextRequest) {
       status: 'draft',
       current_step: 0,
       flow_version: 'v2',
+      account_manager: accountManager.trim(),
+      vertical: verticalValue,
+      pin_hash: pinHash,
+      // pin_attempts defaults to 0 in DB; pin_lockout_until / pin_locked_at default null.
     };
 
-    // Link site intelligence if provided
     if (siteIntelligenceId) {
       sessionData.site_intelligence_id = siteIntelligenceId;
     }
@@ -98,10 +139,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Plaintext PIN is returned in the response — this is the ONLY
+    // time it leaves the server. The UI displays it once with a
+    // copy-to-clipboard button; the admin must capture it now.
     return NextResponse.json({
       success: true,
       token,
       sessionId,
+      pin,
     });
   } catch (error) {
     console.error('Error creating session:', error);

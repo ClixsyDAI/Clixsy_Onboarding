@@ -23,6 +23,14 @@ interface SessionDetail {
   created_at: string;
   logo_url: string | null;
   clients: ClientInfo | null;
+  // P1 fields (read-only on this screen)
+  account_manager: string | null;
+  vertical: 'law_firm' | 'home_services' | null;
+  // P2 PIN state (pin_hash itself is never returned to the client)
+  pin_set: boolean;
+  pin_attempts: number;
+  pin_lockout_until: string | null;
+  pin_locked_at: string | null;
 }
 
 interface Answer {
@@ -64,6 +72,103 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   const [copiedJSON, setCopiedJSON] = useState(false);
   const [copiedMissingAccess, setCopiedMissingAccess] = useState(false);
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  // PIN management state — set after a successful regenerate so the
+  // new plaintext PIN can be displayed once. Cleared when the admin
+  // dismisses the panel.
+  const [pinActionLoading, setPinActionLoading] = useState<
+    'regenerate' | 'unlock' | null
+  >(null);
+  const [pinActionError, setPinActionError] = useState<string | null>(null);
+  const [revealedPin, setRevealedPin] = useState<string | null>(null);
+  const [copiedPin, setCopiedPin] = useState(false);
+
+  const handleRegeneratePin = async () => {
+    if (
+      !confirm(
+        'Rotate this session’s PIN? The old PIN will stop working immediately. The new PIN will be shown once — you’ll need to copy it and send it to the client.',
+      )
+    ) {
+      return;
+    }
+    setPinActionLoading('regenerate');
+    setPinActionError(null);
+    setRevealedPin(null);
+    try {
+      const res = await fetch(
+        `/api/admin/onboarding/sessions/${id}/regenerate-pin`,
+        { method: 'POST' },
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to regenerate PIN');
+      }
+      setRevealedPin(data.pin);
+      // Optimistic local update — lockout state cleared, hash now set.
+      if (session) {
+        setSession({
+          ...session,
+          pin_set: true,
+          pin_attempts: 0,
+          pin_lockout_until: null,
+          pin_locked_at: null,
+        });
+      }
+    } catch (err) {
+      setPinActionError(
+        err instanceof Error ? err.message : 'Failed to regenerate PIN',
+      );
+    } finally {
+      setPinActionLoading(null);
+    }
+  };
+
+  const handleUnlockSession = async () => {
+    if (
+      !confirm(
+        'Unlock this session? Clears failed-attempt counters and lockouts. The existing PIN remains valid — the client can try again immediately.',
+      )
+    ) {
+      return;
+    }
+    setPinActionLoading('unlock');
+    setPinActionError(null);
+    try {
+      const res = await fetch(
+        `/api/admin/onboarding/sessions/${id}/unlock`,
+        { method: 'POST' },
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to unlock session');
+      }
+      if (session) {
+        setSession({
+          ...session,
+          pin_attempts: 0,
+          pin_lockout_until: null,
+          pin_locked_at: null,
+        });
+      }
+    } catch (err) {
+      setPinActionError(
+        err instanceof Error ? err.message : 'Failed to unlock session',
+      );
+    } finally {
+      setPinActionLoading(null);
+    }
+  };
+
+  const handleCopyRevealedPin = async () => {
+    if (!revealedPin) return;
+    try {
+      await navigator.clipboard.writeText(revealedPin);
+      setCopiedPin(true);
+      setTimeout(() => setCopiedPin(false), 1500);
+    } catch {
+      // Silent — value is also selectable.
+    }
+  };
 
   useEffect(() => {
     async function fetchSessionDetail() {
@@ -461,6 +566,26 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
             </div>
           </div>
 
+          {/* Account Manager + Vertical (P1, read-only) */}
+          <div className="mt-6 pt-6 border-t border-[#E6E8EA] grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <p className="text-sm text-[#6B6B6B]">Account Manager</p>
+              <p className="font-medium text-[#0B0B0B]">
+                {session.account_manager || '—'}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm text-[#6B6B6B]">Vertical</p>
+              <p className="font-medium text-[#0B0B0B]">
+                {session.vertical === 'law_firm'
+                  ? 'Law Firm'
+                  : session.vertical === 'home_services'
+                  ? 'Home Services'
+                  : '—'}
+              </p>
+            </div>
+          </div>
+
           <div className="mt-6 pt-6 border-t border-[#E6E8EA]">
             <p className="text-sm text-[#6B6B6B] mb-2">Onboarding Link</p>
             <div className="flex items-center gap-2">
@@ -475,6 +600,133 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               >
                 Copy Link
               </button>
+            </div>
+          </div>
+
+          {/* PIN Access (P2) */}
+          <div className="mt-6 pt-6 border-t border-[#E6E8EA]">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-sm font-semibold text-[#0B0B0B]">PIN Access</p>
+              {(() => {
+                if (!session.pin_set) {
+                  return (
+                    <span className="text-xs font-medium text-[#6B6B6B] bg-[#F4F5F6] px-2 py-1 rounded">
+                      Legacy — no PIN required
+                    </span>
+                  );
+                }
+                if (session.pin_locked_at) {
+                  return (
+                    <span className="text-xs font-medium text-[#E5484D] bg-[#E5484D]/10 px-2 py-1 rounded">
+                      Locked — admin action required
+                    </span>
+                  );
+                }
+                if (
+                  session.pin_lockout_until &&
+                  new Date(session.pin_lockout_until).getTime() > Date.now()
+                ) {
+                  return (
+                    <span className="text-xs font-medium text-[#F5A524] bg-[#F5A524]/10 px-2 py-1 rounded">
+                      Rate-limited until {formatDate(session.pin_lockout_until)}
+                    </span>
+                  );
+                }
+                return (
+                  <span className="text-xs font-medium text-[#25DC7F] bg-[#25DC7F]/10 px-2 py-1 rounded">
+                    Active
+                  </span>
+                );
+              })()}
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4 text-sm">
+              <div>
+                <p className="text-xs text-[#6B6B6B]">Failed attempts</p>
+                <p className="font-medium text-[#0B0B0B]">
+                  {session.pin_attempts}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-[#6B6B6B]">Rate-limit until</p>
+                <p className="font-medium text-[#0B0B0B]">
+                  {session.pin_lockout_until
+                    ? formatDate(session.pin_lockout_until)
+                    : '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-[#6B6B6B]">Permanently locked</p>
+                <p className="font-medium text-[#0B0B0B]">
+                  {session.pin_locked_at ? formatDate(session.pin_locked_at) : '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-[#6B6B6B]">PIN configured</p>
+                <p className="font-medium text-[#0B0B0B]">
+                  {session.pin_set ? 'Yes' : 'No'}
+                </p>
+              </div>
+            </div>
+
+            {pinActionError && (
+              <div className="mb-3 p-3 bg-red-50 border border-red-200 rounded text-sm text-[#E5484D]">
+                {pinActionError}
+              </div>
+            )}
+
+            {revealedPin && (
+              <div className="mb-3 p-4 bg-[#FFF8E1] border border-[#F5A524]/30 rounded-lg">
+                <p className="text-sm font-semibold text-[#0B0B0B] mb-2">
+                  New PIN
+                </p>
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    type="text"
+                    value={revealedPin}
+                    readOnly
+                    aria-label="New 6-digit PIN"
+                    className="flex-1 bg-transparent text-[#0B0B0B] text-2xl font-mono tracking-[0.5em] text-center focus:outline-none"
+                  />
+                  <button
+                    onClick={handleCopyRevealedPin}
+                    className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors"
+                  >
+                    {copiedPin ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+                <p className="text-xs text-[#E5484D]">
+                  <strong>This PIN won&apos;t be shown again.</strong> Copy it
+                  now and send it to the client.
+                </p>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={handleRegeneratePin}
+                disabled={pinActionLoading !== null}
+                className="px-4 py-2 bg-[#0F1A14] text-white rounded-lg text-sm font-semibold hover:bg-[#1A2A1F] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {pinActionLoading === 'regenerate'
+                  ? 'Rotating…'
+                  : session.pin_set
+                  ? 'Regenerate PIN'
+                  : 'Set PIN'}
+              </button>
+              {(session.pin_locked_at ||
+                (session.pin_lockout_until &&
+                  new Date(session.pin_lockout_until).getTime() > Date.now())) && (
+                <button
+                  onClick={handleUnlockSession}
+                  disabled={pinActionLoading !== null}
+                  className="px-4 py-2 border border-[#E6E8EA] text-[#0B0B0B] rounded-lg text-sm font-semibold hover:bg-[#F4F5F6] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {pinActionLoading === 'unlock'
+                    ? 'Unlocking…'
+                    : 'Unlock session'}
+                </button>
+              )}
             </div>
           </div>
         </div>
