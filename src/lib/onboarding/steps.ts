@@ -48,6 +48,17 @@ export interface OnboardingField {
    * Google Business Profile URL without copy-pasting.
    */
   linkAction?: { label: string };
+  /**
+   * When the field has been autofilled from the site-intelligence pipeline,
+   * render the value as a visual preview with Confirm / Edit affordances
+   * instead of a plain text input. Drives S5.1 (color swatches) and S5.2
+   * (font samples). Only honoured on `text`-type fields with prefill data.
+   * For `color-swatch` the preview is also gated on `gatePreviewOn` so the
+   * swatch only appears when the user opts into the "pull from website"
+   * path; without a gate it activates whenever there's a prefilled value.
+   */
+  previewMode?: 'color-swatch' | 'font-sample';
+  gatePreviewOn?: { field: string; value: string };
   videoUrl?: string;
   videoTitle?: string;
 }

@@ -77,6 +77,129 @@ function VideoTutorial({ url, title }: { url: string; title: string }) {
   );
 }
 
+// S5.1 / S5.2: visual preview of an autofilled value with Confirm / Edit
+// affordances. Toggles between three internal states:
+//   - 'preview'   (default when scraper value present): swatch/sample +
+//                 Confirm / Edit buttons.
+//   - 'edit'      (after Edit click): falls through to the regular text
+//                 input rendered by the caller so the user can type freely.
+//   - 'confirmed' (after Confirm click): collapsed "Confirmed" badge with
+//                 a Change link to re-enter edit mode.
+// The value itself flows through `onChange` unchanged; nothing about the
+// JSONB shape changes — this is purely how we *render* the existing
+// `primary_color` / `secondary_color` / `typography_fonts` strings.
+type PreviewKind = 'color-swatch' | 'font-sample';
+function ScrapedValuePreview({
+  kind,
+  value,
+  evidence,
+  fallback,
+  onChange,
+  fieldName,
+}: {
+  kind: PreviewKind;
+  value: string;
+  evidence: string | null;
+  fallback: React.ReactNode;
+  onChange: (name: string, v: unknown) => void;
+  fieldName: string;
+}) {
+  const [mode, setMode] = useState<'preview' | 'edit' | 'confirmed'>('preview');
+
+  if (mode === 'edit' || !value) {
+    return (
+      <>
+        {fallback}
+        {value && (
+          <button
+            type="button"
+            onClick={() => setMode('preview')}
+            className="mt-1 text-xs text-[#6B6B6B] hover:text-[#0B0B0B] underline"
+          >
+            Back to preview
+          </button>
+        )}
+      </>
+    );
+  }
+
+  if (mode === 'confirmed') {
+    return (
+      <div className="flex items-center gap-3 px-3 py-2.5 border border-[#25DC7F]/30 bg-[#25DC7F]/5 rounded-lg">
+        {kind === 'color-swatch' && /^#?[0-9a-fA-F]{3,8}$/.test(value.trim()) && (
+          <span
+            className="w-6 h-6 rounded border border-[#E6E8EA] flex-shrink-0"
+            style={{ backgroundColor: value.trim().startsWith('#') ? value.trim() : `#${value.trim()}` }}
+            aria-hidden
+          />
+        )}
+        <span className="flex-1 text-sm text-[#0B0B0B] font-mono">{value}</span>
+        <svg className="w-4 h-4 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+        </svg>
+        <span className="text-xs text-[#25DC7F] font-medium">Confirmed</span>
+        <button
+          type="button"
+          onClick={() => setMode('preview')}
+          className="text-xs text-[#6B6B6B] hover:text-[#0B0B0B] underline"
+        >
+          Change
+        </button>
+      </div>
+    );
+  }
+
+  // mode === 'preview'
+  const isHex = kind === 'color-swatch' && /^#?[0-9a-fA-F]{3,8}$/.test(value.trim());
+  const swatchHex = value.trim().startsWith('#') ? value.trim() : `#${value.trim()}`;
+  const fontNames = kind === 'font-sample' ? value.split(/[,;]/).map((s) => s.trim()).filter(Boolean) : [];
+
+  return (
+    <div className="border border-[#25DC7F]/30 bg-[#25DC7F]/5 rounded-lg p-3">
+      <div className="flex items-center gap-3">
+        {kind === 'color-swatch' && isHex && (
+          <span
+            className="w-10 h-10 rounded border border-[#E6E8EA] flex-shrink-0"
+            style={{ backgroundColor: swatchHex }}
+            aria-label={`Color swatch ${value}`}
+          />
+        )}
+        {kind === 'font-sample' && fontNames.length > 0 && (
+          <div className="flex-1 min-w-0">
+            {fontNames.slice(0, 3).map((fn) => (
+              <div key={fn} className="text-base text-[#0B0B0B] truncate" style={{ fontFamily: `'${fn}', sans-serif` }}>
+                {fn}
+              </div>
+            ))}
+          </div>
+        )}
+        {kind === 'color-swatch' && (
+          <span className="flex-1 text-sm text-[#0B0B0B] font-mono">{value}</span>
+        )}
+      </div>
+      {evidence && (
+        <p className="mt-2 text-xs text-[#6B6B6B] italic">{evidence}</p>
+      )}
+      <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          onClick={() => setMode('confirmed')}
+          className="px-3 py-1.5 bg-[#25DC7F] text-white rounded-md text-xs font-semibold hover:bg-[#1DB96A] transition-colors"
+        >
+          Confirm
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode('edit')}
+          className="px-3 py-1.5 border border-[#E6E8EA] text-[#0B0B0B] rounded-md text-xs font-semibold hover:bg-[#F4F5F6] transition-colors"
+        >
+          Edit
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // External-link action button — small "open in new tab" affordance shown
 // alongside URL inputs that opt in via `linkAction`. Uses
 // `noopener noreferrer` to prevent reverse-tab-nabbing, and is disabled
@@ -236,7 +359,64 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
         case 'text':
         case 'email':
         case 'url':
-        case 'tel':
+        case 'tel': {
+          // S5.1 / S5.2 — visual preview takes over when the scraper has
+          // autofilled the value AND the optional gate matches (e.g. the
+          // user opted into "pull from website" for colors). Falls back
+          // gracefully to a plain input + "couldn't extract" hint when the
+          // gate matches but the scraper produced nothing.
+          if (field.previewMode && field.type === 'text') {
+            const gate = field.gatePreviewOn;
+            const gateMatches = !gate || values[gate.field] === gate.value;
+            const prefillEntry = prefillMap?.[field.name];
+            const isPrefilledAutofill = prefillEntry?.policy === 'autofill';
+            const previewValue = typeof value === 'string' ? value : '';
+
+            if (gateMatches && isPrefilledAutofill && previewValue) {
+              const evidenceLine = prefillEntry?.evidence?.[0]?.excerpt || null;
+              return (
+                <ScrapedValuePreview
+                  kind={field.previewMode}
+                  value={previewValue}
+                  evidence={evidenceLine}
+                  fieldName={field.name}
+                  onChange={onChange}
+                  fallback={
+                    <input
+                      type="text"
+                      id={field.name}
+                      name={field.name}
+                      value={previewValue}
+                      onChange={(e) => onChange(field.name, e.target.value)}
+                      placeholder={field.placeholder}
+                      className={baseInputClasses}
+                    />
+                  }
+                />
+              );
+            }
+
+            if (gateMatches && gate && !isPrefilledAutofill) {
+              // Gated path with no scrape signal — be explicit instead of
+              // showing a confusing empty input.
+              return (
+                <>
+                  <input
+                    type="text"
+                    id={field.name}
+                    name={field.name}
+                    value={previewValue}
+                    onChange={(e) => onChange(field.name, e.target.value)}
+                    placeholder={field.placeholder}
+                    className={baseInputClasses}
+                  />
+                  <p className="mt-1 text-xs text-[#6B6B6B] italic">
+                    We couldn&apos;t extract this from your website automatically. Enter it manually above.
+                  </p>
+                </>
+              );
+            }
+          }
           return (
             <>
               <div className={field.linkAction && field.type === 'url' ? 'flex gap-2' : ''}>
@@ -267,6 +447,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
               )}
             </>
           );
+        }
 
         case 'textarea':
           return (

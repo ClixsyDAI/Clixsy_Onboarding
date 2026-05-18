@@ -260,25 +260,35 @@ export const onboardingStepsV2: OnboardingStep[] = [
           { value: 'no', label: 'No, pull from website' },
         ],
       },
+      // S5.1: primary_color / secondary_color now surface on BOTH the
+      // "Yes, I know them" path (plain hex inputs) AND the "No, pull from
+      // website" path (swatch preview with Confirm/Edit, gated by the radio).
       {
         name: 'primary_color',
         label: 'Primary Brand Color (Hex)',
         type: 'text',
         placeholder: '#1A2B3C',
-        dependsOn: { field: 'knows_brand_colors', value: 'yes' },
+        dependsOn: { field: 'knows_brand_colors', valueIn: ['yes', 'no'] },
+        previewMode: 'color-swatch',
+        gatePreviewOn: { field: 'knows_brand_colors', value: 'no' },
       },
       {
         name: 'secondary_color',
         label: 'Secondary Brand Color (Hex)',
         type: 'text',
         placeholder: '#4D5E6F',
-        dependsOn: { field: 'knows_brand_colors', value: 'yes' },
+        dependsOn: { field: 'knows_brand_colors', valueIn: ['yes', 'no'] },
+        previewMode: 'color-swatch',
+        gatePreviewOn: { field: 'knows_brand_colors', value: 'no' },
       },
+      // S5.2: same swatch pattern but for fonts. Always shown; preview
+      // mode kicks in only when the scraper actually delivered a value.
       {
         name: 'typography_fonts',
         label: 'What fonts does your brand use?',
         type: 'text',
         placeholder: 'e.g., Montserrat, Open Sans',
+        previewMode: 'font-sample',
       },
     ],
   },
