@@ -123,16 +123,27 @@ const MAPPING_RULES: MappingRule[] = [
     },
   },
 
-  // Brand & Design fields
+  // Brand & Design fields. Confidence + evidence are pulled from the
+  // parallel branding.color_sources / branding.font_sources arrays
+  // (populated by the deterministic extractor in Stage 5) when present;
+  // otherwise we fall back to the legacy 0.85 / 0.80 defaults so older
+  // snapshots and LLM-only sites continue to round-trip unchanged.
   {
     field_key: 'primary_color',
     step_key: 'brand_design',
     extract: (_insights, _techStack, branding) => {
       if (!branding?.colors?.[0]) return null;
+      const src = branding.color_sources?.[0];
+      const sourceLabel =
+        src?.source === 'theme-color'
+          ? 'theme-color meta tag'
+          : src?.source === 'css'
+            ? 'CSS frequency analysis'
+            : 'LLM extraction';
       return {
         value: branding.colors[0],
-        confidence: 0.85,
-        evidence: [{ source_url: '', excerpt: 'Primary color extracted from website' }],
+        confidence: src?.confidence ?? 0.85,
+        evidence: [{ source_url: '', excerpt: `Primary color via ${sourceLabel}` }],
       };
     },
   },
@@ -141,10 +152,17 @@ const MAPPING_RULES: MappingRule[] = [
     step_key: 'brand_design',
     extract: (_insights, _techStack, branding) => {
       if (!branding?.colors?.[1]) return null;
+      const src = branding.color_sources?.[1];
+      const sourceLabel =
+        src?.source === 'theme-color'
+          ? 'theme-color meta tag'
+          : src?.source === 'css'
+            ? 'CSS frequency analysis'
+            : 'LLM extraction';
       return {
         value: branding.colors[1],
-        confidence: 0.80,
-        evidence: [{ source_url: '', excerpt: 'Secondary color extracted from website' }],
+        confidence: src?.confidence ?? 0.8,
+        evidence: [{ source_url: '', excerpt: `Secondary color via ${sourceLabel}` }],
       };
     },
   },
@@ -153,10 +171,25 @@ const MAPPING_RULES: MappingRule[] = [
     step_key: 'brand_design',
     extract: (_insights, _techStack, branding) => {
       if (!branding?.fonts?.length) return null;
+      // For fonts we surface the joined list; confidence is the MAX across
+      // sources so we don't penalise a Google-Fonts hit (0.90) just because
+      // a fallback CSS-only font tagged along.
+      const maxConfidence = branding.font_sources?.length
+        ? Math.max(...branding.font_sources.map((s) => s.confidence))
+        : 0.8;
+      const topSource = branding.font_sources?.[0]?.source;
+      const sourceLabel =
+        topSource === 'google-fonts'
+          ? 'Google Fonts <link>'
+          : topSource === 'bunny-fonts'
+            ? 'Bunny Fonts <link>'
+            : topSource === 'css'
+              ? 'inline CSS font-family'
+              : 'LLM extraction';
       return {
         value: branding.fonts.join(', '),
-        confidence: 0.80,
-        evidence: [{ source_url: '', excerpt: 'Fonts detected from website CSS' }],
+        confidence: maxConfidence,
+        evidence: [{ source_url: '', excerpt: `Fonts via ${sourceLabel}` }],
       };
     },
   },

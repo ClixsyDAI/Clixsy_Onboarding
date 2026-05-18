@@ -1,6 +1,7 @@
 import type { SiteIntelligenceProvider, ProviderResult } from './types';
 import type { Evidence } from '../schemas';
 import { getFirecrawlKey } from '../config';
+import { extractColorsFromHtml, extractFontsFromHtml } from '../branding-extractor';
 
 const FIRECRAWL_BASE = 'https://api.firecrawl.dev/v1';
 
@@ -200,12 +201,18 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
 
     // Step 2: Scrape homepage for markdown + screenshot + metadata
     let homepageMarkdown = '';
+    let homepageHtml = '';
     let pageTitle = '';
     try {
+      // Single combined call — `rawHtml` plus the existing markdown/screenshot.
+      // `onlyMainContent: false` is required so we keep <head> (theme-color
+      // meta, Google/Bunny Fonts <link>s) and inline <style> blocks intact
+      // for the deterministic branding extractor. Markdown is unaffected in
+      // practice for our downstream uses.
       const scrapeResult = await firecrawlFetch('/scrape', {
         url: websiteUrl,
-        formats: ['markdown', 'screenshot'],
-        onlyMainContent: true,
+        formats: ['markdown', 'rawHtml', 'screenshot'],
+        onlyMainContent: false,
       }) as { success: boolean; data?: Record<string, unknown> };
 
       console.log(`[Firecrawl] /scrape homepage success=${scrapeResult.success}`);
@@ -215,6 +222,12 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
 
         if (d.screenshot && typeof d.screenshot === 'string') screenshotUrl = d.screenshot;
         if (d.markdown && typeof d.markdown === 'string') homepageMarkdown = d.markdown;
+        if (d.rawHtml && typeof d.rawHtml === 'string') homepageHtml = d.rawHtml;
+        // Firecrawl sometimes returns `html` (cleaned) instead of/in addition
+        // to `rawHtml` depending on plan. Take whichever's longer.
+        if (d.html && typeof d.html === 'string' && d.html.length > homepageHtml.length) {
+          homepageHtml = d.html;
+        }
 
         const metadata = d.metadata as Record<string, unknown> | undefined;
         if (metadata) {
@@ -385,10 +398,63 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
     const primaryLocations = locations.filter(l => l.confidence >= 0.75);
     const secondaryLocations = locations.filter(l => l.confidence < 0.75);
 
-    console.log(`[Firecrawl] Final: brand="${brandName}", services=${services.length}, locations=${locations.length}, screenshot=${!!screenshotUrl}, cms=${cmsDetected || 'none'}`);
+    // Deterministic brand-color & font extraction from the homepage HTML.
+    // Runs after the LLM /extract so we can merge: deterministic results
+    // take precedence (their confidence is higher than the LLM 0.80), but
+    // any LLM-only finds are preserved so we don't regress on sites where
+    // the LLM happens to nail it. De-dupe is case-insensitive on the value.
+    // We also build parallel `color_sources` / `font_sources` arrays so
+    // field-mapping.ts can read the per-entry confidence instead of the
+    // hard-coded 0.85 / 0.80 fallback it used pre-Stage-5.
+    const colorSources: { hex: string; source: 'theme-color' | 'css' | 'llm'; confidence: number }[] = [];
+    const fontSources: { family: string; source: 'google-fonts' | 'bunny-fonts' | 'css' | 'llm'; confidence: number }[] = [];
+    // Seed the source arrays with whatever the LLM had so far.
+    for (const c of colors) colorSources.push({ hex: c, source: 'llm', confidence: 0.8 });
+    for (const f of fonts) fontSources.push({ family: f, source: 'llm', confidence: 0.8 });
+
+    if (homepageHtml) {
+      try {
+        const detColors = extractColorsFromHtml(homepageHtml);
+        const detFonts = extractFontsFromHtml(homepageHtml);
+        const seenColors = new Set(colors.map((c) => c.toLowerCase()));
+        // Prepend deterministic results in order so the higher-confidence
+        // theme-color / CSS-frequency hits land at the front of the array.
+        for (let i = detColors.length - 1; i >= 0; i--) {
+          const c = detColors[i];
+          if (!seenColors.has(c.hex.toLowerCase())) {
+            colors.unshift(c.hex);
+            colorSources.unshift({ hex: c.hex, source: c.source, confidence: c.confidence });
+            seenColors.add(c.hex.toLowerCase());
+          }
+        }
+        const seenFonts = new Set(fonts.map((f) => f.toLowerCase()));
+        for (let i = detFonts.length - 1; i >= 0; i--) {
+          const f = detFonts[i];
+          if (!seenFonts.has(f.family.toLowerCase())) {
+            fonts.unshift(f.family);
+            fontSources.unshift({ family: f.family, source: f.source, confidence: f.confidence });
+            seenFonts.add(f.family.toLowerCase());
+          }
+        }
+        console.log(
+          `[Firecrawl] Deterministic extractor merged: ${detColors.length} colors, ${detFonts.length} fonts. Final: ${colors.length} colors, ${fonts.length} fonts.`
+        );
+      } catch (err) {
+        console.warn('[Firecrawl] Deterministic branding extraction failed:', err);
+      }
+    }
+
+    console.log(`[Firecrawl] Final: brand="${brandName}", services=${services.length}, locations=${locations.length}, screenshot=${!!screenshotUrl}, cms=${cmsDetected || 'none'}, colors=${colors.length}, fonts=${fonts.length}`);
 
     return {
-      branding: { screenshot_url: screenshotUrl, logo_url: logoUrl, colors, fonts },
+      branding: {
+        screenshot_url: screenshotUrl,
+        logo_url: logoUrl,
+        colors,
+        fonts,
+        color_sources: colorSources,
+        font_sources: fontSources,
+      },
       insights: {
         brand_name: brandName,
         business_summary: businessSummary,
