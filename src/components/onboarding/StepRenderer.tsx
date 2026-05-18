@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { OnboardingStep, OnboardingField } from '@/lib/onboarding/steps';
 
 interface QuestionOverride {
@@ -102,6 +102,51 @@ function shouldSpanFullWidth(field: OnboardingField): boolean {
   return false;
 }
 
+// Centralised dependsOn check — supports the three forms documented on the
+// OnboardingField type (value / valueIn / includes). Used in two places:
+// (a) the early-return inside renderField for nested logic, and (b) the
+// outer visibleFields filter that determines section grouping.
+function isFieldVisible(
+  field: OnboardingField,
+  values: Record<string, unknown>
+): boolean {
+  if (!field.dependsOn) return true;
+  const dep = field.dependsOn;
+  const depValue = values[dep.field];
+  if (dep.includes !== undefined) {
+    return Array.isArray(depValue) && depValue.includes(dep.includes);
+  }
+  if (dep.valueIn !== undefined) {
+    return dep.valueIn.includes(depValue as string);
+  }
+  if (dep.value !== undefined) {
+    return depValue === dep.value;
+  }
+  return true;
+}
+
+// Resolve `optionsFromField` into a concrete option list at render time.
+// Returns `null` if the field doesn't use the feature (so callers can fall
+// back to the static `options`). Returns `[]` if the source is present but
+// empty — callers use this to render the "select something first" affordance.
+function resolveDynamicOptions(
+  field: OnboardingField,
+  values: Record<string, unknown>,
+  step: OnboardingStep
+): { value: string; label: string }[] | null {
+  if (!field.optionsFromField) return null;
+  const sourceValue = values[field.optionsFromField];
+  const selected = Array.isArray(sourceValue) ? (sourceValue as string[]) : [];
+  if (selected.length === 0) return [];
+  // Pull labels from the source field's declared `options` for nicer copy;
+  // fall back to the raw value as label if the source is purely free-text.
+  const sourceField = step.fields.find((f) => f.name === field.optionsFromField);
+  const labelLookup = new Map(
+    (sourceField?.options ?? []).map((o) => [o.value, o.label])
+  );
+  return selected.map((v) => ({ value: v, label: labelLookup.get(v) ?? v }));
+}
+
 export default function StepRenderer({ step, values, errors, onChange, questionOverrides, prefillMap }: StepRendererProps) {
   // Track dismissed confirmations so we show original field if user says "No"
   const [dismissedOverrides, setDismissedOverrides] = useState<Set<string>>(new Set());
@@ -130,12 +175,10 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
         : 'border-[#E6E8EA] bg-white hover:border-[#A0A0A0] focus:border-[#25DC7F] focus:ring-2 focus:ring-[#25DC7F]/20'
     }`;
 
-    // Check if field should be shown based on dependsOn
-    if (field.dependsOn) {
-      const dependentValue = values[field.dependsOn.field];
-      if (dependentValue !== field.dependsOn.value) {
-        return null;
-      }
+    // Check if field should be shown based on dependsOn (supports
+    // value / valueIn / includes — see OnboardingField type).
+    if (!isFieldVisible(field, values)) {
+      return null;
     }
 
     // Show suggestion chip for suggest_only fields that are currently empty
@@ -190,23 +233,35 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
             </>
           );
 
-        case 'select':
+        case 'select': {
+          // Resolve dynamic options pulled from another field's selection.
+          // Falls back to the field's static `options` if no source is set.
+          const dynamicOptions = resolveDynamicOptions(field, values, step);
+          const opts = dynamicOptions ?? field.options ?? [];
+          const isDisabledForEmptySource =
+            !!field.optionsFromField && dynamicOptions !== null && dynamicOptions.length === 0;
           return (
             <select
               id={field.name}
               name={field.name}
               value={(value as string) || ''}
               onChange={(e) => onChange(field.name, e.target.value)}
+              disabled={isDisabledForEmptySource}
               className={baseInputClasses}
             >
-              <option value="">Select an option...</option>
-              {field.options?.map((option) => (
+              <option value="">
+                {isDisabledForEmptySource
+                  ? `Select at least one option in "${field.optionsFromField}" above`
+                  : 'Select an option...'}
+              </option>
+              {opts.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
               ))}
             </select>
           );
+        }
 
         case 'multiselect':
           const selectedValues = (value as string[]) || [];
@@ -254,10 +309,21 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
             </label>
           );
 
-        case 'radio':
+        case 'radio': {
+          // Same dynamic-option resolution as `select` so radios can cascade
+          // (e.g. case_priority → primary_case_types_keywords selections).
+          const dynamicOptions = resolveDynamicOptions(field, values, step);
+          const opts = dynamicOptions ?? field.options ?? [];
+          if (field.optionsFromField && dynamicOptions !== null && dynamicOptions.length === 0) {
+            return (
+              <p className="text-sm text-[#6B6B6B] italic px-3 py-2 bg-[#F4F5F6] rounded-lg">
+                Select at least one option above to choose from here.
+              </p>
+            );
+          }
           return (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {field.options?.map((option) => (
+              {opts.map((option) => (
                 <label
                   key={option.value}
                   className={`flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer transition-all duration-150 text-sm ${
@@ -279,6 +345,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
               ))}
             </div>
           );
+        }
 
         default:
           return null;
@@ -288,14 +355,11 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
     return fieldElement;
   };
 
-  // Filter out hidden fields (based on dependsOn conditions)
-  const visibleFields = step.fields.filter((field) => {
-    if (field.dependsOn) {
-      const dependentValue = values[field.dependsOn.field];
-      return dependentValue === field.dependsOn.value;
-    }
-    return true;
-  });
+  // Filter out hidden fields using the centralised dependsOn check so the
+  // outer layout matches what renderField produces. A field with a
+  // `sectionHeader` is rendered as its own row above the field, so we keep
+  // them in the same flat sequence and let the layout split rows as it goes.
+  const visibleFields = step.fields.filter((field) => isFieldVisible(field, values));
 
   return (
     <div>
@@ -305,64 +369,85 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
           const spanFull = shouldSpanFullWidth(field);
           const override = getOverride(field.name);
 
+          // Optional section header that introduces this field as the first
+          // entry in a new visually distinct group (e.g. the welcome-gift
+          // block at the bottom of the Other Contacts step).
+          const headerNode = field.sectionHeader ? (
+            <div key={`${field.name}__hdr`} className="md:col-span-2 mt-6 pt-6 border-t border-[#E6E8EA]">
+              <h2 className="text-lg font-bold text-[#0B0B0B]">{field.sectionHeader.title}</h2>
+              {field.sectionHeader.subtitle && (
+                <p className="text-sm italic text-[#6B6B6B] mt-1">{field.sectionHeader.subtitle}</p>
+              )}
+            </div>
+          ) : null;
+
           // For checkboxes, we handle the label differently
           if (field.type === 'checkbox') {
             return (
-              <div key={field.name} className={spanFull ? 'md:col-span-2' : ''}>
-                {field.videoUrl && field.videoTitle && (
-                  <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
-                )}
-                {renderField(field)}
-                {(override?.help_override || field.helpText) && (
-                  <p className="mt-1 text-xs text-[#6B6B6B] ml-8">{override?.help_override || field.helpText}</p>
-                )}
-                {errors[field.name] && (
-                  <p className="mt-1 text-xs text-[#E5484D] ml-8">{errors[field.name]}</p>
-                )}
-              </div>
+              <Fragment key={field.name}>
+                {headerNode}
+                <div className={spanFull ? 'md:col-span-2' : ''}>
+                  {field.videoUrl && field.videoTitle && (
+                    <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
+                  )}
+                  {renderField(field)}
+                  {(override?.help_override || field.helpText) && (
+                    <p className="mt-1 text-xs text-[#6B6B6B] ml-8">{override?.help_override || field.helpText}</p>
+                  )}
+                  {errors[field.name] && (
+                    <p className="mt-1 text-xs text-[#E5484D] ml-8">{errors[field.name]}</p>
+                  )}
+                </div>
+              </Fragment>
             );
           }
 
           // Confirmation pattern — wrap field with Yes/No confirmation
           if (override?.ui_pattern === 'confirmation') {
             return (
-              <div key={field.name} className="md:col-span-2">
-                {field.videoUrl && field.videoTitle && (
-                  <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
-                )}
-                <ConfirmationField
-                  field={field}
-                  override={override}
-                  value={values[field.name]}
-                  error={errors[field.name]}
-                  onChange={onChange}
-                  onDismiss={() => setDismissedOverrides(prev => new Set(prev).add(field.name))}
-                  renderField={() => renderField(field)}
-                />
-              </div>
+              <Fragment key={field.name}>
+                {headerNode}
+                <div className="md:col-span-2">
+                  {field.videoUrl && field.videoTitle && (
+                    <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
+                  )}
+                  <ConfirmationField
+                    field={field}
+                    override={override}
+                    value={values[field.name]}
+                    error={errors[field.name]}
+                    onChange={onChange}
+                    onDismiss={() => setDismissedOverrides(prev => new Set(prev).add(field.name))}
+                    renderField={() => renderField(field)}
+                  />
+                </div>
+              </Fragment>
             );
           }
 
           return (
-            <div key={field.name} className={spanFull ? 'md:col-span-2' : ''}>
-              {field.videoUrl && field.videoTitle && (
-                <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
-              )}
-              <label
-                htmlFor={field.name}
-                className="block text-sm font-semibold text-[#0B0B0B] mb-1.5"
-              >
-                {override?.label_override || field.label}
-                {field.required && <span className="text-[#E5484D] ml-1">*</span>}
-              </label>
-              {renderField(field)}
-              {(override?.help_override || field.helpText) && (
-                <p className="mt-1 text-xs text-[#6B6B6B]">{override?.help_override || field.helpText}</p>
-              )}
-              {errors[field.name] && (
-                <p className="mt-1 text-xs text-[#E5484D]">{errors[field.name]}</p>
-              )}
-            </div>
+            <Fragment key={field.name}>
+              {headerNode}
+              <div className={spanFull ? 'md:col-span-2' : ''}>
+                {field.videoUrl && field.videoTitle && (
+                  <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
+                )}
+                <label
+                  htmlFor={field.name}
+                  className="block text-sm font-semibold text-[#0B0B0B] mb-1.5"
+                >
+                  {override?.label_override || field.label}
+                  {field.required && <span className="text-[#E5484D] ml-1">*</span>}
+                </label>
+                {renderField(field)}
+                {(override?.help_override || field.helpText) && (
+                  <p className="mt-1 text-xs text-[#6B6B6B]">{override?.help_override || field.helpText}</p>
+                )}
+                {errors[field.name] && (
+                  <p className="mt-1 text-xs text-[#E5484D]">{errors[field.name]}</p>
+                )}
+              </div>
+            </Fragment>
           );
         })}
       </div>

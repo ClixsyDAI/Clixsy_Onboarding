@@ -12,7 +12,35 @@ export interface OnboardingField {
   required?: boolean;
   options?: { value: string; label: string }[];
   helpText?: string;
-  dependsOn?: { field: string; value: string | boolean };
+  /**
+   * Conditional rendering. Three flavours:
+   *  - `value`: exact match against a scalar value (existing behaviour).
+   *  - `valueIn`: show when the dependent field equals any of these values
+   *    (e.g. `another_agency` OR `freelancer` from a radio group).
+   *  - `includes`: show when the dependent field is an array containing this
+   *    value (e.g. a multi-select group exposing sub-fields per selection).
+   * Use exactly one form per field.
+   */
+  dependsOn?: {
+    field: string;
+    value?: string | boolean;
+    valueIn?: string[];
+    includes?: string;
+  };
+  /**
+   * Pull the option set from another field's current value at render time —
+   * used for "pick one of the items you just multi-selected" cascades
+   * (e.g. case_priority depends on primary_case_types_keywords). The named
+   * field must be a multi-select. Entries are matched back against its
+   * declared `options` for labels and fall back to the raw value as label.
+   */
+  optionsFromField?: string;
+  /**
+   * Render a section heading before this field. Used to break a long step
+   * into visually distinct groups without splitting it into a separate step
+   * (e.g. the welcome-gift block at the bottom of "Other Contacts").
+   */
+  sectionHeader?: { title: string; subtitle?: string };
   videoUrl?: string;
   videoTitle?: string;
 }
