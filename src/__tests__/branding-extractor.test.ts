@@ -234,6 +234,33 @@ console.log('\n--- Fixture 6: CSS custom-property leak (regression) ---');
 }
 
 // ============================================================================
+// Fixture 7 — CJK system fallbacks (regression for junglelaw.com)
+// メイリオ (Meiryo), Yu Gothic, Hiragino, MS Gothic, SimSun all leaked
+// through as "brand fonts" in Stage 5. Should be filtered like any other
+// OS-bundled system font.
+// ============================================================================
+console.log('\n--- Fixture 7: CJK system-font filter (regression) ---');
+{
+  const html = `
+    <style>
+      body { font-family: "Madefor", メイリオ, "Yu Gothic", sans-serif; }
+      .ja { font-family: "Hiragino Sans", "Hiragino Kaku Gothic Pro", sans-serif; }
+      .ja2 { font-family: "MS Gothic", "MS PGothic", "SimSun", sans-serif; }
+    </style>
+  `;
+  const fonts = extractFontsFromHtml(html);
+  console.log('   fonts ->', JSON.stringify(fonts));
+  assert(
+    fonts.length === 1 && fonts[0].family === 'Madefor',
+    'CJK fallbacks filtered: only Madefor surfaces'
+  );
+  assert(
+    !fonts.some((f) => /メイリオ|meiryo|yu gothic|hiragino|ms gothic|simsun/i.test(f.family)),
+    'no Meiryo / Yu Gothic / Hiragino / MS Gothic / SimSun in results'
+  );
+}
+
+// ============================================================================
 console.log(`\n=========================================`);
 console.log(`  ${passed} passed, ${failed} failed`);
 console.log(`=========================================`);

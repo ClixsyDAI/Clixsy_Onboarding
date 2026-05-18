@@ -75,6 +75,18 @@ const COMMON_DEFAULT_FONTS = new Set([
   'palatino',
   'garamond',
   'noto sans',
+  // CJK system fallbacks. junglelaw.com's Japanese support stack leaked
+  // メイリオ (Meiryo) through as a "brand font" in Stage 5 smoke.
+  'メイリオ',
+  'meiryo',
+  'yu gothic',
+  'hiragino',
+  'hiragino sans',
+  'hiragino kaku gothic pro',
+  'ms gothic',
+  'ms pgothic',
+  'sim sun',
+  'simsun',
 ]);
 
 // ============================================================================
