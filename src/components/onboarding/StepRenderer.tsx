@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useState } from 'react';
+import { Fragment, useLayoutEffect, useRef, useState } from 'react';
 import { OnboardingStep, OnboardingField } from '@/lib/onboarding/steps';
 
 interface QuestionOverride {
@@ -197,6 +197,79 @@ function ScrapedValuePreview({
         </button>
       </div>
     </div>
+  );
+}
+
+// S3.2: auto-growing textarea. The prefilled-address textarea was too
+// short to show a full street + suite + city/state/zip without internal
+// scrolling, and the doc complains that reviewers don't realise they can
+// scroll. Auto-size to fit content from ~3 lines to ~6 lines, then cap
+// with overflow-auto. Used for every `textarea`-type field in the wizard
+// so a fix at the root benefits any read-back field with the same shape.
+function AutoGrowTextarea({
+  value,
+  onChange,
+  placeholder,
+  id,
+  name,
+  className,
+  minRows = 3,
+  maxRows = 6,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  id?: string;
+  name?: string;
+  className?: string;
+  minRows?: number;
+  maxRows?: number;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  const resize = () => {
+    const el = ref.current;
+    if (!el) return;
+    // Reset to auto so scrollHeight reflects the natural content size,
+    // not the previous fixed height.
+    el.style.height = 'auto';
+    const cs = window.getComputedStyle(el);
+    const lineHeight = parseFloat(cs.lineHeight) || 20;
+    const paddingY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    const borderY = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+    const minH = lineHeight * minRows + paddingY + borderY;
+    const maxH = lineHeight * maxRows + paddingY + borderY;
+    const targetH = Math.min(maxH, Math.max(minH, el.scrollHeight));
+    el.style.height = `${targetH}px`;
+    el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden';
+  };
+
+  // Resize on mount, on every value change, and on window resize (font
+  // size or layout may shift the natural height).
+  useLayoutEffect(() => {
+    resize();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  useLayoutEffect(() => {
+    const onResize = () => resize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <textarea
+      ref={ref}
+      id={id}
+      name={name}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      rows={minRows}
+      className={className}
+      style={{ resize: 'none' }}
+    />
   );
 }
 
@@ -452,13 +525,12 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
         case 'textarea':
           return (
             <>
-              <textarea
+              <AutoGrowTextarea
                 id={field.name}
                 name={field.name}
                 value={(value as string) || ''}
-                onChange={(e) => onChange(field.name, e.target.value)}
+                onChange={(v) => onChange(field.name, v)}
                 placeholder={field.placeholder}
-                rows={3}
                 className={baseInputClasses}
               />
               {showSuggestion && typeof suggestion.suggested_value === 'string' && (
