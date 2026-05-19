@@ -941,18 +941,33 @@ export default function Wizard({
               ) : null}
             </div>
 
-            {/* Next/Submit Button */}
+            {/* Next/Submit Button. Stage 11 / Fix 1: the disabled
+                "Complete All Fields" copy was wrapping to two lines on
+                Android (~360px) — the green check ended up below the
+                text. Reduced horizontal padding on mobile + shorter
+                "Complete" copy on sm-and-below + whitespace-nowrap so
+                it never wraps regardless of viewport. Desktop sees the
+                full "Complete All Fields" still. */}
             {currentStepIndex === steps.length - 1 ? (
               <button
                 onClick={handleSubmit}
                 disabled={isSaving || !canSubmit || transitioning}
-                className={`flex items-center gap-2 px-8 py-3 rounded-lg font-semibold transition-all ${
+                className={`flex items-center gap-2 px-5 sm:px-8 py-3 rounded-lg font-semibold transition-all whitespace-nowrap ${
                   canSubmit
                     ? 'bg-[#25DC7F] text-white hover:bg-[#1DB96A]'
                     : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                 } disabled:opacity-50`}
               >
-                {isSaving ? 'Submitting...' : canSubmit ? 'Submit' : 'Complete All Fields'}
+                {isSaving ? (
+                  'Submitting...'
+                ) : canSubmit ? (
+                  'Submit'
+                ) : (
+                  <>
+                    <span className="sm:hidden">Complete</span>
+                    <span className="hidden sm:inline">Complete All Fields</span>
+                  </>
+                )}
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
@@ -961,7 +976,7 @@ export default function Wizard({
               <button
                 onClick={handleNext}
                 disabled={isSaving || transitioning}
-                className="flex items-center gap-2 px-8 py-3 bg-[#25DC7F] text-white rounded-lg font-semibold hover:bg-[#1DB96A] transition-all disabled:opacity-50"
+                className="flex items-center gap-2 px-5 sm:px-8 py-3 bg-[#25DC7F] text-white rounded-lg font-semibold hover:bg-[#1DB96A] transition-all disabled:opacity-50 whitespace-nowrap"
               >
                 Next
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
