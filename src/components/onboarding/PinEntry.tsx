@@ -129,7 +129,12 @@ export default function PinEntry({ token, clientName, initialLock, onSuccess }: 
       </header>
 
       <main className="flex-1 flex items-center justify-center px-4 py-12">
-        <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-8 border border-[#E6E8EA]">
+        {/* Stage 10 / Fix 2: card padding scales down on narrow viewports
+            so the 6 PIN cells + gaps fit without horizontal overflow on
+            iPhone SE (375px) / standard Android (360px). Was a fixed p-8
+            (32px each side = 64px lost to padding) which left 343-64=279px
+            for the PIN row that needs ~288px at the old w-12 sizing. */}
+        <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-6 sm:p-8 border border-[#E6E8EA]">
           <div className="text-center mb-6">
             <div className="w-12 h-12 mx-auto mb-4 bg-[#25DC7F]/10 rounded-full flex items-center justify-center">
               <svg className="w-6 h-6 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -169,7 +174,13 @@ export default function PinEntry({ token, clientName, initialLock, onSuccess }: 
             </div>
           )}
 
-          <div className="flex justify-between gap-2 mb-4" role="group" aria-label="PIN entry">
+          {/* Stage 10 / Fix 2: input cells + gap scale down on mobile.
+              On viewports ≥ sm (640px+) we keep the original w-12 h-14
+              size; on narrow phones the cells shrink to w-10 h-12 and
+              gap-1.5 so the 6-digit row stays inside the card padding.
+              justify-center (was justify-between) keeps the row packed
+              tightly so wider devices don't stretch the gaps unevenly. */}
+          <div className="flex justify-center gap-1.5 sm:gap-2 mb-4" role="group" aria-label="PIN entry">
             {digits.map((d, i) => (
               <input
                 key={i}
@@ -185,7 +196,7 @@ export default function PinEntry({ token, clientName, initialLock, onSuccess }: 
                 onKeyDown={(e) => handleKeyDown(i, e)}
                 disabled={disabledByLock || submitting}
                 aria-label={`PIN digit ${i + 1}`}
-                className={`w-12 h-14 text-center text-2xl font-semibold rounded-lg border transition-colors ${
+                className={`w-10 h-12 sm:w-12 sm:h-14 text-center text-xl sm:text-2xl font-semibold rounded-lg border transition-colors ${
                   error
                     ? 'border-[#E5484D] bg-red-50'
                     : 'border-[#E6E8EA] bg-white focus:border-[#25DC7F] focus:ring-2 focus:ring-[#25DC7F]/20'
