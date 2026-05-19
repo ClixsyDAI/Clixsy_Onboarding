@@ -1,6 +1,6 @@
 import { onboardingSteps, validateStepData, getMissingRequiredFields } from './steps';
 import { onboardingStepsV2, validateStepDataV2, getMissingRequiredFieldsV2 } from './steps-v2';
-import type { OnboardingStep } from './steps';
+import type { OnboardingStep, VerticalId } from './steps';
 
 export type FlowVersion = 'v1' | 'v2';
 
@@ -18,11 +18,20 @@ export function validateStepDataForVersion(
     : validateStepData(stepKey, data);
 }
 
+/**
+ * `vertical` was added in the Stage 9 / home-services PR. It lets the
+ * v2 missing-required-fields scan honour `requiredWhen` predicates on
+ * individual fields (e.g. `service_trades` is required only when
+ * `vertical === 'home_services'`, `primary_case_types_keywords` only
+ * when `vertical === 'law_firm'`). v1 ignores it — pre-Stage-1 sessions
+ * never had a vertical column.
+ */
 export function getMissingRequiredFieldsForVersion(
   v: FlowVersion | string,
-  answers: Record<string, Record<string, unknown>>
+  answers: Record<string, Record<string, unknown>>,
+  vertical?: VerticalId
 ): { stepKey: string; stepTitle: string; stepIndex: number; fieldName: string; fieldLabel: string }[] {
   return v === 'v2'
-    ? getMissingRequiredFieldsV2(answers)
+    ? getMissingRequiredFieldsV2(answers, vertical)
     : getMissingRequiredFields(answers);
 }

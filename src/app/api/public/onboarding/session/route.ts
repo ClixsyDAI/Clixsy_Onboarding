@@ -107,6 +107,12 @@ export async function GET(request: NextRequest) {
         // screen copy. Defaults to "your account manager" client-side if
         // unset (legacy / pre-Stage-1 rows).
         accountManager: (session as unknown as { account_manager?: string | null }).account_manager ?? null,
+        // Stage 9 / home-services PR: surface vertical so the Wizard can
+        // branch Step 7 + per-vertical copy. Defaults to 'law_firm' on
+        // the server side already (Stage 1 migration 005 set NOT NULL
+        // DEFAULT 'law_firm'); the `?? 'law_firm'` here is belt + braces
+        // for legacy rows seeded before the column existed.
+        vertical: (session as unknown as { vertical?: string }).vertical ?? 'law_firm',
       },
       client: {
         name: clientName,

@@ -4,6 +4,15 @@ import { z } from 'zod';
 // ONBOARDING STEP DEFINITIONS
 // =============================================
 
+/**
+ * Verticals a session can belong to. Comes from
+ * `onboarding_sessions.vertical` (set on admin Create, P1). Used by
+ * the form to branch field visibility, labels, required-ness, and
+ * cascade sources. New verticals get added here; the field-type
+ * predicates below pick them up automatically.
+ */
+export type VerticalId = 'law_firm' | 'home_services';
+
 export interface OnboardingField {
   name: string;
   label: string;
@@ -12,6 +21,33 @@ export interface OnboardingField {
   required?: boolean;
   options?: { value: string; label: string }[];
   helpText?: string;
+  /**
+   * Per-vertical label override. When `session.vertical` matches a
+   * key here, the field renders with this label instead of the
+   * default `label` property. Other strings (helpText, sectionHeader
+   * subtitle, etc.) follow the same pattern with their own
+   * *ByVertical sibling. Used by Step 7 to relabel "case types" →
+   * "service categories" for home_services without splitting the
+   * field into two.
+   */
+  labelByVertical?: Partial<Record<VerticalId, string>>;
+  helpTextByVertical?: Partial<Record<VerticalId, string>>;
+  /**
+   * Vertical-gated visibility. When set, the field renders ONLY for
+   * sessions whose vertical is in this list. Independent of and
+   * additive with the answer-driven `dependsOn` predicate (both must
+   * pass for the field to show). Use this to declare home_services-
+   * only or law_firm-only fields without proliferating
+   * `if (vertical === ...)` checks across components.
+   */
+  verticalIn?: VerticalId[];
+  /**
+   * Per-vertical required-ness. When set, the field is only treated
+   * as required if `session.vertical` equals `equals` (or is in
+   * `valueIn`). The Almost-There summary consults this; without it,
+   * the static `required: true` applies for all verticals.
+   */
+  requiredWhen?: { field: 'vertical'; equals?: VerticalId; valueIn?: VerticalId[] };
   /**
    * Conditional rendering. Three flavours:
    *  - `value`: exact match against a scalar value (existing behaviour).

@@ -1,7 +1,14 @@
 'use client';
 
 import { Fragment, useLayoutEffect, useRef, useState } from 'react';
-import { OnboardingStep, OnboardingField } from '@/lib/onboarding/steps';
+import { OnboardingStep, OnboardingField, type VerticalId } from '@/lib/onboarding/steps';
+import {
+  HOME_SERVICES_TAXONOMY,
+  getServicesForTrade,
+  getTradeForService,
+  getAllTradesWithSelections,
+  pruneOrphanServices,
+} from '@/lib/onboarding/service-taxonomy';
 
 interface QuestionOverride {
   label_override: string;
@@ -24,6 +31,12 @@ interface StepRendererProps {
   onChange: (name: string, value: unknown) => void;
   questionOverrides?: Record<string, QuestionOverride> | null;
   prefillMap?: Record<string, PrefillEntry> | null;
+  /**
+   * Stage 9: drives `verticalIn` (gated visibility) + `labelByVertical`
+   * (per-vertical copy) + `helpTextByVertical`. Defaulted at the call
+   * site by Wizard.tsx to 'law_firm' for backwards compat.
+   */
+  vertical?: VerticalId;
 }
 
 // Helper function to convert YouTube URL to embed URL
@@ -349,8 +362,15 @@ function shouldSpanFullWidth(field: OnboardingField): boolean {
 // outer visibleFields filter that determines section grouping.
 function isFieldVisible(
   field: OnboardingField,
-  values: Record<string, unknown>
+  values: Record<string, unknown>,
+  vertical?: VerticalId
 ): boolean {
+  // Stage 9: vertical gate is checked FIRST and independently of
+  // dependsOn — a field declared `verticalIn: ['home_services']` is
+  // hidden on every law_firm session regardless of sibling state.
+  if (field.verticalIn && vertical && !field.verticalIn.includes(vertical)) {
+    return false;
+  }
   if (!field.dependsOn) return true;
   const dep = field.dependsOn;
   const depValue = values[dep.field];
@@ -370,6 +390,17 @@ function isFieldVisible(
 // Returns `null` if the field doesn't use the feature (so callers can fall
 // back to the static `options`). Returns `[]` if the source is present but
 // empty — callers use this to render the "select something first" affordance.
+//
+// Stage 9: two home-services-specific cascades have to taxonomy-expand
+// (not just label-lookup) because the source field stores a different
+// kind of ID than this field's options expose:
+//
+//   - source = 'service_trades' → trade IDs like 'hvac'. We expand each
+//     selected trade into its child service options (e.g. 'hvac.ac_repair').
+//   - source = 'service_categories' → service IDs like 'hvac.ac_repair'.
+//     The source has no static `options` array (its options are themselves
+//     resolved dynamically), so the generic label-lookup path fails. We
+//     resolve labels directly from HOME_SERVICES_TAXONOMY.
 function resolveDynamicOptions(
   field: OnboardingField,
   values: Record<string, unknown>,
@@ -379,8 +410,42 @@ function resolveDynamicOptions(
   const sourceValue = values[field.optionsFromField];
   const selected = Array.isArray(sourceValue) ? (sourceValue as string[]) : [];
   if (selected.length === 0) return [];
-  // Pull labels from the source field's declared `options` for nicer copy;
-  // fall back to the raw value as label if the source is purely free-text.
+
+  // Home-services cascade #1: trade IDs → flattened taxonomy services.
+  // Preserves trade order (declaration order in HOME_SERVICES_TAXONOMY)
+  // so the flat list is predictable. Used by service_priority for its
+  // option list when the user happens to be on this path (priority's
+  // direct source is service_categories — see #2 below — but if any
+  // future field were to read service_trades directly it would also
+  // pick this up).
+  if (field.optionsFromField === 'service_trades') {
+    return selected.flatMap((tradeId) =>
+      getServicesForTrade(tradeId).map((svc) => ({ value: svc.id, label: svc.label }))
+    );
+  }
+
+  // Home-services cascade #2: service IDs → labels via the taxonomy.
+  // service_categories itself has no static `options` (it's grouped-
+  // rendered in the multiselect branch below), so we can't fall back to
+  // its options table for labels. Look up via the taxonomy directly,
+  // dropping any service IDs we can't find (defensive — shouldn't occur
+  // for clean data, but a stale answer from an older taxonomy revision
+  // would otherwise crash here).
+  if (field.optionsFromField === 'service_categories') {
+    const out: { value: string; label: string }[] = [];
+    for (const sid of selected) {
+      const trade = getTradeForService(sid);
+      if (!trade) continue;
+      const svc = HOME_SERVICES_TAXONOMY[trade].services.find((s) => s.id === sid);
+      if (svc) out.push({ value: svc.id, label: svc.label });
+    }
+    return out;
+  }
+
+  // Default: pull labels from the source field's declared `options` for
+  // nicer copy; fall back to the raw value as label if the source is
+  // purely free-text. This is the law-firm path (case_priority reads
+  // primary_case_types_keywords which has a fully static options table).
   const sourceField = step.fields.find((f) => f.name === field.optionsFromField);
   const labelLookup = new Map(
     (sourceField?.options ?? []).map((o) => [o.value, o.label])
@@ -388,7 +453,7 @@ function resolveDynamicOptions(
   return selected.map((v) => ({ value: v, label: labelLookup.get(v) ?? v }));
 }
 
-export default function StepRenderer({ step, values, errors, onChange, questionOverrides, prefillMap }: StepRendererProps) {
+export default function StepRenderer({ step, values, errors, onChange, questionOverrides, prefillMap, vertical }: StepRendererProps) {
   // Track dismissed confirmations so we show original field if user says "No"
   const [dismissedOverrides, setDismissedOverrides] = useState<Set<string>>(new Set());
 
@@ -405,6 +470,16 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
     return entry;
   };
 
+  // Stage 9 helpers: pick the vertical-appropriate label / helpText for
+  // a field when it declares per-vertical overrides. Falls back to the
+  // default `label` / `helpText`. Used by every render branch that
+  // surfaces user-visible copy (renderField, top-level field label,
+  // checkbox inline label, ConfirmationField via override merge).
+  const labelFor = (field: OnboardingField): string =>
+    (vertical && field.labelByVertical?.[vertical]) || field.label;
+  const helpTextFor = (field: OnboardingField): string | undefined =>
+    (vertical && field.helpTextByVertical?.[vertical]) || field.helpText;
+
   const renderField = (field: OnboardingField) => {
     const value = values[field.name];
     const error = errors[field.name];
@@ -418,7 +493,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
 
     // Check if field should be shown based on dependsOn (supports
     // value / valueIn / includes — see OnboardingField type).
-    if (!isFieldVisible(field, values)) {
+    if (!isFieldVisible(field, values, vertical)) {
       return null;
     }
 
@@ -572,8 +647,88 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
           );
         }
 
-        case 'multiselect':
+        case 'multiselect': {
           const selectedValues = (value as string[]) || [];
+
+          // Stage 9 — home-services-specific render path for
+          // service_categories. Instead of a single flat grid, we
+          // render one sub-section per ticked trade (HVAC, Plumbing,
+          // ...) with the trade's label as a small header and its
+          // child services as checkboxes underneath. Keeps long lists
+          // scannable when the user has ticked multiple trades.
+          if (field.name === 'service_categories') {
+            const selectedTrades = (values.service_trades as string[]) || [];
+            const tradesView = getAllTradesWithSelections(selectedTrades, selectedValues);
+            if (tradesView.length === 0) {
+              return (
+                <p className="text-sm text-[#6B6B6B] italic px-3 py-2 bg-[#F4F5F6] rounded-lg">
+                  Tick at least one trade above to see the services you can choose from.
+                </p>
+              );
+            }
+            return (
+              <div className="space-y-5">
+                {tradesView.map((trade) => (
+                  <div key={trade.tradeId}>
+                    <h3 className="text-sm font-semibold text-[#0B0B0B] mb-2">{trade.tradeLabel}</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {trade.services.map((svc) => (
+                        <label
+                          key={svc.id}
+                          className={`flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer transition-all duration-150 text-sm ${
+                            selectedValues.includes(svc.id)
+                              ? 'border-[#25DC7F] bg-[#25DC7F]/5'
+                              : 'border-[#E6E8EA] hover:border-[#A0A0A0]'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedValues.includes(svc.id)}
+                            onChange={(e) => {
+                              const next = e.target.checked
+                                ? [...selectedValues, svc.id]
+                                : selectedValues.filter((v) => v !== svc.id);
+                              onChange(field.name, next);
+                              // Service_priority cascade: if the user
+                              // untoggles the currently-chosen priority
+                              // service, clear it so the radio doesn't
+                              // hold a stale id.
+                              const currentPriority = values.service_priority as string | undefined;
+                              if (!e.target.checked && currentPriority === svc.id) {
+                                onChange('service_priority', '');
+                              }
+                            }}
+                            className="w-4 h-4 text-[#25DC7F] rounded border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
+                          />
+                          <span className="text-[#1A1A1A]">{svc.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          }
+
+          // Standard flat multi-select. For service_trades we wrap the
+          // setter with a cascade-purge so unticking a trade removes
+          // its child services from service_categories AND clears
+          // service_priority if it pointed at one of those services.
+          const isServiceTrades = field.name === 'service_trades';
+          const applyTradesChange = (newTrades: string[]) => {
+            onChange(field.name, newTrades);
+            if (!isServiceTrades) return;
+            const currentCategories = (values.service_categories as string[]) || [];
+            const prunedCategories = pruneOrphanServices(newTrades, currentCategories);
+            if (prunedCategories.length !== currentCategories.length) {
+              onChange('service_categories', prunedCategories);
+            }
+            const currentPriority = values.service_priority as string | undefined;
+            if (currentPriority && !prunedCategories.includes(currentPriority)) {
+              onChange('service_priority', '');
+            }
+          };
+
           return (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {field.options?.map((option) => (
@@ -589,10 +744,13 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                     type="checkbox"
                     checked={selectedValues.includes(option.value)}
                     onChange={(e) => {
-                      if (e.target.checked) {
-                        onChange(field.name, [...selectedValues, option.value]);
+                      const next = e.target.checked
+                        ? [...selectedValues, option.value]
+                        : selectedValues.filter((v) => v !== option.value);
+                      if (isServiceTrades) {
+                        applyTradesChange(next);
                       } else {
-                        onChange(field.name, selectedValues.filter((v) => v !== option.value));
+                        onChange(field.name, next);
                       }
                     }}
                     className="w-4 h-4 text-[#25DC7F] rounded border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
@@ -602,6 +760,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
               ))}
             </div>
           );
+        }
 
         case 'checkbox':
           return (
@@ -614,7 +773,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                 onChange={(e) => onChange(field.name, e.target.checked)}
                 className="w-5 h-5 mt-0.5 text-[#25DC7F] rounded border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
               />
-              <span className="text-[#1A1A1A]">{override?.label_override || field.label}</span>
+              <span className="text-[#1A1A1A]">{override?.label_override || labelFor(field)}</span>
             </label>
           );
 
@@ -668,7 +827,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
   // outer layout matches what renderField produces. A field with a
   // `sectionHeader` is rendered as its own row above the field, so we keep
   // them in the same flat sequence and let the layout split rows as it goes.
-  const visibleFields = step.fields.filter((field) => isFieldVisible(field, values));
+  const visibleFields = step.fields.filter((field) => isFieldVisible(field, values, vertical));
 
   return (
     <div>
@@ -700,8 +859,8 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                     <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
                   )}
                   {renderField(field)}
-                  {(override?.help_override || field.helpText) && (
-                    <p className="mt-1 text-xs text-[#6B6B6B] ml-8">{override?.help_override || field.helpText}</p>
+                  {(override?.help_override || helpTextFor(field)) && (
+                    <p className="mt-1 text-xs text-[#6B6B6B] ml-8">{override?.help_override || helpTextFor(field)}</p>
                   )}
                   {errors[field.name] && (
                     <p className="mt-1 text-xs text-[#E5484D] ml-8">{errors[field.name]}</p>
@@ -745,12 +904,12 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                   htmlFor={field.name}
                   className="block text-sm font-semibold text-[#0B0B0B] mb-1.5"
                 >
-                  {override?.label_override || field.label}
+                  {override?.label_override || labelFor(field)}
                   {field.required && <span className="text-[#E5484D] ml-1">*</span>}
                 </label>
                 {renderField(field)}
-                {(override?.help_override || field.helpText) && (
-                  <p className="mt-1 text-xs text-[#6B6B6B]">{override?.help_override || field.helpText}</p>
+                {(override?.help_override || helpTextFor(field)) && (
+                  <p className="mt-1 text-xs text-[#6B6B6B]">{override?.help_override || helpTextFor(field)}</p>
                 )}
                 {errors[field.name] && (
                   <p className="mt-1 text-xs text-[#E5484D]">{errors[field.name]}</p>

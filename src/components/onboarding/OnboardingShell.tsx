@@ -37,6 +37,13 @@ interface SessionPayload {
     welcomeWizardSeen: boolean;
     /** Stage 8: rendered on the rebuilt thank-you screen. May be null on legacy rows. */
     accountManager: string | null;
+    /**
+     * Stage 9 / home-services PR: drives Step 7 branching, per-vertical
+     * field labels, requiredWhen predicates, and the cascade source for
+     * `case_priority` vs `service_priority`. Defaults to 'law_firm'
+     * server-side for legacy rows where the column wasn't yet set.
+     */
+    vertical: 'law_firm' | 'home_services';
   };
   client: { name: string; contactName: string };
   answers: Record<string, { answers: Record<string, unknown>; completed: boolean }>;
@@ -157,6 +164,7 @@ export default function OnboardingShell({ token }: { token: string }) {
         contactName={payload.client.contactName}
         welcomeWizardSeen={payload.session.welcomeWizardSeen}
         accountManager={payload.session.accountManager}
+        vertical={payload.session.vertical}
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         siteIntelligence={payload.siteIntelligence as any}
       />
