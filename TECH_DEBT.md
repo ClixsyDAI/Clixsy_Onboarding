@@ -6,6 +6,38 @@ at the top.
 
 ---
 
+## Phase 1 carry-over items (operator-owned)
+
+Surfaced during the Phase 1 (pre-feedback-doc) infrastructure work
+and not addressed by the Stage 1–8 PR. Listed here so they don't get
+forgotten now that the feedback-doc punch list is closed.
+
+- **Supabase PITR add-on.** Production project `lawwsutjxopiekjzupef`
+  is on the default 7-day backup window. Enabling the PITR add-on
+  extends point-in-time recovery to 28 days. Cost trade-off; decide
+  before the first paying customer ships through onboarding.
+- **`DEPLOYMENT.md` JWT documentation.** Operator owns rotation /
+  storage of the JWT secrets used for Supabase service-role access
+  and the `PIN_COOKIE_SECRET` (Stage 7). No live deployment runbook
+  documents the rotation procedure yet — needs a short section
+  alongside the other env vars in `DEPLOYMENT.md`.
+- **Gemini API key IP / referer restriction.** The Google AI / Gemini
+  key (used by the AI-interpreter path on the parked WIP branch, not
+  the main scraper) is currently unrestricted in the Google Cloud
+  console. Lock it down to the Vercel egress IP range or to the
+  production domain via the Google API restrictions before that
+  branch ever ships.
+- **Leaked credential password sweep.** Any DB / service credentials
+  that were ever committed (even briefly, even since rotated) should
+  be enumerated and confirmed-rotated. Pair with a `gitleaks` or
+  TruffleHog scan over the full history before pushing this branch
+  to a public remote, if applicable.
+
+These four were flagged in Phase 1 and remain operator-owned. Not in
+scope for the Stage 1–8 feedback-doc PR.
+
+---
+
 ## Runbook: client locked themselves out of the PIN gate
 
 **Stage 7, 2026-05-18.** Applies whenever a client hits the permanent
