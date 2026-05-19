@@ -6,6 +6,95 @@ at the top.
 
 ---
 
+## Home-services prefill: mean-confidence aggregation + no multiselect suggestion UX
+
+**Belred preview smoke, 2026-05-19.** Stage 9 added scraper-driven
+prefill rules for the new home_services fields (`service_trades`,
+`service_categories`, `service_priority`). A real Firecrawl run
+against `belred.com` produced the right matches structurally — HVAC
++ Plumbing + Electrical were all identified, 21 sub-services taxonomy-
+mapped — but **nothing pre-ticked in the wizard**. Two reasons:
+
+1. **Mean-confidence aggregation drags strong matches below the
+   autofill threshold.** The new rules in `field-mapping.ts` compute
+   confidence as the mean across all matching scraped services. Belred
+   came back at **0.75 mean** despite per-service confidences of
+   0.78–0.92. `getPolicy` in `schemas.ts` maps `< 0.85` → `suggest_only`,
+   so the entries are stored but not auto-applied (the Wizard's
+   mount-time prefill effect in `Wizard.tsx` skips anything that
+   isn't `autofill`).
+
+2. **`SuggestionChip` doesn't render for multiselect fields.** Even
+   though the data is sitting in `prefill_map` at `suggest_only`
+   policy, `StepRenderer`'s suggestion-chip code only fires for
+   `text` / `email` / `url` / `tel` / `textarea`. The `multiselect`
+   branch (and the new trade-grouped renderer for `service_categories`)
+   has no fallback. So a borderline-confidence home-services scrape
+   leaves the user staring at six empty trade checkboxes even though
+   the system already knows three of them apply.
+
+Net effect: the conservative "no pre-tick on borderline confidence"
+behaviour is technically correct, just invisible — Belred-sized real
+scrapes consistently land in the 0.75–0.80 band, so the pre-tick UX
+Stage 9 advertises rarely fires in practice.
+
+Fix shapes (separate PR, not done):
+
+- **(a)** Revisit the per-rule confidence aggregation function for
+  the home-services rules. Mean may be wrong across heterogeneous
+  matches — alternatives: top-N max, weighted by per-service
+  confidence rank, or a separate "matched-fraction" component. The
+  goal is "if 8 of 8 services taxonomy-matched at 0.78+, that's a
+  strong signal, treat it as autofill".
+- **(b)** Add a multiselect suggestion UX. Probably an inline "We
+  think you offer these — tap to apply" chip group rendered above
+  the checkboxes when `prefill_map[fieldName].policy === 'suggest_only'`
+  and the field is empty. Mirrors the existing single-value
+  `SuggestionChip` pattern but for arrays.
+
+**Not blocking Stage 9.** Conservative no-pretick on borderline
+confidence is acceptable behaviour — the user fills the form
+themselves, the data flow is unchanged. Worth fixing properly later
+so the scraper-driven UX advertised in the PR actually fires for
+typical real-world client sites.
+
+---
+
+## Scrape-quality: secondary-page service bleed-in
+
+**Belred preview smoke, 2026-05-19.** The same Belred scrape that
+surfaced the threshold finding above also included **Roofing** in
+the matched `service_trades` set — Belred doesn't actually offer
+roofing services. The bleed-in came from the Firecrawl fallback
+markdown parser reading 4 priority pages:
+
+  testimonials, core-values, in-the-community, greener
+
+The community / testimonials pages reference roofing in passing (a
+roofing-partner story, or a customer mentioning a roof repair) and
+those mentions hit the markdown service-extraction parser at full
+weight, alongside the real homepage and service-page content.
+
+Fix shape (separate PR, not done):
+
+- Weight per-trade match confidence by source-page authority:
+  `homepage > /services/* > /about/* > /testimonials,/community,/blog`.
+  Trade signals only from low-authority pages should down-weight,
+  not absent (Belred's "in the community" really is operationally
+  signal-free for the trade question).
+- Tie this into the same change as the aggregation fix above so the
+  rules in `field-mapping.ts` can score "8 strong matches on
+  service-pages + 1 weak match on testimonials" as autofill HVAC +
+  no roofing, rather than the current "suggest_only on everything
+  the parser found".
+
+**Not blocking Stage 9.** The user can untick Roofing; the cascade
+purge wipes its (zero) sub-services correctly. Worth fixing because
+"see, the scraper read your site and got it right" is a stronger
+sell when the scraper actually got it right.
+
+---
+
 ## Vertical content branching not implemented
 
 **Goarco production smoke, 2026-05-19.** Stage 1 / P1 introduced a
