@@ -228,11 +228,21 @@ export function getTransitionMessage(
   };
 }
 
+/**
+ * P4 (Stage 7): returning-user copy uses the CLIENT COMPANY NAME, not
+ * the personal contact name. Caller passes whichever name is appropriate
+ * in `displayName`; the Stage 7 Wizard supplies `clientName`
+ * (e.g. "Jungle Law").
+ *
+ * Per P4 spec this is only called when the welcome wizard has already
+ * been seen (welcome_wizard_seen = true server-side); on first login
+ * the P3 modal replaces the greeting entirely.
+ */
 export function getWelcomeMessage(
-  contactFirstName: string,
+  displayName: string,
   isReturning: boolean,
 ): TransitionMessage {
-  const name = contactFirstName || 'there';
+  const name = displayName || 'there';
 
   if (isReturning) {
     return {

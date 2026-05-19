@@ -1,6 +1,8 @@
 import type { SiteIntelligenceProvider, ProviderResult } from './types';
 import type { Evidence } from '../schemas';
 import { getFirecrawlKey } from '../config';
+import { extractColorsFromHtml, extractFontsFromHtml } from '../branding-extractor';
+import { extractPhoneFromHtml } from '../phone-extractor';
 
 const FIRECRAWL_BASE = 'https://api.firecrawl.dev/v1';
 
@@ -11,6 +13,27 @@ const PRIORITY_PATTERNS = [
   'contact', 'contact-us',
   'team', 'attorneys', 'our-team', 'staff',
 ];
+
+/**
+ * Strip markdown and raw-URL noise from a scraped paragraph before it
+ * lands in business_summary / the WHAT WE FOUND panel. Handles:
+ *   - `![alt](url)` markdown images           → removed entirely
+ *   - `[text](url)` markdown links            → kept text, dropped url
+ *   - bare http(s) URLs                       → removed
+ *   - CDN tracking-pixel domains in plain text → removed
+ *   - collapsed whitespace
+ * S1.1: the WHAT WE FOUND panel was rendering `![](https://static.wixstatic
+ * .com/…)` as raw text. Sanitise on the way in (and once more in the
+ * renderer as a backstop).
+ */
+export function cleanProseForDisplay(input: string): string {
+  return input
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')              // ![](url)
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')           // [text](url) -> text
+    .replace(/https?:\/\/\S+/g, '')                    // bare URLs
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function extractDomain(url: string): string {
   try { return new URL(url).hostname; } catch { return url.replace(/^https?:\/\//, '').split('/')[0]; }
@@ -143,16 +166,28 @@ function parseMarkdownForInsights(
     }
   }
 
-  // Try to build a summary from the first meaningful paragraph
-  const paragraphs = allContent.split('\n\n').filter(p =>
+  // Try to build a summary from the first meaningful paragraph.
+  // S1.1: previous version stripped `[text](url)` link syntax but left raw
+  // `![](image-url)` image markdown intact, which then leaked through to
+  // the "WHAT WE FOUND" panel as e.g. `![](https://static.wixstatic.com/…)`.
+  // Reject paragraphs that are essentially URL/image salads, and strip any
+  // remaining markdown image / raw URL noise from what's left.
+  const paragraphs = allContent.split('\n\n').filter((p) =>
     p.length > 50 && p.length < 500 &&
     !p.startsWith('#') && !p.startsWith('[') && !p.startsWith('|') &&
-    !p.match(/^\s*[-*]/)
+    !p.startsWith('!') &&                    // raw markdown image
+    !p.match(/^\s*[-*]/) &&
+    !/^(?:!?\[[^\]]*\]\([^)]+\)\s*)+$/.test(p.trim()) // image+link salad
   );
   if (paragraphs.length > 0) {
-    businessSummary = paragraphs[0].replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').trim();
+    businessSummary = cleanProseForDisplay(paragraphs[0]);
     if (businessSummary.length > 300) {
       businessSummary = businessSummary.slice(0, 297) + '...';
+    }
+    // If after cleaning we're left with too little real prose, drop the
+    // summary entirely rather than ship a stub.
+    if (businessSummary.replace(/\s/g, '').length < 30) {
+      businessSummary = undefined;
     }
   }
 
@@ -200,12 +235,18 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
 
     // Step 2: Scrape homepage for markdown + screenshot + metadata
     let homepageMarkdown = '';
+    let homepageHtml = '';
     let pageTitle = '';
     try {
+      // Single combined call — `rawHtml` plus the existing markdown/screenshot.
+      // `onlyMainContent: false` is required so we keep <head> (theme-color
+      // meta, Google/Bunny Fonts <link>s) and inline <style> blocks intact
+      // for the deterministic branding extractor. Markdown is unaffected in
+      // practice for our downstream uses.
       const scrapeResult = await firecrawlFetch('/scrape', {
         url: websiteUrl,
-        formats: ['markdown', 'screenshot'],
-        onlyMainContent: true,
+        formats: ['markdown', 'rawHtml', 'screenshot'],
+        onlyMainContent: false,
       }) as { success: boolean; data?: Record<string, unknown> };
 
       console.log(`[Firecrawl] /scrape homepage success=${scrapeResult.success}`);
@@ -215,6 +256,12 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
 
         if (d.screenshot && typeof d.screenshot === 'string') screenshotUrl = d.screenshot;
         if (d.markdown && typeof d.markdown === 'string') homepageMarkdown = d.markdown;
+        if (d.rawHtml && typeof d.rawHtml === 'string') homepageHtml = d.rawHtml;
+        // Firecrawl sometimes returns `html` (cleaned) instead of/in addition
+        // to `rawHtml` depending on plan. Take whichever's longer.
+        if (d.html && typeof d.html === 'string' && d.html.length > homepageHtml.length) {
+          homepageHtml = d.html;
+        }
 
         const metadata = d.metadata as Record<string, unknown> | undefined;
         if (metadata) {
@@ -283,7 +330,12 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
       if (extractResult.success && extractResult.data) {
         const d = extractResult.data;
         if (d.business_name && typeof d.business_name === 'string') brandName = d.business_name;
-        if (d.business_summary && typeof d.business_summary === 'string') businessSummary = d.business_summary;
+        if (d.business_summary && typeof d.business_summary === 'string') {
+          // LLM occasionally echoes markdown image/link syntax back into
+          // the summary field. Same sanitisation as the fallback parser.
+          const cleaned = cleanProseForDisplay(d.business_summary);
+          if (cleaned.length >= 30) businessSummary = cleaned;
+        }
         if (d.cms_platform && typeof d.cms_platform === 'string') cmsDetected = d.cms_platform;
 
         if (Array.isArray(d.primary_services)) {
@@ -385,10 +437,85 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
     const primaryLocations = locations.filter(l => l.confidence >= 0.75);
     const secondaryLocations = locations.filter(l => l.confidence < 0.75);
 
-    console.log(`[Firecrawl] Final: brand="${brandName}", services=${services.length}, locations=${locations.length}, screenshot=${!!screenshotUrl}, cms=${cmsDetected || 'none'}`);
+    // Deterministic brand-color & font extraction from the homepage HTML.
+    // Runs after the LLM /extract so we can merge: deterministic results
+    // take precedence (their confidence is higher than the LLM 0.80), but
+    // any LLM-only finds are preserved so we don't regress on sites where
+    // the LLM happens to nail it. De-dupe is case-insensitive on the value.
+    // We also build parallel `color_sources` / `font_sources` arrays so
+    // field-mapping.ts can read the per-entry confidence instead of the
+    // hard-coded 0.85 / 0.80 fallback it used pre-Stage-5.
+    const colorSources: { hex: string; source: 'theme-color' | 'css' | 'llm'; confidence: number }[] = [];
+    const fontSources: { family: string; source: 'google-fonts' | 'bunny-fonts' | 'css' | 'llm'; confidence: number }[] = [];
+    // Seed the source arrays with whatever the LLM had so far.
+    for (const c of colors) colorSources.push({ hex: c, source: 'llm', confidence: 0.8 });
+    for (const f of fonts) fontSources.push({ family: f, source: 'llm', confidence: 0.8 });
+
+    if (homepageHtml) {
+      // S3.1: deterministic precedence-aware phone extraction. Header-first,
+      // then hero/above-fold, then tel: links, then footer. Beats the prior
+      // first-match-wins behaviour that surfaced back-office / fax numbers
+      // on most law-firm sites because the footer was first to match in
+      // markdown order on some renders. Deterministic top result OVERRIDES
+      // the LLM phone if it disagrees — the precedence rules give us a
+      // stronger signal than the LLM's prose-level guess.
+      try {
+        const detPhones = extractPhoneFromHtml(homepageHtml);
+        if (detPhones.length > 0) {
+          const top = detPhones[0];
+          if (!phone || phone.replace(/\D/g, '').slice(-10) !== top.digits) {
+            console.log(
+              `[Firecrawl] Phone override: deterministic ${top.phone} (${top.source} @ ${top.confidence}) replaces LLM ${phone || '(none)'}`
+            );
+            phone = top.phone;
+          }
+        }
+      } catch (err) {
+        console.warn('[Firecrawl] Deterministic phone extraction failed:', err);
+      }
+
+      try {
+        const detColors = extractColorsFromHtml(homepageHtml);
+        const detFonts = extractFontsFromHtml(homepageHtml);
+        const seenColors = new Set(colors.map((c) => c.toLowerCase()));
+        // Prepend deterministic results in order so the higher-confidence
+        // theme-color / CSS-frequency hits land at the front of the array.
+        for (let i = detColors.length - 1; i >= 0; i--) {
+          const c = detColors[i];
+          if (!seenColors.has(c.hex.toLowerCase())) {
+            colors.unshift(c.hex);
+            colorSources.unshift({ hex: c.hex, source: c.source, confidence: c.confidence });
+            seenColors.add(c.hex.toLowerCase());
+          }
+        }
+        const seenFonts = new Set(fonts.map((f) => f.toLowerCase()));
+        for (let i = detFonts.length - 1; i >= 0; i--) {
+          const f = detFonts[i];
+          if (!seenFonts.has(f.family.toLowerCase())) {
+            fonts.unshift(f.family);
+            fontSources.unshift({ family: f.family, source: f.source, confidence: f.confidence });
+            seenFonts.add(f.family.toLowerCase());
+          }
+        }
+        console.log(
+          `[Firecrawl] Deterministic extractor merged: ${detColors.length} colors, ${detFonts.length} fonts. Final: ${colors.length} colors, ${fonts.length} fonts.`
+        );
+      } catch (err) {
+        console.warn('[Firecrawl] Deterministic branding extraction failed:', err);
+      }
+    }
+
+    console.log(`[Firecrawl] Final: brand="${brandName}", services=${services.length}, locations=${locations.length}, screenshot=${!!screenshotUrl}, cms=${cmsDetected || 'none'}, colors=${colors.length}, fonts=${fonts.length}`);
 
     return {
-      branding: { screenshot_url: screenshotUrl, logo_url: logoUrl, colors, fonts },
+      branding: {
+        screenshot_url: screenshotUrl,
+        logo_url: logoUrl,
+        colors,
+        fonts,
+        color_sources: colorSources,
+        font_sources: fontSources,
+      },
       insights: {
         brand_name: brandName,
         business_summary: businessSummary,

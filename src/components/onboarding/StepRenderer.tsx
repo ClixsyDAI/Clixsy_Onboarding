@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Fragment, useLayoutEffect, useRef, useState } from 'react';
 import { OnboardingStep, OnboardingField } from '@/lib/onboarding/steps';
 
 interface QuestionOverride {
@@ -77,6 +77,247 @@ function VideoTutorial({ url, title }: { url: string; title: string }) {
   );
 }
 
+// S5.1 / S5.2: visual preview of an autofilled value with Confirm / Edit
+// affordances. Toggles between three internal states:
+//   - 'preview'   (default when scraper value present): swatch/sample +
+//                 Confirm / Edit buttons.
+//   - 'edit'      (after Edit click): falls through to the regular text
+//                 input rendered by the caller so the user can type freely.
+//   - 'confirmed' (after Confirm click): collapsed "Confirmed" badge with
+//                 a Change link to re-enter edit mode.
+// The value itself flows through `onChange` unchanged; nothing about the
+// JSONB shape changes — this is purely how we *render* the existing
+// `primary_color` / `secondary_color` / `typography_fonts` strings.
+type PreviewKind = 'color-swatch' | 'font-sample';
+function ScrapedValuePreview({
+  kind,
+  value,
+  evidence,
+  fallback,
+  onChange,
+  fieldName,
+}: {
+  kind: PreviewKind;
+  value: string;
+  evidence: string | null;
+  fallback: React.ReactNode;
+  onChange: (name: string, v: unknown) => void;
+  fieldName: string;
+}) {
+  const [mode, setMode] = useState<'preview' | 'edit' | 'confirmed'>('preview');
+
+  if (mode === 'edit' || !value) {
+    return (
+      <>
+        {fallback}
+        {value && (
+          <button
+            type="button"
+            onClick={() => setMode('preview')}
+            className="mt-1 text-xs text-[#6B6B6B] hover:text-[#0B0B0B] underline"
+          >
+            Back to preview
+          </button>
+        )}
+      </>
+    );
+  }
+
+  if (mode === 'confirmed') {
+    return (
+      <div className="flex items-center gap-3 px-3 py-2.5 border border-[#25DC7F]/30 bg-[#25DC7F]/5 rounded-lg">
+        {kind === 'color-swatch' && /^#?[0-9a-fA-F]{3,8}$/.test(value.trim()) && (
+          <span
+            className="w-6 h-6 rounded border border-[#E6E8EA] flex-shrink-0"
+            style={{ backgroundColor: value.trim().startsWith('#') ? value.trim() : `#${value.trim()}` }}
+            aria-hidden
+          />
+        )}
+        <span className="flex-1 text-sm text-[#0B0B0B] font-mono">{value}</span>
+        <svg className="w-4 h-4 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+        </svg>
+        <span className="text-xs text-[#25DC7F] font-medium">Confirmed</span>
+        <button
+          type="button"
+          onClick={() => setMode('preview')}
+          className="text-xs text-[#6B6B6B] hover:text-[#0B0B0B] underline"
+        >
+          Change
+        </button>
+      </div>
+    );
+  }
+
+  // mode === 'preview'
+  const isHex = kind === 'color-swatch' && /^#?[0-9a-fA-F]{3,8}$/.test(value.trim());
+  const swatchHex = value.trim().startsWith('#') ? value.trim() : `#${value.trim()}`;
+  const fontNames = kind === 'font-sample' ? value.split(/[,;]/).map((s) => s.trim()).filter(Boolean) : [];
+
+  return (
+    <div className="border border-[#25DC7F]/30 bg-[#25DC7F]/5 rounded-lg p-3">
+      <div className="flex items-center gap-3">
+        {kind === 'color-swatch' && isHex && (
+          <span
+            className="w-10 h-10 rounded border border-[#E6E8EA] flex-shrink-0"
+            style={{ backgroundColor: swatchHex }}
+            aria-label={`Color swatch ${value}`}
+          />
+        )}
+        {kind === 'font-sample' && fontNames.length > 0 && (
+          <div className="flex-1 min-w-0">
+            {fontNames.slice(0, 3).map((fn) => (
+              <div key={fn} className="text-base text-[#0B0B0B] truncate" style={{ fontFamily: `'${fn}', sans-serif` }}>
+                {fn}
+              </div>
+            ))}
+          </div>
+        )}
+        {kind === 'color-swatch' && (
+          <span className="flex-1 text-sm text-[#0B0B0B] font-mono">{value}</span>
+        )}
+      </div>
+      {evidence && (
+        <p className="mt-2 text-xs text-[#6B6B6B] italic">{evidence}</p>
+      )}
+      <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          onClick={() => setMode('confirmed')}
+          className="px-3 py-1.5 bg-[#25DC7F] text-white rounded-md text-xs font-semibold hover:bg-[#1DB96A] transition-colors"
+        >
+          Confirm
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode('edit')}
+          className="px-3 py-1.5 border border-[#E6E8EA] text-[#0B0B0B] rounded-md text-xs font-semibold hover:bg-[#F4F5F6] transition-colors"
+        >
+          Edit
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// S3.2: auto-growing textarea. The prefilled-address textarea was too
+// short to show a full street + suite + city/state/zip without internal
+// scrolling, and the doc complains that reviewers don't realise they can
+// scroll. Auto-size to fit content from ~3 lines to ~6 lines, then cap
+// with overflow-auto. Used for every `textarea`-type field in the wizard
+// so a fix at the root benefits any read-back field with the same shape.
+function AutoGrowTextarea({
+  value,
+  onChange,
+  placeholder,
+  id,
+  name,
+  className,
+  minRows = 3,
+  maxRows = 6,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  id?: string;
+  name?: string;
+  className?: string;
+  minRows?: number;
+  maxRows?: number;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  const resize = () => {
+    const el = ref.current;
+    if (!el) return;
+    // Reset to auto so scrollHeight reflects the natural content size,
+    // not the previous fixed height.
+    el.style.height = 'auto';
+    const cs = window.getComputedStyle(el);
+    const lineHeight = parseFloat(cs.lineHeight) || 20;
+    const paddingY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    const borderY = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+    const minH = lineHeight * minRows + paddingY + borderY;
+    const maxH = lineHeight * maxRows + paddingY + borderY;
+    const targetH = Math.min(maxH, Math.max(minH, el.scrollHeight));
+    el.style.height = `${targetH}px`;
+    el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden';
+  };
+
+  // Resize on mount, on every value change, and on window resize (font
+  // size or layout may shift the natural height).
+  useLayoutEffect(() => {
+    resize();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  useLayoutEffect(() => {
+    const onResize = () => resize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <textarea
+      ref={ref}
+      id={id}
+      name={name}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      rows={minRows}
+      className={className}
+      style={{ resize: 'none' }}
+    />
+  );
+}
+
+// External-link action button — small "open in new tab" affordance shown
+// alongside URL inputs that opt in via `linkAction`. Uses
+// `noopener noreferrer` to prevent reverse-tab-nabbing, and is disabled
+// until the field has a parseable URL.
+function ExternalLinkButton({ label, href }: { label: string; href: string }) {
+  const canOpen = (() => {
+    if (!href) return false;
+    try {
+      const u = new URL(href.includes('://') ? href : `https://${href}`);
+      return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  })();
+  const resolved = href.includes('://') ? href : `https://${href}`;
+  if (!canOpen) {
+    return (
+      <button
+        type="button"
+        disabled
+        className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg border border-[#E6E8EA] text-[#A0A0A0] cursor-not-allowed whitespace-nowrap"
+        title="Enter a valid URL to enable this button"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+        </svg>
+        {label}
+      </button>
+    );
+  }
+  return (
+    <a
+      href={resolved}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg border border-[#25DC7F] text-[#25DC7F] hover:bg-[#25DC7F]/10 transition-colors whitespace-nowrap"
+    >
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+      </svg>
+      {label}
+    </a>
+  );
+}
+
 // Suggestion Chip — shown for suggest_only policy
 function SuggestionChip({ value, onAccept }: { value: string; onAccept: () => void }) {
   return (
@@ -100,6 +341,51 @@ function shouldSpanFullWidth(field: OnboardingField): boolean {
   if (field.type === 'multiselect' || field.type === 'radio') return true;
   if (field.options && field.options.length > 4) return true;
   return false;
+}
+
+// Centralised dependsOn check — supports the three forms documented on the
+// OnboardingField type (value / valueIn / includes). Used in two places:
+// (a) the early-return inside renderField for nested logic, and (b) the
+// outer visibleFields filter that determines section grouping.
+function isFieldVisible(
+  field: OnboardingField,
+  values: Record<string, unknown>
+): boolean {
+  if (!field.dependsOn) return true;
+  const dep = field.dependsOn;
+  const depValue = values[dep.field];
+  if (dep.includes !== undefined) {
+    return Array.isArray(depValue) && depValue.includes(dep.includes);
+  }
+  if (dep.valueIn !== undefined) {
+    return dep.valueIn.includes(depValue as string);
+  }
+  if (dep.value !== undefined) {
+    return depValue === dep.value;
+  }
+  return true;
+}
+
+// Resolve `optionsFromField` into a concrete option list at render time.
+// Returns `null` if the field doesn't use the feature (so callers can fall
+// back to the static `options`). Returns `[]` if the source is present but
+// empty — callers use this to render the "select something first" affordance.
+function resolveDynamicOptions(
+  field: OnboardingField,
+  values: Record<string, unknown>,
+  step: OnboardingStep
+): { value: string; label: string }[] | null {
+  if (!field.optionsFromField) return null;
+  const sourceValue = values[field.optionsFromField];
+  const selected = Array.isArray(sourceValue) ? (sourceValue as string[]) : [];
+  if (selected.length === 0) return [];
+  // Pull labels from the source field's declared `options` for nicer copy;
+  // fall back to the raw value as label if the source is purely free-text.
+  const sourceField = step.fields.find((f) => f.name === field.optionsFromField);
+  const labelLookup = new Map(
+    (sourceField?.options ?? []).map((o) => [o.value, o.label])
+  );
+  return selected.map((v) => ({ value: v, label: labelLookup.get(v) ?? v }));
 }
 
 export default function StepRenderer({ step, values, errors, onChange, questionOverrides, prefillMap }: StepRendererProps) {
@@ -130,12 +416,10 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
         : 'border-[#E6E8EA] bg-white hover:border-[#A0A0A0] focus:border-[#25DC7F] focus:ring-2 focus:ring-[#25DC7F]/20'
     }`;
 
-    // Check if field should be shown based on dependsOn
-    if (field.dependsOn) {
-      const dependentValue = values[field.dependsOn.field];
-      if (dependentValue !== field.dependsOn.value) {
-        return null;
-      }
+    // Check if field should be shown based on dependsOn (supports
+    // value / valueIn / includes — see OnboardingField type).
+    if (!isFieldVisible(field, values)) {
+      return null;
     }
 
     // Show suggestion chip for suggest_only fields that are currently empty
@@ -148,18 +432,86 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
         case 'text':
         case 'email':
         case 'url':
-        case 'tel':
+        case 'tel': {
+          // S5.1 / S5.2 — visual preview takes over when the scraper has
+          // autofilled the value AND the optional gate matches (e.g. the
+          // user opted into "pull from website" for colors). Falls back
+          // gracefully to a plain input + "couldn't extract" hint when the
+          // gate matches but the scraper produced nothing.
+          if (field.previewMode && field.type === 'text') {
+            const gate = field.gatePreviewOn;
+            const gateMatches = !gate || values[gate.field] === gate.value;
+            const prefillEntry = prefillMap?.[field.name];
+            const isPrefilledAutofill = prefillEntry?.policy === 'autofill';
+            const previewValue = typeof value === 'string' ? value : '';
+
+            if (gateMatches && isPrefilledAutofill && previewValue) {
+              const evidenceLine = prefillEntry?.evidence?.[0]?.excerpt || null;
+              return (
+                <ScrapedValuePreview
+                  kind={field.previewMode}
+                  value={previewValue}
+                  evidence={evidenceLine}
+                  fieldName={field.name}
+                  onChange={onChange}
+                  fallback={
+                    <input
+                      type="text"
+                      id={field.name}
+                      name={field.name}
+                      value={previewValue}
+                      onChange={(e) => onChange(field.name, e.target.value)}
+                      placeholder={field.placeholder}
+                      className={baseInputClasses}
+                    />
+                  }
+                />
+              );
+            }
+
+            if (gateMatches && gate && !isPrefilledAutofill) {
+              // Gated path with no scrape signal — be explicit instead of
+              // showing a confusing empty input.
+              return (
+                <>
+                  <input
+                    type="text"
+                    id={field.name}
+                    name={field.name}
+                    value={previewValue}
+                    onChange={(e) => onChange(field.name, e.target.value)}
+                    placeholder={field.placeholder}
+                    className={baseInputClasses}
+                  />
+                  <p className="mt-1 text-xs text-[#6B6B6B] italic">
+                    We couldn&apos;t extract this from your website automatically. Enter it manually above.
+                  </p>
+                </>
+              );
+            }
+          }
           return (
             <>
-              <input
-                type={field.type}
-                id={field.name}
-                name={field.name}
-                value={(value as string) || ''}
-                onChange={(e) => onChange(field.name, e.target.value)}
-                placeholder={field.placeholder}
-                className={baseInputClasses}
-              />
+              <div className={field.linkAction && field.type === 'url' ? 'flex gap-2' : ''}>
+                <input
+                  type={field.type}
+                  id={field.name}
+                  name={field.name}
+                  value={(value as string) || ''}
+                  onChange={(e) => onChange(field.name, e.target.value)}
+                  placeholder={field.placeholder}
+                  className={baseInputClasses}
+                />
+                {field.linkAction && field.type === 'url' && (
+                  // S7.3: inline "open in new tab" button. Disabled until the
+                  // value parses as a usable URL so we never spawn `about:blank`
+                  // or send the user to a malformed href.
+                  <ExternalLinkButton
+                    label={field.linkAction.label}
+                    href={(value as string) || ''}
+                  />
+                )}
+              </div>
               {showSuggestion && typeof suggestion.suggested_value === 'string' && (
                 <SuggestionChip
                   value={suggestion.suggested_value}
@@ -168,17 +520,17 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
               )}
             </>
           );
+        }
 
         case 'textarea':
           return (
             <>
-              <textarea
+              <AutoGrowTextarea
                 id={field.name}
                 name={field.name}
                 value={(value as string) || ''}
-                onChange={(e) => onChange(field.name, e.target.value)}
+                onChange={(v) => onChange(field.name, v)}
                 placeholder={field.placeholder}
-                rows={3}
                 className={baseInputClasses}
               />
               {showSuggestion && typeof suggestion.suggested_value === 'string' && (
@@ -190,23 +542,35 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
             </>
           );
 
-        case 'select':
+        case 'select': {
+          // Resolve dynamic options pulled from another field's selection.
+          // Falls back to the field's static `options` if no source is set.
+          const dynamicOptions = resolveDynamicOptions(field, values, step);
+          const opts = dynamicOptions ?? field.options ?? [];
+          const isDisabledForEmptySource =
+            !!field.optionsFromField && dynamicOptions !== null && dynamicOptions.length === 0;
           return (
             <select
               id={field.name}
               name={field.name}
               value={(value as string) || ''}
               onChange={(e) => onChange(field.name, e.target.value)}
+              disabled={isDisabledForEmptySource}
               className={baseInputClasses}
             >
-              <option value="">Select an option...</option>
-              {field.options?.map((option) => (
+              <option value="">
+                {isDisabledForEmptySource
+                  ? `Select at least one option in "${field.optionsFromField}" above`
+                  : 'Select an option...'}
+              </option>
+              {opts.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
               ))}
             </select>
           );
+        }
 
         case 'multiselect':
           const selectedValues = (value as string[]) || [];
@@ -254,10 +618,21 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
             </label>
           );
 
-        case 'radio':
+        case 'radio': {
+          // Same dynamic-option resolution as `select` so radios can cascade
+          // (e.g. case_priority → primary_case_types_keywords selections).
+          const dynamicOptions = resolveDynamicOptions(field, values, step);
+          const opts = dynamicOptions ?? field.options ?? [];
+          if (field.optionsFromField && dynamicOptions !== null && dynamicOptions.length === 0) {
+            return (
+              <p className="text-sm text-[#6B6B6B] italic px-3 py-2 bg-[#F4F5F6] rounded-lg">
+                Select at least one option above to choose from here.
+              </p>
+            );
+          }
           return (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {field.options?.map((option) => (
+              {opts.map((option) => (
                 <label
                   key={option.value}
                   className={`flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer transition-all duration-150 text-sm ${
@@ -279,6 +654,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
               ))}
             </div>
           );
+        }
 
         default:
           return null;
@@ -288,14 +664,11 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
     return fieldElement;
   };
 
-  // Filter out hidden fields (based on dependsOn conditions)
-  const visibleFields = step.fields.filter((field) => {
-    if (field.dependsOn) {
-      const dependentValue = values[field.dependsOn.field];
-      return dependentValue === field.dependsOn.value;
-    }
-    return true;
-  });
+  // Filter out hidden fields using the centralised dependsOn check so the
+  // outer layout matches what renderField produces. A field with a
+  // `sectionHeader` is rendered as its own row above the field, so we keep
+  // them in the same flat sequence and let the layout split rows as it goes.
+  const visibleFields = step.fields.filter((field) => isFieldVisible(field, values));
 
   return (
     <div>
@@ -305,64 +678,85 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
           const spanFull = shouldSpanFullWidth(field);
           const override = getOverride(field.name);
 
+          // Optional section header that introduces this field as the first
+          // entry in a new visually distinct group (e.g. the welcome-gift
+          // block at the bottom of the Other Contacts step).
+          const headerNode = field.sectionHeader ? (
+            <div key={`${field.name}__hdr`} className="md:col-span-2 mt-6 pt-6 border-t border-[#E6E8EA]">
+              <h2 className="text-lg font-bold text-[#0B0B0B]">{field.sectionHeader.title}</h2>
+              {field.sectionHeader.subtitle && (
+                <p className="text-sm italic text-[#6B6B6B] mt-1">{field.sectionHeader.subtitle}</p>
+              )}
+            </div>
+          ) : null;
+
           // For checkboxes, we handle the label differently
           if (field.type === 'checkbox') {
             return (
-              <div key={field.name} className={spanFull ? 'md:col-span-2' : ''}>
-                {field.videoUrl && field.videoTitle && (
-                  <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
-                )}
-                {renderField(field)}
-                {(override?.help_override || field.helpText) && (
-                  <p className="mt-1 text-xs text-[#6B6B6B] ml-8">{override?.help_override || field.helpText}</p>
-                )}
-                {errors[field.name] && (
-                  <p className="mt-1 text-xs text-[#E5484D] ml-8">{errors[field.name]}</p>
-                )}
-              </div>
+              <Fragment key={field.name}>
+                {headerNode}
+                <div className={spanFull ? 'md:col-span-2' : ''}>
+                  {field.videoUrl && field.videoTitle && (
+                    <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
+                  )}
+                  {renderField(field)}
+                  {(override?.help_override || field.helpText) && (
+                    <p className="mt-1 text-xs text-[#6B6B6B] ml-8">{override?.help_override || field.helpText}</p>
+                  )}
+                  {errors[field.name] && (
+                    <p className="mt-1 text-xs text-[#E5484D] ml-8">{errors[field.name]}</p>
+                  )}
+                </div>
+              </Fragment>
             );
           }
 
           // Confirmation pattern — wrap field with Yes/No confirmation
           if (override?.ui_pattern === 'confirmation') {
             return (
-              <div key={field.name} className="md:col-span-2">
-                {field.videoUrl && field.videoTitle && (
-                  <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
-                )}
-                <ConfirmationField
-                  field={field}
-                  override={override}
-                  value={values[field.name]}
-                  error={errors[field.name]}
-                  onChange={onChange}
-                  onDismiss={() => setDismissedOverrides(prev => new Set(prev).add(field.name))}
-                  renderField={() => renderField(field)}
-                />
-              </div>
+              <Fragment key={field.name}>
+                {headerNode}
+                <div className="md:col-span-2">
+                  {field.videoUrl && field.videoTitle && (
+                    <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
+                  )}
+                  <ConfirmationField
+                    field={field}
+                    override={override}
+                    value={values[field.name]}
+                    error={errors[field.name]}
+                    onChange={onChange}
+                    onDismiss={() => setDismissedOverrides(prev => new Set(prev).add(field.name))}
+                    renderField={() => renderField(field)}
+                  />
+                </div>
+              </Fragment>
             );
           }
 
           return (
-            <div key={field.name} className={spanFull ? 'md:col-span-2' : ''}>
-              {field.videoUrl && field.videoTitle && (
-                <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
-              )}
-              <label
-                htmlFor={field.name}
-                className="block text-sm font-semibold text-[#0B0B0B] mb-1.5"
-              >
-                {override?.label_override || field.label}
-                {field.required && <span className="text-[#E5484D] ml-1">*</span>}
-              </label>
-              {renderField(field)}
-              {(override?.help_override || field.helpText) && (
-                <p className="mt-1 text-xs text-[#6B6B6B]">{override?.help_override || field.helpText}</p>
-              )}
-              {errors[field.name] && (
-                <p className="mt-1 text-xs text-[#E5484D]">{errors[field.name]}</p>
-              )}
-            </div>
+            <Fragment key={field.name}>
+              {headerNode}
+              <div className={spanFull ? 'md:col-span-2' : ''}>
+                {field.videoUrl && field.videoTitle && (
+                  <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
+                )}
+                <label
+                  htmlFor={field.name}
+                  className="block text-sm font-semibold text-[#0B0B0B] mb-1.5"
+                >
+                  {override?.label_override || field.label}
+                  {field.required && <span className="text-[#E5484D] ml-1">*</span>}
+                </label>
+                {renderField(field)}
+                {(override?.help_override || field.helpText) && (
+                  <p className="mt-1 text-xs text-[#6B6B6B]">{override?.help_override || field.helpText}</p>
+                )}
+                {errors[field.name] && (
+                  <p className="mt-1 text-xs text-[#E5484D]">{errors[field.name]}</p>
+                )}
+              </div>
+            </Fragment>
           );
         })}
       </div>
@@ -426,11 +820,14 @@ function ConfirmationField({
         </div>
       )}
 
-      {/* Show the field if:
-          - User said "No" (confirmed === false)
-          - No value exists yet
-          - or always show it below the confirmation for transparency */}
-      {(confirmed === false || !hasValue || confirmed === null) && (
+      {/* S6.2: show the underlying field only when:
+          - User clicked "No, let me edit" (confirmed === false), or
+          - We never had a prefilled value to confirm against (!hasValue).
+        While the user hasn't decided yet (confirmed === null && hasValue)
+        the Yes/No buttons ARE the question — rendering the input alongside
+        is redundant (and was the source of the call-tracking dropdown
+        appearing twice). The detected value is already in label_override. */}
+      {(confirmed === false || !hasValue) && (
         <div>
           {renderField()}
           {override.help_override && (

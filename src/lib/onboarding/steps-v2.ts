@@ -97,13 +97,45 @@ export const onboardingStepsV2: OnboardingStep[] = [
         name: 'tech_contact_name',
         label: 'Technical Contact - Full Name',
         type: 'text',
-        dependsOn: { field: 'has_tech_contact', value: 'yes' },
+        // S2.1: keep these fields visible for BOTH "Yes, dedicated IT" and
+        // "Yes, external IT company" — the old single-value dependsOn was
+        // unmounting them when the user toggled to external.
+        dependsOn: { field: 'has_tech_contact', valueIn: ['yes', 'external'] },
       },
       {
         name: 'tech_contact_email',
         label: 'Technical Contact - Email',
         type: 'email',
-        dependsOn: { field: 'has_tech_contact', value: 'yes' },
+        dependsOn: { field: 'has_tech_contact', valueIn: ['yes', 'external'] },
+      },
+      // S2.2: welcome-gift block relocated here from step 10 (Transition &
+      // Wrap-up). The radio + conditional recipient/address fields are
+      // unchanged in shape; only the placement and section heading are new.
+      {
+        name: 'wants_welcome_gift',
+        label: 'Would you like to receive a welcome gift?',
+        type: 'radio',
+        sectionHeader: {
+          title: 'Your welcome gift',
+          subtitle: 'Let us show our appreciation',
+        },
+        options: [
+          { value: 'yes', label: 'Yes please!' },
+          { value: 'no', label: 'No thank you' },
+        ],
+      },
+      {
+        name: 'gift_recipient_name',
+        label: 'Recipient Name',
+        type: 'text',
+        dependsOn: { field: 'wants_welcome_gift', value: 'yes' },
+      },
+      {
+        name: 'gift_shipping_address',
+        label: 'Shipping Address',
+        type: 'textarea',
+        placeholder: '123 Main St, Suite 100\nCity, State ZIP',
+        dependsOn: { field: 'wants_welcome_gift', value: 'yes' },
       },
     ],
   },
@@ -228,25 +260,35 @@ export const onboardingStepsV2: OnboardingStep[] = [
           { value: 'no', label: 'No, pull from website' },
         ],
       },
+      // S5.1: primary_color / secondary_color now surface on BOTH the
+      // "Yes, I know them" path (plain hex inputs) AND the "No, pull from
+      // website" path (swatch preview with Confirm/Edit, gated by the radio).
       {
         name: 'primary_color',
         label: 'Primary Brand Color (Hex)',
         type: 'text',
         placeholder: '#1A2B3C',
-        dependsOn: { field: 'knows_brand_colors', value: 'yes' },
+        dependsOn: { field: 'knows_brand_colors', valueIn: ['yes', 'no'] },
+        previewMode: 'color-swatch',
+        gatePreviewOn: { field: 'knows_brand_colors', value: 'no' },
       },
       {
         name: 'secondary_color',
         label: 'Secondary Brand Color (Hex)',
         type: 'text',
         placeholder: '#4D5E6F',
-        dependsOn: { field: 'knows_brand_colors', value: 'yes' },
+        dependsOn: { field: 'knows_brand_colors', valueIn: ['yes', 'no'] },
+        previewMode: 'color-swatch',
+        gatePreviewOn: { field: 'knows_brand_colors', value: 'no' },
       },
+      // S5.2: same swatch pattern but for fonts. Always shown; preview
+      // mode kicks in only when the scraper actually delivered a value.
       {
         name: 'typography_fonts',
         label: 'What fonts does your brand use?',
         type: 'text',
         placeholder: 'e.g., Montserrat, Open Sans',
+        previewMode: 'font-sample',
       },
     ],
   },
@@ -319,6 +361,26 @@ export const onboardingStepsV2: OnboardingStep[] = [
           { value: 'no_one', label: 'No one' },
         ],
       },
+      // S6.3: capture contact info when an external party owns the site.
+      // Visible only for "Another agency" or "Freelancer".
+      {
+        name: 'website_owner_name',
+        label: 'Agency / Freelancer name',
+        type: 'text',
+        dependsOn: { field: 'website_managed_by', valueIn: ['another_agency', 'freelancer'] },
+      },
+      {
+        name: 'website_owner_contact_name',
+        label: 'Contact name',
+        type: 'text',
+        dependsOn: { field: 'website_managed_by', valueIn: ['another_agency', 'freelancer'] },
+      },
+      {
+        name: 'website_owner_contact_email',
+        label: 'Contact email address',
+        type: 'email',
+        dependsOn: { field: 'website_managed_by', valueIn: ['another_agency', 'freelancer'] },
+      },
       {
         name: 'uses_call_tracking',
         label: 'Do you use call tracking?',
@@ -341,11 +403,51 @@ export const onboardingStepsV2: OnboardingStep[] = [
           { value: 'other', label: 'Other' },
         ],
       },
+      // S6.1: where should form submissions go? — was a free-text textarea,
+      // now a multi-select with conditional sub-fields per destination type.
+      // Multi-select because some firms route to BOTH email and a CRM.
       {
-        name: 'form_submission_destinations',
+        name: 'form_submission_methods',
         label: 'Where should form submissions go?',
-        type: 'textarea',
-        placeholder: 'e.g., john@firm.com, CRM integration, etc.',
+        type: 'multiselect',
+        helpText: 'Select all that apply — many firms route to both an inbox and a CRM.',
+        options: [
+          { value: 'email', label: 'Email' },
+          { value: 'crm', label: 'CRM' },
+          { value: 'other', label: 'Other' },
+        ],
+      },
+      {
+        name: 'form_submission_email',
+        label: 'Specify address',
+        type: 'email',
+        placeholder: 'john@firm.com',
+        dependsOn: { field: 'form_submission_methods', includes: 'email' },
+      },
+      {
+        name: 'form_submission_crm',
+        label: 'Which CRM?',
+        type: 'select',
+        dependsOn: { field: 'form_submission_methods', includes: 'crm' },
+        options: [
+          { value: 'salesforce', label: 'Salesforce' },
+          { value: 'hubspot', label: 'HubSpot' },
+          { value: 'zoho', label: 'Zoho' },
+          { value: 'pipedrive', label: 'Pipedrive' },
+          { value: 'clio', label: 'Clio' },
+          { value: 'lawmatics', label: 'Lawmatics' },
+          { value: 'mycase', label: 'MyCase' },
+          { value: 'litify', label: 'Litify' },
+          { value: 'filevine', label: 'Filevine' },
+          { value: 'other', label: 'Other' },
+        ],
+      },
+      {
+        name: 'form_submission_other',
+        label: 'Describe the other destination',
+        type: 'text',
+        placeholder: 'e.g., Zapier webhook into our intake system',
+        dependsOn: { field: 'form_submission_methods', includes: 'other' },
       },
     ],
   },
@@ -380,18 +482,51 @@ export const onboardingStepsV2: OnboardingStep[] = [
         required: true,
         placeholder: 'e.g., Dallas, Fort Worth, Plano, Arlington',
       },
+      // S7.1: was a free-text textarea, now a multi-select checklist of
+      // common case types/services. The "other" option reveals a free-text
+      // input below so we can still capture verticals not on the list.
       {
         name: 'primary_case_types_keywords',
         label: 'What are your primary case types or services?',
-        type: 'textarea',
+        type: 'multiselect',
         required: true,
-        placeholder: 'e.g., Personal Injury, Car Accidents, Slip and Fall',
+        options: [
+          { value: 'personal_injury', label: 'Personal Injury' },
+          { value: 'car_accidents', label: 'Car Accidents' },
+          { value: 'truck_accidents', label: 'Truck Accidents' },
+          { value: 'motorcycle_accidents', label: 'Motorcycle Accidents' },
+          { value: 'slip_and_fall', label: 'Slip and Fall / Premises Liability' },
+          { value: 'wrongful_death', label: 'Wrongful Death' },
+          { value: 'medical_malpractice', label: 'Medical Malpractice' },
+          { value: 'product_liability', label: 'Product Liability' },
+          { value: 'workers_compensation', label: "Workers' Compensation" },
+          { value: 'workplace_injury', label: 'Workplace Injury' },
+          { value: 'mass_tort', label: 'Mass Tort / Class Action' },
+          { value: 'criminal_defense', label: 'Criminal Defense' },
+          { value: 'dui_dwi', label: 'DUI / DWI' },
+          { value: 'family_law', label: 'Family Law' },
+          { value: 'employment_law', label: 'Employment Law / Discrimination' },
+          { value: 'immigration', label: 'Immigration' },
+          { value: 'estate_planning', label: 'Estate Planning / Probate' },
+          { value: 'business_law', label: 'Business / Corporate Law' },
+          { value: 'other', label: 'Other' },
+        ],
       },
+      {
+        name: 'primary_case_types_other',
+        label: 'Tell us about your other case types',
+        type: 'text',
+        placeholder: 'e.g., Maritime law, Aviation',
+        dependsOn: { field: 'primary_case_types_keywords', includes: 'other' },
+      },
+      // S7.2: was a free-text "e.g. Car Accidents" hint; now a radio whose
+      // options are exactly whatever was selected in primary_case_types_keywords.
+      // Renderer falls back to a helper message if the source is empty.
       {
         name: 'case_priority',
         label: 'Which case type should we focus on first?',
-        type: 'text',
-        placeholder: 'e.g., Car Accidents',
+        type: 'radio',
+        optionsFromField: 'primary_case_types_keywords',
       },
       {
         name: 'cases_to_avoid',
@@ -415,6 +550,9 @@ export const onboardingStepsV2: OnboardingStep[] = [
         type: 'url',
         placeholder: 'https://business.google.com/...',
         dependsOn: { field: 'has_gbp', value: 'yes' },
+        // S7.3: inline button so the client can sanity-check the detected
+        // listing in a new tab without copy-pasting.
+        linkAction: { label: 'View GBP profile' },
       },
     ],
   },
@@ -617,13 +755,15 @@ export const onboardingStepsV2: OnboardingStep[] = [
   // -----------------------------------------------
   // STEP 10: TRANSITION & WRAP-UP (from v1 steps 27+28)
   // Removed: shipping_preference
+  // S10.2: welcome-gift block moved out to step 2 (Other Contacts).
+  // S10.1: previous-agency contact textarea split into three structured fields.
   // -----------------------------------------------
   {
     key: 'transition_wrapup',
     title: 'Transition & Wrap-up',
     shortTitle: 'WRAP-UP',
-    description: 'Previous agency and welcome gift.',
-    estimatedTime: '2 min',
+    description: 'Previous agency.',
+    estimatedTime: '1 min',
     icon: STEP_ICONS.arrowPath,
     fields: [
       {
@@ -635,11 +775,24 @@ export const onboardingStepsV2: OnboardingStep[] = [
           { value: 'no', label: 'No' },
         ],
       },
+      // S10.1: three structured fields replace the single free-text
+      // "Previous agency contact info" textarea so the data is usable.
       {
-        name: 'previous_agency_contact',
-        label: 'Previous agency contact info',
-        type: 'textarea',
-        placeholder: 'Agency name, contact person, email',
+        name: 'previous_agency_name',
+        label: 'Agency name',
+        type: 'text',
+        dependsOn: { field: 'has_previous_agency', value: 'yes' },
+      },
+      {
+        name: 'previous_agency_contact_person',
+        label: 'Contact person name',
+        type: 'text',
+        dependsOn: { field: 'has_previous_agency', value: 'yes' },
+      },
+      {
+        name: 'previous_agency_contact_email',
+        label: 'Email address',
+        type: 'email',
         dependsOn: { field: 'has_previous_agency', value: 'yes' },
       },
       {
@@ -652,28 +805,6 @@ export const onboardingStepsV2: OnboardingStep[] = [
           { value: 'no', label: "I'll handle it" },
           { value: 'wait', label: 'Wait until transition complete' },
         ],
-      },
-      {
-        name: 'wants_welcome_gift',
-        label: 'Would you like to receive a welcome gift?',
-        type: 'radio',
-        options: [
-          { value: 'yes', label: 'Yes please!' },
-          { value: 'no', label: 'No thank you' },
-        ],
-      },
-      {
-        name: 'gift_recipient_name',
-        label: 'Recipient Name',
-        type: 'text',
-        dependsOn: { field: 'wants_welcome_gift', value: 'yes' },
-      },
-      {
-        name: 'gift_shipping_address',
-        label: 'Shipping Address',
-        type: 'textarea',
-        placeholder: '123 Main St, Suite 100\nCity, State ZIP',
-        dependsOn: { field: 'wants_welcome_gift', value: 'yes' },
       },
     ],
   },
@@ -752,7 +883,13 @@ const stepValidationSchemasV2: Record<string, z.ZodSchema> = {
 
   seo_targeting: z.object({
     main_geographical_areas: z.string().min(1, 'Please enter your target areas'),
-    primary_case_types_keywords: z.string().min(1, 'Please enter your primary case types'),
+    // S7.1: this field flipped from a free-text string to a multi-select array
+    // of canonical case-type values. The schema accepts the new array shape;
+    // legacy textarea answers (strings) are still tolerated by callers that
+    // read JSONB but won't pass validation when re-submitted.
+    primary_case_types_keywords: z
+      .array(z.string())
+      .min(1, 'Please pick at least one case type'),
   }).passthrough(),
 
   legal_content_comms: z.object({}).passthrough(),

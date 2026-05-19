@@ -69,6 +69,30 @@ export const brandingSchema = z.object({
   screenshot_url: z.string().url().optional(),
   colors: z.array(z.string()).default([]),
   fonts: z.array(z.string()).default([]),
+  // Per-entry confidence + source for the deterministic brand-extractor
+  // pipeline. Optional so legacy snapshots (and the LLM-only path) don't
+  // break — field-mapping.ts falls back to a default 0.80 when absent.
+  // Length is parallel to `colors` / `fonts` when present.
+  color_sources: z
+    .array(
+      z.object({
+        hex: z.string(),
+        source: z.enum(['theme-color', 'css', 'llm']),
+        confidence: z.number().min(0).max(1),
+      })
+    )
+    .default([])
+    .optional(),
+  font_sources: z
+    .array(
+      z.object({
+        family: z.string(),
+        source: z.enum(['google-fonts', 'bunny-fonts', 'css', 'llm']),
+        confidence: z.number().min(0).max(1),
+      })
+    )
+    .default([])
+    .optional(),
 });
 
 export type Branding = z.infer<typeof brandingSchema>;

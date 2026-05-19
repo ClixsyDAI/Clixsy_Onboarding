@@ -6,13 +6,18 @@ import SiteIntelligencePanel from '@/components/admin/SiteIntelligencePanel';
 
 const CLIXSY_LOGO_URL = 'https://res.cloudinary.com/dovgh19xr/image/upload/v1766427227/new_logo_nvrux0.svg';
 
+type Vertical = 'law_firm' | 'home_services';
+
 export default function NewOnboardingPage() {
   const [clientName, setClientName] = useState('');
   const [contactName, setContactName] = useState('');
   const [contactEmail, setContactEmail] = useState('');
   const [websiteUrl, setWebsiteUrl] = useState('');
+  const [accountManager, setAccountManager] = useState('');
+  const [vertical, setVertical] = useState<Vertical>('law_firm');
   const [isLoading, setIsLoading] = useState(false);
   const [generatedUrl, setGeneratedUrl] = useState<string | null>(null);
+  const [generatedPin, setGeneratedPin] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Site intelligence state
@@ -20,6 +25,9 @@ export default function NewOnboardingPage() {
   const [siRecordId, setSiRecordId] = useState<string | null>(null);
   const [siComplete, setSiComplete] = useState(false);
   const [skipAnalysis, setSkipAnalysis] = useState(false);
+
+  // Success state — clipboard feedback
+  const [copiedField, setCopiedField] = useState<'url' | 'pin' | null>(null);
 
   const handleAnalysisComplete = useCallback((recordId: string) => {
     setSiRecordId(recordId);
@@ -32,7 +40,6 @@ export default function NewOnboardingPage() {
     setError(null);
 
     try {
-      // Call admin API to create session
       const response = await fetch('/api/admin/onboarding/create', {
         method: 'POST',
         headers: {
@@ -44,6 +51,8 @@ export default function NewOnboardingPage() {
           contactEmail,
           websiteUrl: websiteUrl || undefined,
           siteIntelligenceId: siRecordId || undefined,
+          accountManager,
+          vertical,
         }),
       });
 
@@ -69,9 +78,9 @@ export default function NewOnboardingPage() {
         }
       }
 
-      // Generate the onboarding URL
       const baseUrl = window.location.origin;
       setGeneratedUrl(`${baseUrl}/onboarding/${data.token}`);
+      setGeneratedPin(data.pin ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -79,16 +88,36 @@ export default function NewOnboardingPage() {
     }
   };
 
-  const copyToClipboard = () => {
-    if (generatedUrl) {
-      navigator.clipboard.writeText(generatedUrl);
+  const copyToClipboard = async (text: string, field: 'url' | 'pin') => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 1500);
+    } catch {
+      // Clipboard API can fail in non-secure contexts; we silently
+      // ignore — the value is also selectable in the input field.
     }
+  };
+
+  const resetForm = () => {
+    setGeneratedUrl(null);
+    setGeneratedPin(null);
+    setClientName('');
+    setContactName('');
+    setContactEmail('');
+    setWebsiteUrl('');
+    setAccountManager('');
+    setVertical('law_firm');
+    setSiRecordId(null);
+    setSiComplete(false);
+    setSkipAnalysis(false);
+    setSessionId(null);
+    setCopiedField(null);
   };
 
   if (generatedUrl) {
     return (
       <div className="min-h-screen bg-[#F4F5F6]">
-        {/* Header */}
         <header className="bg-[#0F1A14]">
           <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
             <Link href="/">
@@ -111,6 +140,8 @@ export default function NewOnboardingPage() {
               <h1 className="text-2xl font-extrabold text-center text-[#0B0B0B] mb-4">
                 Onboarding Link Created!
               </h1>
+
+              {/* Onboarding URL */}
               <p className="text-center text-[#6B6B6B] mb-2">
                 Share this link with your client to begin their onboarding:
               </p>
@@ -126,30 +157,55 @@ export default function NewOnboardingPage() {
                     type="text"
                     value={generatedUrl}
                     readOnly
+                    aria-label="Onboarding URL"
                     className="flex-1 bg-transparent text-[#0B0B0B] text-sm focus:outline-none"
                   />
                   <button
-                    onClick={copyToClipboard}
+                    onClick={() => copyToClipboard(generatedUrl, 'url')}
                     className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors"
                   >
-                    Copy
+                    {copiedField === 'url' ? 'Copied!' : 'Copy'}
                   </button>
                 </div>
               </div>
 
+              {/* PIN */}
+              {generatedPin && (
+                <div className="border-t border-[#E6E8EA] pt-6 mb-6">
+                  <p className="text-center text-[#0B0B0B] font-semibold mb-2">
+                    Access PIN
+                  </p>
+                  <p className="text-center text-[#6B6B6B] text-sm mb-4">
+                    Send this 6-digit PIN to your client along with the link.
+                    They&apos;ll enter it once to unlock the form.
+                  </p>
+                  <div className="bg-[#FFF8E1] border border-[#F5A524]/30 rounded-lg p-4 mb-4">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={generatedPin}
+                        readOnly
+                        aria-label="6-digit PIN"
+                        className="flex-1 bg-transparent text-[#0B0B0B] text-2xl font-mono tracking-[0.5em] text-center focus:outline-none"
+                      />
+                      <button
+                        onClick={() => copyToClipboard(generatedPin, 'pin')}
+                        className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors"
+                      >
+                        {copiedField === 'pin' ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-center text-[#E5484D] text-xs">
+                    <strong>This PIN won&apos;t be shown again.</strong> Copy it now.
+                    If lost, you can regenerate it from the session detail page.
+                  </p>
+                </div>
+              )}
+
               <div className="flex gap-4">
                 <button
-                  onClick={() => {
-                    setGeneratedUrl(null);
-                    setClientName('');
-                    setContactName('');
-                    setContactEmail('');
-                    setWebsiteUrl('');
-                    setSiRecordId(null);
-                    setSiComplete(false);
-                    setSkipAnalysis(false);
-                    setSessionId(null);
-                  }}
+                  onClick={resetForm}
                   className="flex-1 px-6 py-3 border border-[#E6E8EA] text-[#0B0B0B] rounded-lg font-semibold hover:bg-[#F4F5F6] transition-colors"
                 >
                   Create Another
@@ -168,11 +224,13 @@ export default function NewOnboardingPage() {
     );
   }
 
-  const canCreateLink = clientName && (siComplete || skipAnalysis || !websiteUrl);
+  const canCreateLink =
+    clientName.trim() !== '' &&
+    accountManager.trim() !== '' &&
+    (siComplete || skipAnalysis || !websiteUrl);
 
   return (
     <div className="min-h-screen bg-[#F4F5F6]">
-      {/* Header */}
       <header className="bg-[#0F1A14]">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <Link href="/">
@@ -186,7 +244,6 @@ export default function NewOnboardingPage() {
 
       <div className="flex items-center justify-center py-16 px-4">
         <div className="max-w-2xl w-full mx-auto space-y-6">
-          {/* Client Details Form */}
           <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-8">
             <h1 className="text-2xl font-extrabold text-[#0B0B0B] mb-2">
               Create New Onboarding Session
@@ -259,7 +316,6 @@ export default function NewOnboardingPage() {
                   value={websiteUrl}
                   onChange={(e) => {
                     setWebsiteUrl(e.target.value);
-                    // Reset analysis state if URL changes
                     setSiRecordId(null);
                     setSiComplete(false);
                     setSkipAnalysis(false);
@@ -272,6 +328,65 @@ export default function NewOnboardingPage() {
                 </p>
               </div>
 
+              {/* Account Manager (P1) */}
+              <div>
+                <label htmlFor="accountManager" className="block text-sm font-semibold text-[#0B0B0B] mb-2">
+                  Account Manager <span className="text-[#E5484D]">*</span>
+                </label>
+                <input
+                  type="text"
+                  id="accountManager"
+                  value={accountManager}
+                  onChange={(e) => setAccountManager(e.target.value)}
+                  required
+                  placeholder="Your name"
+                  className="w-full px-4 py-3 border border-[#E6E8EA] rounded-lg focus:ring-2 focus:ring-[#25DC7F]/20 focus:border-[#25DC7F] transition-all"
+                />
+                <p className="mt-1 text-xs text-[#6B6B6B]">
+                  The Clixsy person who&apos;ll be this client&apos;s main contact.
+                  Surfaces in the thank-you screen.
+                </p>
+              </div>
+
+              {/* Vertical (P1) */}
+              <div>
+                <span className="block text-sm font-semibold text-[#0B0B0B] mb-2">
+                  Vertical <span className="text-[#E5484D]">*</span>
+                </span>
+                <div
+                  role="radiogroup"
+                  aria-label="Vertical"
+                  className="grid grid-cols-2 gap-2 p-1 bg-[#F4F5F6] rounded-lg border border-[#E6E8EA]"
+                >
+                  {([
+                    { value: 'law_firm', label: 'Law Firm' },
+                    { value: 'home_services', label: 'Home Services' },
+                  ] as const).map((opt) => {
+                    const selected = vertical === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        onClick={() => setVertical(opt.value)}
+                        className={
+                          'px-4 py-2.5 rounded-md text-sm font-semibold transition-all ' +
+                          (selected
+                            ? 'bg-white text-[#0B0B0B] shadow-sm border border-[#E6E8EA]'
+                            : 'text-[#6B6B6B] hover:text-[#0B0B0B]')
+                        }
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-1 text-xs text-[#6B6B6B]">
+                  Used to branch form content downstream. Pick the closest match.
+                </p>
+              </div>
+
               {/* Site Intelligence Panel */}
               {websiteUrl && !skipAnalysis && (
                 <SiteIntelligencePanel
@@ -281,7 +396,6 @@ export default function NewOnboardingPage() {
                 />
               )}
 
-              {/* Skip Analysis Option */}
               {websiteUrl && !siComplete && (
                 <div className="flex items-center gap-2">
                   <input
@@ -297,7 +411,6 @@ export default function NewOnboardingPage() {
                 </div>
               )}
 
-              {/* Submit Button */}
               <button
                 type="submit"
                 disabled={isLoading || !canCreateLink}

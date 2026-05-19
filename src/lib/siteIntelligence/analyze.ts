@@ -1,5 +1,5 @@
 import { createServiceRoleClient } from '@/lib/supabase/server';
-import { isSiteIntelligenceEnabled, hasFirecrawlKey, hasWappalyzerKey, hasBuiltWithKey, hasPageSpeedKey } from './config';
+import { hasFirecrawlKey, hasWappalyzerKey, hasBuiltWithKey, hasPageSpeedKey } from './config';
 import type { SiteIntelligenceProvider, ProviderResult } from './providers/types';
 import type { Branding, SiteInsights, TechStack, Metrics, Evidence, SiteIntelligenceRecord } from './schemas';
 import { siteInsightsSchema, brandingSchema, techStackSchema, metricsSchema } from './schemas';
@@ -29,8 +29,8 @@ function mergeProviderResults(results: ProviderResult[]): {
   evidence: Evidence[];
 } {
   let branding: Partial<Branding> = {};
-  let insights: Partial<SiteInsights> = {};
-  let techStack: Partial<TechStack> = {};
+  const insights: Partial<SiteInsights> = {};
+  const techStack: Partial<TechStack> = {};
   let metrics: Partial<Metrics> = {};
   const evidence: Evidence[] = [];
 
@@ -241,7 +241,7 @@ export async function runSiteAnalysis(recordId: string): Promise<void> {
 
     // Build prefill map and question overrides
     const prefillMap = buildPrefillMap(merged.insights, merged.techStack, merged.branding);
-    const questionOverrides = buildQuestionOverrides(merged.insights, merged.techStack.cms);
+    const questionOverrides = buildQuestionOverrides(merged.insights, merged.techStack.cms, merged.techStack);
 
     // Save results
     await supabase

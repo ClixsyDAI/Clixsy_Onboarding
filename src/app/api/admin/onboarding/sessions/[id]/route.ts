@@ -18,7 +18,10 @@ export async function GET(
     const { id } = await params;
     const supabase = createServiceRoleClient();
 
-    // Fetch session
+    // Fetch session — including the new account_manager / vertical
+    // fields (P1) and the PIN-state columns (P2). pin_hash itself
+    // is NEVER returned to the client; we surface a boolean `pin_set`
+    // derived from it instead.
     const { data: sessionData, error: sessionError } = await supabase
       .from('onboarding_sessions')
       .select(`
@@ -31,6 +34,12 @@ export async function GET(
         submitted_at,
         created_at,
         logo_url,
+        account_manager,
+        vertical,
+        pin_hash,
+        pin_attempts,
+        pin_lockout_until,
+        pin_locked_at,
         clients (
           client_name,
           primary_contact_name,
@@ -48,12 +57,14 @@ export async function GET(
       );
     }
 
-    // Transform clients from array to single object
+    // Transform clients from array to single object + redact pin_hash.
+    const { pin_hash, ...sessionWithoutHash } = sessionData as Record<string, unknown> & { pin_hash: string | null };
     const transformedSession = {
-      ...sessionData,
-      clients: Array.isArray(sessionData.clients)
-        ? sessionData.clients[0] || null
-        : sessionData.clients
+      ...sessionWithoutHash,
+      pin_set: pin_hash !== null,
+      clients: Array.isArray((sessionData as { clients: unknown }).clients)
+        ? (sessionData as { clients: unknown[] }).clients[0] || null
+        : (sessionData as { clients: unknown }).clients,
     };
 
     // Fetch answers

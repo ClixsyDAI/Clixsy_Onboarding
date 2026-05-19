@@ -6,6 +6,8 @@ import StepRenderer from './StepRenderer';
 import StepTransition from './StepTransition';
 import AccessChecklistStep from './AccessChecklistStep';
 import WebsiteSnapshot from './WebsiteSnapshot';
+import WelcomeModal from './WelcomeModal';
+import ThankYou from './ThankYou';
 import { getTransitionMessage, getWelcomeMessage } from '@/lib/onboarding/transition-messages';
 import type { TransitionMessage } from '@/lib/onboarding/transition-messages';
 
@@ -51,6 +53,21 @@ interface WizardProps {
   flowVersion?: 'v1' | 'v2';
   clientName?: string;
   contactName?: string;
+  /**
+   * Stage 7 / P3+P4: when true, the first-login welcome modal has
+   * already been dismissed for this session. Gates BOTH the modal
+   * itself (only fires once per session, server-tracked) AND the
+   * P4 returning-user greeting (which uses the company name and
+   * only surfaces from the second login onward).
+   */
+  welcomeWizardSeen?: boolean;
+  /**
+   * Stage 8 / S12.2: rendered in the rebuilt thank-you screen copy.
+   * Pulled from `onboarding_sessions.account_manager` (set during admin
+   * Create — Stage 1 / P1). Null on legacy rows; ThankYou falls back to
+   * "your account manager" in that case.
+   */
+  accountManager?: string | null;
   siteIntelligence?: SiteIntelligenceData | null;
 }
 
@@ -62,6 +79,8 @@ export default function Wizard({
   flowVersion = 'v1',
   clientName = '',
   contactName = '',
+  welcomeWizardSeen = true,
+  accountManager = null,
   siteIntelligence = null,
 }: WizardProps) {
   const steps = useMemo(() => getStepsForVersion(flowVersion), [flowVersion]);
@@ -92,6 +111,15 @@ export default function Wizard({
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [isSubmitted, setIsSubmitted] = useState(sessionStatus === 'submitted');
   const [showWelcome, setShowWelcome] = useState(true);
+
+  // G2: click guard against icon-nav races. `isNavigating` covers the brief
+  // window between click → render → background save settle so the form card
+  // shows a skeleton instead of a "white card flash" and so back-to-back
+  // clicks can't race their save-promises to overwrite `currentStepIndex`.
+  // `lastNavClickRef` is a 150ms hard floor on click rate, matching the
+  // operator's latency target.
+  const [isNavigating, setIsNavigating] = useState(false);
+  const lastNavClickRef = useRef(0);
 
   // Scroll navigation state
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -151,21 +179,46 @@ export default function Wizard({
     });
   }, []); // Only run once on mount
 
-  // Show welcome interstitial on first load
+  // P4 (Stage 7): once the P3 modal has been dismissed, every subsequent
+  // visit is a "returning" visit by definition. The previous heuristic
+  // (initialStep > 0 || initialAnswers.length > 0) failed for users who
+  // dismissed the modal but quit before filling anything in. The flag is
+  // the right signal.
   const isReturning = useMemo(() => {
+    if (welcomeWizardSeen) return true;
     return initialStep > 0 || Object.keys(initialAnswers).length > 0;
-  }, [initialStep, initialAnswers]);
+  }, [welcomeWizardSeen, initialStep, initialAnswers]);
+
+  // P3 (Stage 7): first-login welcome wizard modal. Two-step popover
+  // that replaces the green interstitial on the very first PIN-authed
+  // session load. Gated on welcomeWizardSeen (server-tracked) so it
+  // truly only ever fires once per session — surviving cleared cookies.
+  // Local `welcomeModalOpen` lets the user dismiss within this render
+  // before the server flag round-trip completes.
+  const [welcomeModalOpen, setWelcomeModalOpen] = useState(!welcomeWizardSeen && sessionStatus !== 'submitted');
+  const showP3Modal = welcomeModalOpen;
 
   useEffect(() => {
+    // If we're going to show the P3 modal, skip the legacy green
+    // interstitial entirely (it would just play behind the modal).
+    if (showP3Modal) {
+      setContentVisible(true);
+      setShowWelcome(false);
+      return;
+    }
+
     if (!showWelcome || isSubmitted) {
       setContentVisible(true);
       return;
     }
 
-    const welcomeMsg = getWelcomeMessage(
-      contactName ? contactName.split(' ')[0] : '',
-      isReturning,
-    );
+    // P4 (Stage 7): use the CLIENT COMPANY NAME, not the personal
+    // contact's first name. Only fires when welcomeWizardSeen=true
+    // (the P3 modal handled the first login). The fallback to
+    // contact first name preserves a sensible greeting for legacy
+    // sessions where clientName isn't populated.
+    const greetingName = clientName || (contactName ? contactName.split(' ')[0] : '');
+    const welcomeMsg = getWelcomeMessage(greetingName, isReturning);
     setTransitionMessage(welcomeMsg);
     setTransitioning(true);
 
@@ -399,19 +452,45 @@ export default function Wizard({
     return () => clearTimeout(timeout);
   }, [stepAnswers]);
 
-  // Navigate to step - allow navigation to any step
-  const navigateToStep = async (index: number) => {
+  // Navigate to step - allow navigation to any step.
+  //
+  // G2 fix: the original code awaited `saveStep` before calling
+  // `setCurrentStepIndex`, which meant two rapid clicks raced their
+  // save-promises and either click could win — to the user that looked
+  // like an off-by-one bug. Now we navigate the UI synchronously and
+  // fire the save in the background. The save closure captures the
+  // outgoing step's key/index/answers so the POST body is still correct
+  // even though state has already advanced.
+  const navigateToStep = (index: number) => {
     if (index === currentStepIndex) return;
 
-    // Save current step progress before navigating (preserve completed status)
-    if (Object.keys(stepAnswers).length > 0 && !currentStep.isReviewStep) {
-      const isAlreadyCompleted = completedStepsState.includes(currentStep.key);
-      await saveStep(isAlreadyCompleted);
-    }
+    // Click guard: drop clicks while another nav is settling, while the
+    // step-advance interstitial is on screen, or within 150ms of the
+    // previous click.
+    if (isNavigating || transitioning) return;
+    const now = Date.now();
+    if (now - lastNavClickRef.current < 150) return;
+    lastNavClickRef.current = now;
 
+    const shouldSave =
+      Object.keys(stepAnswers).length > 0 && !currentStep.isReviewStep;
+    const isAlreadyCompleted = completedStepsState.includes(currentStep.key);
+
+    setIsNavigating(true);
     setCurrentStepIndex(index);
     setErrors({});
     window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    if (shouldSave) {
+      // Fire-and-forget. saveStep's closure still references the OLD
+      // currentStep/currentStepIndex/stepAnswers since the save is invoked
+      // from this render's scope before React commits the new state.
+      saveStep(isAlreadyCompleted).finally(() => setIsNavigating(false));
+    } else {
+      // No save needed — release the guard after a brief skeleton flash
+      // so the user sees motion feedback rather than an instant swap.
+      setTimeout(() => setIsNavigating(false), 150);
+    }
   };
 
   // Calculate progress percentage
@@ -468,40 +547,17 @@ export default function Wizard({
     return () => container.removeEventListener('scroll', updateScrollIndicators);
   }, [updateScrollIndicators]);
 
-  // If submitted, show thank you screen
+  // Stage 8: rebuilt thank-you screen. Confetti + pop animation + new
+  // copy (S12.1 + S12.2 + S12.3 + S12.4) + star rating + Finish CTA all
+  // live in <ThankYou />. We hand it the Step-3 business name where
+  // available (clients fill that during the form) and fall back to the
+  // client_name set at session creation; the account manager is server-
+  // sourced (see OnboardingShell prop plumbing) with a friendly default
+  // when null on legacy rows.
   if (isSubmitted) {
-    return (
-      <div className="min-h-screen bg-[#F4F5F6]">
-        {/* Header */}
-        <header className="bg-[#0F1A14]">
-          <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-            <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
-            <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
-              Clixsy Onboarding Portal
-            </div>
-          </div>
-        </header>
-
-        <div className="flex items-center justify-center py-20">
-          <div className="max-w-md mx-auto p-8 bg-white rounded-2xl shadow-lg text-center">
-            <div className="w-16 h-16 mx-auto mb-6 bg-[#25DC7F]/10 rounded-full flex items-center justify-center">
-              <svg className="w-8 h-8 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-            </div>
-            <h1 className="text-2xl font-bold text-[#0B0B0B] mb-4">
-              Thank You!
-            </h1>
-            <p className="text-[#6B6B6B] mb-6">
-              Your onboarding has been submitted successfully. We&apos;ll review your information and be in touch soon.
-            </p>
-            <p className="text-sm text-[#A0A0A0]">
-              You can close this window now.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
+    const companyName = businessName || clientName || '';
+    const amName = accountManager?.trim() || '';
+    return <ThankYou companyName={companyName} accountManagerName={amName} token={token} />;
   }
 
   // Render "Almost There" review step
@@ -582,6 +638,17 @@ export default function Wizard({
 
   return (
     <>
+      {/* P3 (Stage 7): first-login welcome modal. Mounted before the
+          step interstitial so it sits on top of any in-flight transition
+          and the user always sees the welcome FIRST on a fresh session. */}
+      {showP3Modal && (
+        <WelcomeModal
+          companyName={clientName}
+          token={token}
+          onDismiss={() => setWelcomeModalOpen(false)}
+        />
+      )}
+
       {/* Step Transition Interstitial */}
       <StepTransition
         active={transitioning}
@@ -648,18 +715,28 @@ export default function Wizard({
                     <button
                       key={step.key}
                       onClick={() => navigateToStep(index)}
+                      disabled={isNavigating}
+                      aria-current={isCurrent ? 'step' : undefined}
                       className={`group relative flex-shrink-0 w-10 h-10 rounded-lg transition-all cursor-pointer flex items-center justify-center ${
                         isCompleted
                           ? 'bg-[#25DC7F] text-white'
                           : isCurrent
                           ? 'bg-white text-[#0F1A14] ring-2 ring-[#25DC7F]'
                           : 'bg-[#1A2A1F] text-[#569077] hover:bg-[#25DC7F]/20 hover:text-[#25DC7F]'
-                      }`}
+                      } ${isNavigating ? 'opacity-90 cursor-wait' : ''}`}
                       title={step.title}
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d={step.icon} />
                       </svg>
+                      {/* G1: active-step underline pill — sits just below the
+                          icon button, picks up the existing green accent. */}
+                      <span
+                        aria-hidden
+                        className={`pointer-events-none absolute -bottom-1.5 left-1/2 -translate-x-1/2 h-1 rounded-full transition-all duration-200 ${
+                          isCurrent ? 'w-6 bg-[#25DC7F]' : 'w-0 bg-transparent'
+                        }`}
+                      />
                       {/* Tooltip */}
                       <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-[#0B0B0B] text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
                         {step.title}
@@ -738,8 +815,21 @@ export default function Wizard({
               </div>
             )}
 
-            {/* Step Content */}
-            {currentStep.key === 'access_checklist' ? (
+            {/* Step Content — skeleton fallback shown while a step swap
+                is in flight so the form card is never blank (acceptance
+                criterion: user always sees content or a skeleton, never
+                an empty white card). */}
+            {isNavigating ? (
+              <div className="space-y-5" aria-busy="true" aria-live="polite">
+                <div className="h-5 w-1/3 rounded bg-[#E6E8EA] animate-pulse" />
+                <div className="h-10 w-full rounded bg-[#E6E8EA] animate-pulse" />
+                <div className="h-5 w-1/2 rounded bg-[#E6E8EA] animate-pulse" />
+                <div className="h-10 w-full rounded bg-[#E6E8EA] animate-pulse" />
+                <div className="h-5 w-1/4 rounded bg-[#E6E8EA] animate-pulse" />
+                <div className="h-24 w-full rounded bg-[#E6E8EA] animate-pulse" />
+                <span className="sr-only">Loading step content…</span>
+              </div>
+            ) : currentStep.key === 'access_checklist' ? (
               <AccessChecklistStep
                 values={stepAnswers}
                 errors={errors}

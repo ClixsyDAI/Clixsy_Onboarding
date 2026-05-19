@@ -12,7 +12,53 @@ export interface OnboardingField {
   required?: boolean;
   options?: { value: string; label: string }[];
   helpText?: string;
-  dependsOn?: { field: string; value: string | boolean };
+  /**
+   * Conditional rendering. Three flavours:
+   *  - `value`: exact match against a scalar value (existing behaviour).
+   *  - `valueIn`: show when the dependent field equals any of these values
+   *    (e.g. `another_agency` OR `freelancer` from a radio group).
+   *  - `includes`: show when the dependent field is an array containing this
+   *    value (e.g. a multi-select group exposing sub-fields per selection).
+   * Use exactly one form per field.
+   */
+  dependsOn?: {
+    field: string;
+    value?: string | boolean;
+    valueIn?: string[];
+    includes?: string;
+  };
+  /**
+   * Pull the option set from another field's current value at render time —
+   * used for "pick one of the items you just multi-selected" cascades
+   * (e.g. case_priority depends on primary_case_types_keywords). The named
+   * field must be a multi-select. Entries are matched back against its
+   * declared `options` for labels and fall back to the raw value as label.
+   */
+  optionsFromField?: string;
+  /**
+   * Render a section heading before this field. Used to break a long step
+   * into visually distinct groups without splitting it into a separate step
+   * (e.g. the welcome-gift block at the bottom of "Other Contacts").
+   */
+  sectionHeader?: { title: string; subtitle?: string };
+  /**
+   * Render a small "open in new tab" action button next to the input.
+   * Only honoured on `url`-type fields. Disabled when the current value
+   * doesn't parse as a URL. Used by S7.3 to let admins confirm a detected
+   * Google Business Profile URL without copy-pasting.
+   */
+  linkAction?: { label: string };
+  /**
+   * When the field has been autofilled from the site-intelligence pipeline,
+   * render the value as a visual preview with Confirm / Edit affordances
+   * instead of a plain text input. Drives S5.1 (color swatches) and S5.2
+   * (font samples). Only honoured on `text`-type fields with prefill data.
+   * For `color-swatch` the preview is also gated on `gatePreviewOn` so the
+   * swatch only appears when the user opts into the "pull from website"
+   * path; without a gate it activates whenever there's a prefilled value.
+   */
+  previewMode?: 'color-swatch' | 'font-sample';
+  gatePreviewOn?: { field: string; value: string };
   videoUrl?: string;
   videoTitle?: string;
 }
