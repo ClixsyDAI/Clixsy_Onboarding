@@ -103,6 +103,7 @@ export default function WelcomeModal({ companyName, token, onDismiss }: WelcomeM
             <h1
               id="welcome-modal-headline"
               className="text-2xl font-extrabold text-[#0B0B0B] mb-2"
+              style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
             >
               Hey there, {companyName || 'friend'}!
             </h1>

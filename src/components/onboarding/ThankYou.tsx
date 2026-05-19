@@ -153,7 +153,10 @@ export default function ThankYou({ companyName, accountManagerName, token }: Tha
               </div>
 
               {/* S12.2 — new copy with company + AM interpolation. */}
-              <h1 className="text-2xl font-extrabold text-[#0B0B0B] mb-3">
+              <h1
+                className="text-2xl font-extrabold text-[#0B0B0B] mb-3"
+                style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+              >
                 We&apos;ve got all your onboarding details, thank you, {company}!
               </h1>
               <p className="text-[#1A1A1A] mb-8">

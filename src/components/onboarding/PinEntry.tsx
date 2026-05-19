@@ -136,7 +136,10 @@ export default function PinEntry({ token, clientName, initialLock, onSuccess }: 
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m0 0v2m0-2h2m-2 0H10m9-9V6a3 3 0 00-6 0v2M5 12h14a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2z" />
               </svg>
             </div>
-            <h1 className="text-xl font-bold text-[#0B0B0B] mb-1">
+            <h1
+              className="text-xl font-bold text-[#0B0B0B] mb-1"
+              style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+            >
               {clientName ? `Welcome, ${clientName}` : 'Welcome'}
             </h1>
             <p className="text-sm text-[#6B6B6B]">
