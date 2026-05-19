@@ -16,8 +16,23 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Get session by token
-    const session = await getSessionByToken(token);
+    // Get session by token. Wrap in a narrower try/catch so server-config
+    // failures (e.g. missing SUPABASE_SERVICE_ROLE_KEY on a misconfigured
+    // preview deploy) surface as a structured `{ error, code }` response
+    // the client can branch on, instead of a bare 500 the client treats
+    // as a malformed session payload (was: TypeError reading currentStep
+    // off undefined in OnboardingShell).
+    let session;
+    try {
+      session = await getSessionByToken(token);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('Error fetching session: getSessionByToken threw:', message, err instanceof Error ? err.stack : '');
+      return NextResponse.json(
+        { error: 'Service temporarily unavailable', code: 'session_lookup_failed', detail: message },
+        { status: 503 }
+      );
+    }
 
     if (!session) {
       return NextResponse.json(
@@ -91,6 +106,17 @@ export async function GET(request: NextRequest) {
 
     const steps = getStepsForVersion(session.flow_version);
 
+    // Stage 9: vertical defaults to 'law_firm' for ANY of: column missing
+    // (pre-Stage-1 rows), column NULL (shouldn't happen — Stage 1 set NOT
+    // NULL DEFAULT — but belt + braces), or column value not one of the
+    // known enum strings (forward-compat for someone trying out a new
+    // vertical name without updating the client). Pre-form gates (PIN +
+    // welcome modal) don't care about vertical, so this normalisation
+    // can't poison the gated screens.
+    const rawVertical = (session as unknown as { vertical?: string | null }).vertical;
+    const vertical: 'law_firm' | 'home_services' =
+      rawVertical === 'home_services' ? 'home_services' : 'law_firm';
+
     return NextResponse.json({
       session: {
         id: session.id,
@@ -107,12 +133,11 @@ export async function GET(request: NextRequest) {
         // screen copy. Defaults to "your account manager" client-side if
         // unset (legacy / pre-Stage-1 rows).
         accountManager: (session as unknown as { account_manager?: string | null }).account_manager ?? null,
-        // Stage 9 / home-services PR: surface vertical so the Wizard can
-        // branch Step 7 + per-vertical copy. Defaults to 'law_firm' on
-        // the server side already (Stage 1 migration 005 set NOT NULL
-        // DEFAULT 'law_firm'); the `?? 'law_firm'` here is belt + braces
-        // for legacy rows seeded before the column existed.
-        vertical: (session as unknown as { vertical?: string }).vertical ?? 'law_firm',
+        // Stage 9 / home-services PR: see the rawVertical normalisation
+        // above. NEVER null/undefined to the client — the Wizard treats
+        // 'law_firm' as the safe default that re-renders every existing
+        // step. PIN gate / locked screen don't read this field at all.
+        vertical,
       },
       client: {
         name: clientName,
@@ -129,9 +154,17 @@ export async function GET(request: NextRequest) {
       siteIntelligence: siteIntelligence || null,
     });
   } catch (error) {
-    console.error('Error fetching session:', error);
+    // Pre-fix logging was a single `console.error('Error fetching session:', error)`
+    // which Vercel's runtime-log table truncated to "Error fetching session: Err..."
+    // — leaving the diagnosis blind to whichever Supabase call actually
+    // threw. Spell the message + stack out as separate string fields so
+    // the truncation can't eat the useful half.
+    const message = error instanceof Error ? error.message : String(error);
+    const stack = error instanceof Error ? error.stack : undefined;
+    console.error('[session.GET] outer catch | message:', message);
+    if (stack) console.error('[session.GET] outer catch | stack:', stack);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: 'Internal server error', code: 'unknown', detail: message },
       { status: 500 }
     );
   }

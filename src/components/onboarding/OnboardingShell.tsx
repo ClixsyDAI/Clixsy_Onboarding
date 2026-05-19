@@ -64,25 +64,68 @@ export default function OnboardingShell({ token }: { token: string }) {
   const [payload, setPayload] = useState<SessionPayload | null>(null);
   const [gate, setGate] = useState<GateResponse | null>(null);
   const [notFound, setNotFound] = useState(false);
+  // Stage 9 defensive: tracks server-config / transient backend failures
+  // (e.g. preview deploy missing SUPABASE_SERVICE_ROLE_KEY, a Supabase
+  // outage, etc.) separately from the existing PIN-gate / locked / 404
+  // paths. The pre-fix code path treated *any* non-{needsPin,locked,404}
+  // response as a SessionPayload, which crashed the Wizard with
+  // `Cannot read properties of undefined (reading 'currentStep')` when
+  // the server returned a 500 body of `{error: '…'}`.
+  const [loadError, setLoadError] = useState<{ message: string; detail?: string } | null>(null);
 
   const fetchSession = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
-      const resp = await fetch(`/api/public/onboarding/session?token=${encodeURIComponent(token)}`, {
-        cache: 'no-store',
-      });
+      let resp: Response;
+      try {
+        resp = await fetch(`/api/public/onboarding/session?token=${encodeURIComponent(token)}`, {
+          cache: 'no-store',
+        });
+      } catch (networkErr) {
+        // Network failure (offline, DNS, CORS). Distinct from server-side error.
+        setLoadError({
+          message: 'Could not reach the onboarding service.',
+          detail: networkErr instanceof Error ? networkErr.message : 'Network request failed.',
+        });
+        return;
+      }
       if (resp.status === 404) {
         setNotFound(true);
         return;
       }
       const data = await resp.json().catch(() => ({}));
+
+      // PIN-gate / locked paths: handled regardless of HTTP status because
+      // the API returns 401 for needsPin and 423/429 for locked, with the
+      // gate shape in the body.
       if (data.needsPin || data.locked) {
         setGate(data as GateResponse);
         setPayload(null);
-      } else {
-        setPayload(data as SessionPayload);
-        setGate(null);
+        return;
       }
+
+      // Everything else — only treat as a SessionPayload if the response
+      // is OK and actually looks like one. A 500 body of `{error: '…'}`
+      // used to fall through to `setPayload(data)` here, which then made
+      // the Wizard read `payload.session.currentStep` off undefined and
+      // crash the React tree before the user could even see the PIN gate.
+      if (!resp.ok || !data || typeof data !== 'object' || !('session' in data)) {
+        const detail =
+          (data && typeof data === 'object' && 'detail' in data && typeof data.detail === 'string')
+            ? data.detail
+            : (data && typeof data === 'object' && 'error' in data && typeof data.error === 'string')
+              ? data.error
+              : `HTTP ${resp.status} ${resp.statusText}`;
+        setLoadError({
+          message: 'Something went wrong loading this session.',
+          detail,
+        });
+        return;
+      }
+
+      setPayload(data as SessionPayload);
+      setGate(null);
     } finally {
       setLoading(false);
     }
@@ -109,6 +152,48 @@ export default function OnboardingShell({ token }: { token: string }) {
             Please double-check the URL or contact your Clixsy account manager.
           </p>
         </div>
+      </div>
+    );
+  }
+
+  // Stage 9 defensive: backend / network failure state. Replaces the
+  // pre-fix crash where a 500 response slipped through as a SessionPayload
+  // and threw inside the Wizard. Surfaces a non-actionable but clear
+  // error to the user (and a Retry button) without unmounting React.
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-[#F4F5F6] flex flex-col">
+        <header className="bg-[#0F1A14]">
+          <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+            <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
+            <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
+              Clixsy Onboarding Portal
+            </div>
+          </div>
+        </header>
+        <main className="flex-1 flex items-center justify-center px-4 py-12">
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-8 border border-[#E6E8EA] text-center">
+            <div className="w-12 h-12 mx-auto mb-4 bg-red-50 rounded-full flex items-center justify-center">
+              <svg className="w-6 h-6 text-[#E5484D]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <h1 className="text-xl font-bold text-[#0B0B0B] mb-2">{loadError.message}</h1>
+            <p className="text-sm text-[#6B6B6B] mb-2">
+              We hit a temporary issue loading your session. Please try again in a moment, or contact your Clixsy account manager if this keeps happening.
+            </p>
+            {loadError.detail && (
+              <p className="text-xs text-[#A0A0A0] mb-4 font-mono break-all">{loadError.detail}</p>
+            )}
+            <button
+              type="button"
+              onClick={() => void fetchSession()}
+              className="inline-flex items-center justify-center px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors"
+            >
+              Try again
+            </button>
+          </div>
+        </main>
       </div>
     );
   }
