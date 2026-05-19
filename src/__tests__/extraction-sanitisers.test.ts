@@ -41,6 +41,27 @@ assert(!passesLocationHygiene(undefined), 'undefined rejected');
 assert(!passesLocationHygiene(null), 'null rejected');
 assert(!passesLocationHygiene('a really really really really really really long location name'), 'overlong rejected');
 
+console.log('\n--- passesLocationHygiene: Stage 12 / Reimer fragments REJECTED ---');
+// Real-world Reimer HVAC scrape failures
+assert(!passesLocationHygiene('local homeowners since'), 'Reimer 1: "local homeowners since" — local prefix + descriptor + trailing prep');
+assert(!passesLocationHygiene('locals, ou'), 'Reimer 2: "locals, ou" — "ou" 2-char non-state token');
+assert(!passesLocationHygiene('Buffalo, Ro'), 'Reimer 3: "Buffalo, Ro" — "Ro" 2-char non-state segment');
+assert(!passesLocationHygiene('local residents in'), 'local + residents + trailing prep');
+assert(!passesLocationHygiene('local customers'), 'local prefix + customers descriptor');
+assert(!passesLocationHygiene('serving area homeowners'), 'homeowners descriptor');
+assert(!passesLocationHygiene('Houston businesses'), 'businesses descriptor');
+
+console.log('\n--- passesLocationHygiene: valid place names with abbreviations PASS ---');
+assert(passesLocationHygiene('Buffalo, NY'), 'Buffalo, NY passes (valid 2-char state)');
+assert(passesLocationHygiene('Houston, TX'), 'Houston, TX passes');
+assert(passesLocationHygiene('Toronto, ON'), 'Toronto, ON passes (Canadian province)');
+assert(passesLocationHygiene('Vancouver, BC'), 'Vancouver, BC passes');
+assert(passesLocationHygiene('St. Louis, MO'), 'St. Louis, MO passes ("St" whitelisted)');
+assert(passesLocationHygiene('Mt Vernon'), 'Mt Vernon passes ("Mt" whitelisted)');
+assert(passesLocationHygiene('Fort Worth, TX'), 'Fort Worth, TX passes');
+assert(passesLocationHygiene('Ft Lauderdale'), 'Ft Lauderdale passes ("Ft" whitelisted)');
+assert(passesLocationHygiene('Western New York'), 'Western New York passes');
+
 console.log('\n--- sanitiseLocations: array filter preserves order ---');
 const belredFromScrape = [
   'Seattle',
@@ -74,6 +95,17 @@ assert(!passesSummaryHygiene(undefined), 'undefined rejected');
 assert(!passesSummaryHygiene(''), 'empty rejected');
 assert(!passesSummaryHygiene('short'), 'too short rejected');
 
+console.log('\n--- passesSummaryHygiene: Stage 12 / Reimer promo boilerplate REJECTED ---');
+// Real-world Reimer HVAC failure
+const reimerCoupon = 'Cannot be combined with other offers or memberships. Must be presented at time of proposal. Some exclusions may apply. Offers expire on 6/30/26.';
+assert(!passesSummaryHygiene(reimerCoupon), 'Reimer coupon disclaimer rejected (cannot be combined + memberships + offers expire)');
+
+// Other promo / disclaimer patterns
+assert(!passesSummaryHygiene('Save 20% on HVAC service. Restrictions apply. Limited time offer.'), 'limited time + restrictions apply');
+assert(!passesSummaryHygiene('Free estimate while supplies last. See store for details.'), 'while supplies last + see store');
+assert(!passesSummaryHygiene('New customer discount. Valid at participating locations only. Void where prohibited.'), 'valid at participating + void where prohibited');
+assert(!passesSummaryHygiene('Spring sale on installations. Offer expires soon. Additional terms apply.'), 'offer expires + additional terms');
+
 console.log('\n--- sanitiseBusinessSummary: fallback when input is junk ---');
 const fallbackBelred = sanitiseBusinessSummary(belredBoilerplate, 'Belred', 'home_services');
 console.log(`  Belred junk → "${fallbackBelred}"`);
@@ -82,6 +114,16 @@ assert(fallbackBelred === 'Belred is a home services business.', 'Belred falls b
 const fallbackGoodGuys = sanitiseBusinessSummary(undefined, 'Good Guys Injury Law', 'law_firm');
 console.log(`  Good Guys (no input) → "${fallbackGoodGuys}"`);
 assert(fallbackGoodGuys === 'Good Guys Injury Law is a law firm.', 'Good Guys falls back to law firm generic');
+
+// Stage 12 / Fix 3 verification: Reimer coupon → fallback fires correctly.
+const fallbackReimer = sanitiseBusinessSummary(reimerCoupon, 'Reimer', 'home_services');
+console.log(`  Reimer promo junk → "${fallbackReimer}"`);
+assert(fallbackReimer === 'Reimer is a home services business.', 'Reimer coupon junk falls back to home_services generic');
+
+// Verify the LAW_FIRM fallback variant also fires on coupon-like junk
+// (unlikely in the wild but the path needs to be safe regardless).
+const fallbackReimerAsLawfirm = sanitiseBusinessSummary(reimerCoupon, 'Some Firm', 'law_firm');
+assert(fallbackReimerAsLawfirm === 'Some Firm is a law firm.', 'Same coupon junk + law_firm vertical → law firm fallback');
 
 const cleanSurvives = sanitiseBusinessSummary(
   'Belred is a Bellevue-area home services company providing HVAC, plumbing, and electrical services.',

@@ -33,11 +33,38 @@ const LOCATION_REJECT_WORDS = [
   'pay', 'tax', 'taxes',
   'required to', 'compliance', 'license', 'licensed', 'regulation',
   'permit', 'permits',
+  // Stage 12 / Fix 4: user-type descriptors. Real-world failure on
+  // reimerhvac.com — "local homeowners since" / "locals" surfaced as
+  // location pills. A candidate containing any of these is a sentence
+  // fragment about the audience, not a place name.
+  'homeowners', 'residents', 'customers', 'clients', 'businesses',
 ];
 
 // Trailing prepositions — if a candidate ENDS with one of these (after
 // whitespace), it's almost certainly a mid-sentence fragment.
 const TRAILING_PREPOSITIONS = ['for', 'to', 'in', 'of', 'with', 'by', 'and', 'or', 'on', 'at'];
+
+// Stage 12 / Fix 4: US state + DC + Canadian-province abbreviations.
+// Used to whitelist short comma-segments ("Buffalo, NY" passes; "Buffalo,
+// Ro" fails because "Ro" isn't on this list). Lowercased — comparison
+// is case-insensitive on the comma segments below.
+const VALID_REGION_ABBREVS = new Set([
+  // US states
+  'al', 'ak', 'az', 'ar', 'ca', 'co', 'ct', 'de', 'fl', 'ga',
+  'hi', 'id', 'il', 'in', 'ia', 'ks', 'ky', 'la', 'me', 'md',
+  'ma', 'mi', 'mn', 'ms', 'mo', 'mt', 'ne', 'nv', 'nh', 'nj',
+  'nm', 'ny', 'nc', 'nd', 'oh', 'ok', 'or', 'pa', 'ri', 'sc',
+  'sd', 'tn', 'tx', 'ut', 'vt', 'va', 'wa', 'wv', 'wi', 'wy',
+  'dc',
+  // Canadian provinces / territories
+  'ab', 'bc', 'mb', 'nb', 'nl', 'ns', 'nt', 'nu', 'on', 'pe', 'qc', 'sk', 'yt',
+]);
+
+// Stage 12 / Fix 4: short-word whitelist for in-name abbreviations
+// — "St. Louis", "Mt Vernon", "Ft Worth" should pass even though "St"
+// / "Mt" / "Ft" are 2 chars. Case-insensitive; punctuation stripped
+// for the comparison.
+const SHORT_WORD_WHITELIST = new Set(['st', 'mt', 'ft']);
 
 /**
  * Hygiene check on a single primary_market / location candidate.
@@ -57,15 +84,27 @@ export function passesLocationHygiene(candidate: string | undefined | null): boo
   // borough not a service area in any of our fixture verticals).
   if (lc.startsWith('the ')) return false;
 
+  // Stage 12 / Fix 4: "local " as a leading word almost always introduces
+  // descriptive copy about the audience, not a place name. Reimer scrape
+  // surfaced "local homeowners since" / "local residents in" as location
+  // pills. "Local" alone is not a city/region.
+  if (lc.startsWith('local ')) return false;
+
   // Substring rejects — any of the boilerplate license/tax/regulation
-  // words in the candidate kills it.
+  // words or user-type descriptors in the candidate kills it.
   for (const w of LOCATION_REJECT_WORDS) {
     if (lc.includes(w)) return false;
   }
 
-  // Trailing preposition → mid-sentence fragment.
+  // Trailing preposition → mid-sentence fragment. Skip this check when
+  // the trailing token is preceded by a comma — that pattern is always
+  // "City, <state/province abbrev>", and some abbreviations happen to
+  // collide with preposition words ("ON" for Ontario vs "on" the prep,
+  // "AT" if it ever lands here, etc.). The comma-segment check below
+  // handles those cases properly.
   for (const prep of TRAILING_PREPOSITIONS) {
-    if (lc.endsWith(` ${prep}`) || lc === prep) return false;
+    if (lc === prep) return false;
+    if (lc.endsWith(` ${prep}`) && !lc.endsWith(`, ${prep}`)) return false;
   }
 
   // " and " as a connector word inside the candidate suggests it's a
@@ -75,6 +114,42 @@ export function passesLocationHygiene(candidate: string | undefined | null): boo
   // with a proper noun pattern — but the easier guardrail is: reject
   // any candidate containing " and " as a standalone token.
   if (/\s+and\s+/i.test(trimmed)) return false;
+
+  // Stage 12 / Fix 4: comma-segment validation. Real failure on Reimer
+  // — "Buffalo, Ro" came through, truncated mid-state-name. Whitelist
+  // approach: each comma segment beyond the first that's 1-3 chars
+  // must be a real US state / Canadian province abbreviation. Longer
+  // segments aren't checked here (handled by the word-length rule
+  // below).
+  const commaSegments = trimmed.split(',').map((s) => s.trim());
+  if (commaSegments.length > 1) {
+    for (let i = 1; i < commaSegments.length; i++) {
+      const seg = commaSegments[i];
+      if (seg.length === 0) return false;
+      if (seg.length <= 3 && !VALID_REGION_ABBREVS.has(seg.toLowerCase())) {
+        return false;
+      }
+    }
+  }
+
+  // Stage 12 / Fix 4: 1-2 char word check. Same Reimer failure shape
+  // — "locals, ou" had "ou" as a truncated word. Walk every whitespace-
+  // separated token in the candidate (ignoring commas/dots/etc.); any
+  // token that's 1-2 chars must be on the SHORT_WORD_WHITELIST (St,
+  // Mt, Ft) or a state abbreviation. Otherwise it's mid-word noise.
+  const tokens = trimmed.split(/[\s.,]+/).filter(Boolean);
+  for (const tok of tokens) {
+    if (tok.length <= 2) {
+      const tokLc = tok.toLowerCase().replace(/\W/g, '');
+      if (
+        tokLc.length > 0 &&
+        !SHORT_WORD_WHITELIST.has(tokLc) &&
+        !VALID_REGION_ABBREVS.has(tokLc)
+      ) {
+        return false;
+      }
+    }
+  }
 
   return true;
 }
@@ -93,8 +168,13 @@ export function sanitiseLocations(candidates: readonly string[]): string[] {
 
 // Phrases / substrings that flag a summary candidate as
 // terms-of-service / marketing-consent / privacy boilerplate rather
-// than an actual business description. Lowercased.
+// than an actual business description. Lowercased. Stage 12 / Fix 3
+// extended this with promotional/coupon disclaimers after the Reimer
+// HVAC scrape pulled in "Cannot be combined with other offers or
+// memberships. Must be presented at time of proposal. Some exclusions
+// may apply. Offers expire on 6/30/26" as the business summary.
 const SUMMARY_REJECT_PHRASES = [
+  // Original Stage 11 set — marketing-consent / privacy / TOS
   'consent',
   'agree to receive',
   'marketing and promotional',
@@ -112,6 +192,23 @@ const SUMMARY_REJECT_PHRASES = [
   'by clicking this box',
   'msg & data',
   'message and data',
+  // Stage 12 / Fix 3 — promotional / coupon disclaimer copy
+  'cannot be combined',
+  'with other offers',
+  'memberships',
+  'presented at time',
+  'exclusions may apply',
+  'exclusions apply',
+  'offers expire',
+  'offer expires',
+  'valid at participating',
+  'limited time',
+  'while supplies last',
+  'see store for details',
+  'see dealer for details',
+  'restrictions apply',
+  'void where prohibited',
+  'additional terms',
 ];
 
 const MIN_SUMMARY_LENGTH = 30;
