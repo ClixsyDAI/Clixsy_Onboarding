@@ -3,6 +3,7 @@ import type { Evidence } from '../schemas';
 import { getFirecrawlKey } from '../config';
 import { extractColorsFromHtml, extractFontsFromHtml } from '../branding-extractor';
 import { extractPhoneFromHtml } from '../phone-extractor';
+import { sanitiseBrandName } from '../brand-name-sanitiser';
 
 const FIRECRAWL_BASE = 'https://api.firecrawl.dev/v1';
 
@@ -203,6 +204,10 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
   async run(websiteUrl: string): Promise<ProviderResult> {
     const evidence: Evidence[] = [];
     let brandName: string | undefined;
+    // Stage 10 / Fix 1: capture every signal the sanitiser could use as
+    // a fallback when the primary brand_name comes back meta-title-shaped.
+    let ogSiteName: string | undefined;
+    let firstH1: string | undefined;
     let businessSummary: string | undefined;
     let screenshotUrl: string | undefined;
     let logoUrl: string | undefined;
@@ -267,12 +272,41 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
         if (metadata) {
           if (metadata.title && typeof metadata.title === 'string') {
             pageTitle = metadata.title;
+            // Stage 10 / Fix 1: keep the naive first-segment-of-title as
+            // a SEED candidate only — `brandName` here will be re-checked
+            // (and possibly overridden) by the sanitiser before we return.
+            // Previously this was the final value for a lot of sites and
+            // produced meta-title-style brand names on goarco, belred, etc.
             const titleParts = metadata.title.split(/[|\-–—:]/);
             brandName = titleParts[0]?.trim();
           }
           if (metadata.ogImage && typeof metadata.ogImage === 'string') logoUrl = metadata.ogImage;
           if (metadata.sourceURL && typeof metadata.sourceURL === 'string') {
             keyPages.push({ url: metadata.sourceURL, title: pageTitle || 'Homepage', reason: 'Homepage' });
+          }
+          // Stage 10 / Fix 1: og:site_name is the meta tag operators
+          // actually populate with the short brand label (vs <title>
+          // which they fill with SEO copy). Firecrawl flattens og: tags
+          // into ogSiteName / og:site_name / ogsitename depending on
+          // plan; check all three.
+          for (const k of ['ogSiteName', 'og:site_name', 'ogsitename']) {
+            const v = metadata[k];
+            if (typeof v === 'string' && v.trim().length > 0) {
+              ogSiteName = v.trim();
+              break;
+            }
+          }
+        }
+
+        // Stage 10 / Fix 1: pull the first <h1> from the homepage HTML
+        // as another sanitiser candidate. Brand is occasionally the H1
+        // when the title tag is SEO-prose ("Welcome to ACME Plumbing").
+        if (homepageHtml && !firstH1) {
+          const h1Match = homepageHtml.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+          if (h1Match) {
+            // Strip tags + collapse whitespace.
+            const text = h1Match[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+            if (text.length > 0) firstH1 = text;
           }
         }
 
@@ -305,7 +339,48 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
       const domain = extractDomain(websiteUrl);
       const extractResult = await firecrawlFetch('/extract', {
         urls: [`https://${domain}/*`],
-        prompt: `Extract structured business information from this website. Include: the business name, a 2-4 sentence client-friendly summary of what they do, their main services or practice areas, cities/areas they serve, contact details (phone, email, address), brand colors, fonts, and CMS platform.`,
+        // Stage 10 / Fix 1: brand_name guidance. Previous prompt
+        // (`Extract … the business name, …`) consistently returned the
+        // meta-title sentence ("BelRed Heating, Cooling, Plumbing &
+        // Electrical Services in Seattle, WA") instead of the short
+        // brand label. Three real-world fixtures the operator hit:
+        //   goarco.com         → "HVAC, Plumbing & Electrical Services in Ohio"
+        //   belred.com         → "BelRed Heating, … in Seattle, WA"
+        //   goodguysinjurylaw  → "Utah Personal Injury Attorney"
+        //
+        // This longer prompt anchors the LLM on logo / footer / About-page
+        // signals + explicit anti-patterns. The post-process sanitiser in
+        // brand-name-sanitiser.ts is the belt + braces — if the LLM still
+        // returns junk, the sanitiser falls through to og:site_name →
+        // title segments → H1 → domain.
+        prompt: `Extract structured business information from this website.
+
+For business_name: extract ONLY the short brand name as it appears in
+the site logo, footer copyright, or the About page header. The brand
+name is the company's identity — typically 1-4 words — NOT a
+description of what they sell.
+
+Do NOT use the page <title> tag, the meta title, or the H1 heading as
+the brand name. Those are usually SEO copy that combines services and
+geography.
+
+Examples of CORRECT brand_name extraction:
+  Page title: "BelRed Heating, Cooling, Plumbing & Electrical Services in Seattle, WA"
+  → brand_name: "BelRed"
+  Page title: "Utah Personal Injury Attorney - Good Guys Injury Law"
+  → brand_name: "Good Guys Injury Law"
+  Page title: "HVAC, Plumbing & Electrical Services in Ohio"
+  → brand_name: whatever the logo or footer copyright says (e.g. "ARCO Comfort Air")
+
+If you cannot find a short brand label in the logo or footer, return
+the shortest non-meta-title candidate you can find. Never return a
+string longer than 40 characters or one that contains commas separating
+service categories.
+
+Then include: a 2-4 sentence client-friendly summary of what the
+business does, their main services or practice areas, cities/areas they
+serve, contact details (phone, email, address), brand colors, fonts,
+and CMS platform.`,
         schema: {
           type: 'object',
           properties: {
@@ -503,6 +578,22 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
       } catch (err) {
         console.warn('[Firecrawl] Deterministic branding extraction failed:', err);
       }
+    }
+
+    // Stage 10 / Fix 1: post-process brand_name through the sanitiser so
+    // meta-title-shaped values get replaced with cleaner fallbacks
+    // (og:site_name → title segments → H1 → domain). Logs what was
+    // chosen so we can spot-check on real onboardings.
+    const brandBeforeSanitise = brandName;
+    brandName = sanitiseBrandName({
+      rawCandidate: brandName,
+      ogSiteName,
+      pageTitle: pageTitle || undefined,
+      h1: firstH1,
+      websiteUrl,
+    });
+    if (brandBeforeSanitise !== brandName) {
+      console.log(`[Firecrawl] brand_name sanitised: "${brandBeforeSanitise}" → "${brandName}"`);
     }
 
     console.log(`[Firecrawl] Final: brand="${brandName}", services=${services.length}, locations=${locations.length}, screenshot=${!!screenshotUrl}, cms=${cmsDetected || 'none'}, colors=${colors.length}, fonts=${fonts.length}`);

@@ -327,27 +327,52 @@ export default function Wizard({
     }
   };
 
-  // Start a step transition with cheerleading message
+  // Stage 10 / Fix 4: properly sequence the page-swap so it's invisible
+  // to the user. Pre-fix sequence was:
+  //   t=0      content fade out begins (500ms)
+  //   t=200ms  STEP SWAP + splash starts fading in (400ms)
+  //   t=600ms  splash fully opaque
+  // The 200-600ms window had the new step rendered behind a half-opaque
+  // splash + half-faded-out old content — the operator saw the new
+  // content "peek" through. Post-fix sequence:
+  //   t=0      splash starts fading in (400ms), old content stays at
+  //            opacity 1 — it's behind the splash and getting hidden.
+  //   t=450ms  StepTransition fires onCovered. We swap the step + reset
+  //            scroll under cover. User sees nothing.
+  //   t=1700ms splash starts fading out.
+  //   t=2100ms onDone → clear transitioning state, new step is visible.
   const startTransition = useCallback((targetStep: number, message: TransitionMessage) => {
     if (transitioning) return;
     pendingStepRef.current = targetStep;
     setTransitionMessage(message);
-    setContentVisible(false);           // fade out current content
-    // After fade-out, start overlay and swap step
-    setTimeout(() => {
-      setCurrentStepIndex(targetStep);
-      setTransitioning(true);           // show interstitial
-    }, 200);
+    setTransitioning(true);             // splash starts fading in immediately
+    // No setContentVisible(false) — the splash covers the content; we
+    // don't need to fade the underlying step out in parallel.
   }, [transitioning]);
 
-  // Called when the interstitial finishes
+  // Stage 10 / Fix 4: fires when the splash reaches 100% opacity. Safe
+  // to mutate currentStepIndex / scroll position here — the user can't
+  // see any of it. No-op when there's no pending step (the first-load
+  // welcome interstitial uses the same component but doesn't swap any
+  // step; pendingStepRef.current stays null in that case).
+  const handleCoverComplete = useCallback(() => {
+    const target = pendingStepRef.current;
+    if (target !== null) {
+      setCurrentStepIndex(target);
+      setErrors({});
+      // Instant scroll — `behavior: 'smooth'` here would animate after
+      // the splash starts fading out, defeating the whole point.
+      window.scrollTo({ top: 0 });
+    }
+  }, []);
+
+  // Called when the interstitial finishes (after fade-out completes)
   const handleTransitionDone = useCallback(() => {
     setTransitioning(false);
     setTransitionMessage(null);
-    setContentVisible(true);            // fade in new content
+    setContentVisible(true);            // first-load welcome reveal still uses this
     setShowWelcome(false);
     pendingStepRef.current = null;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
 
     // If we were submitting, do that now
     if (pendingSubmitRef.current) {
@@ -669,6 +694,7 @@ export default function Wizard({
       <StepTransition
         active={transitioning}
         message={transitionMessage}
+        onCovered={handleCoverComplete}
         onDone={handleTransitionDone}
       />
 
@@ -683,7 +709,7 @@ export default function Wizard({
           </div>
 
           {/* Progress Bar & Step Navigator */}
-          <div className="max-w-6xl mx-auto px-6 pb-4">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 pb-4">
             {/* Progress Bar */}
             <div className="mb-4">
               <div className="flex items-center justify-between text-sm text-[#A0A0A0] mb-2">
@@ -718,10 +744,19 @@ export default function Wizard({
                 canScrollLeft ? 'opacity-100' : 'opacity-0'
               }`} />
 
-              {/* Scrollable container */}
+              {/* Scrollable container. Stage 10 / Fix 3: snap-x + per-button
+                  snap-center make finger-swipes on mobile land cleanly on
+                  an icon rather than between two. justify-center keeps the
+                  desktop layout (when all 12 fit). On overflow (mobile),
+                  scrollIntoView in the step-change effect uses inline:
+                  'center' so the active icon stays visible regardless of
+                  where in the list it sits — combined with snap, the
+                  active step ends up properly centered after a swipe.
+                  px-10 reserves room for the chevron + fade gradients on
+                  either edge so icons don't end up half-hidden under them. */}
               <div
                 ref={scrollContainerRef}
-                className="flex items-center justify-center gap-2 overflow-x-auto px-10 py-2 scroll-smooth hide-scrollbar w-full"
+                className="flex items-center justify-center gap-2 overflow-x-auto px-10 py-2 scroll-smooth hide-scrollbar w-full snap-x snap-mandatory"
               >
                 {steps.map((step, index) => {
                   const isCompleted = completedStepsState.includes(step.key);
@@ -733,7 +768,7 @@ export default function Wizard({
                       onClick={() => navigateToStep(index)}
                       disabled={isNavigating}
                       aria-current={isCurrent ? 'step' : undefined}
-                      className={`group relative flex-shrink-0 w-10 h-10 rounded-lg transition-all cursor-pointer flex items-center justify-center ${
+                      className={`group relative flex-shrink-0 snap-center w-10 h-10 rounded-lg transition-all cursor-pointer flex items-center justify-center ${
                         isCompleted
                           ? 'bg-[#25DC7F] text-white'
                           : isCurrent

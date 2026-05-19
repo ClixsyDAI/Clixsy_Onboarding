@@ -152,20 +152,35 @@ export default function NewOnboardingPage() {
               )}
 
               <div className="bg-[#F4F5F6] rounded-lg p-4 mb-6">
-                <div className="flex items-center gap-2">
+                {/* Stage 10 / Fix 5: "Go to link" button alongside Copy so
+                    the AM can preview/fill the form themselves before sending
+                    to the client. Buttons stack under the URL on mobile so
+                    neither gets clipped on narrow viewports; on sm+ they
+                    sit inline next to the URL input. */}
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                   <input
                     type="text"
                     value={generatedUrl}
                     readOnly
                     aria-label="Onboarding URL"
-                    className="flex-1 bg-transparent text-[#0B0B0B] text-sm focus:outline-none"
+                    className="flex-1 min-w-0 bg-transparent text-[#0B0B0B] text-sm focus:outline-none"
                   />
-                  <button
-                    onClick={() => copyToClipboard(generatedUrl, 'url')}
-                    className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors"
-                  >
-                    {copiedField === 'url' ? 'Copied!' : 'Copy'}
-                  </button>
+                  <div className="flex gap-2">
+                    <a
+                      href={generatedUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 sm:flex-none px-4 py-2 border border-[#E6E8EA] bg-white text-[#0B0B0B] rounded-lg text-sm font-semibold hover:bg-[#E6E8EA] transition-colors text-center whitespace-nowrap"
+                    >
+                      Go to link
+                    </a>
+                    <button
+                      onClick={() => copyToClipboard(generatedUrl, 'url')}
+                      className="flex-1 sm:flex-none px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors whitespace-nowrap"
+                    >
+                      {copiedField === 'url' ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
                 </div>
               </div>
 
