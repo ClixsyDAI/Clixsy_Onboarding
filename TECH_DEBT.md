@@ -6,6 +6,70 @@ at the top.
 
 ---
 
+## Thank-you headline: business_name vs client_name fallback order
+
+**Belred Stage 9 walkthrough, 2026-05-19.** The thank-you screen's
+company-name interpolation reads from `business_overview.business_name`
+first and only falls back to `client_name` (from the session row) if
+that's empty. Wizard.tsx:
+
+```ts
+const businessName = useMemo(() => {
+  const fromV1 = answers['business_basics']?.business_name as string | undefined;
+  const fromV2 = answers['business_overview']?.business_name as string | undefined;
+  return fromV1 || fromV2 || clientName || '';
+}, [answers, clientName]);
+
+if (isSubmitted) {
+  const companyName = businessName || clientName || '';
+  return <ThankYou companyName={companyName} … />;
+}
+```
+
+When Firecrawl populates `business_name`, the value is typically a
+meta-title-style sentence rather than the brand name itself — Belred
+came back as:
+
+  "BelRed Heating, Cooling, Plumbing & Electrical Services in Seattle, WA"
+
+…which makes the thank-you headline read awkwardly:
+
+  "We've got all your onboarding details, thank you, BelRed Heating,
+   Cooling, Plumbing & Electrical Services in Seattle, WA!"
+
+The cleaner `client_name` from `onboarding_sessions` ("Vertical PR
+Handoff Belred" in the smoke case, but for real clients it's whatever
+the AM typed during admin Create — usually a short brand name like
+"Jungle Law", "ARCO Comfort Air") only gets used if the business_name
+field is empty.
+
+Fix shapes (separate PR, not done):
+
+- **(a)** Tighten the LLM prompt for `brand_name` extraction so it
+  returns a short brand label, not the page meta-title. Adjacent to
+  the existing TECH_DEBT entry on Firecrawl `business_summary`
+  extraction quality — same prompt-quality cluster. Example negative:
+  the goarco scrape returned `brand_name = "HVAC, Plumbing & Electrical
+  Services in Ohio"` — same shape, also meta-title-style.
+- **(b)** Reverse the fallback order: prefer `client_name` (operator-
+  entered, deliberate, short) and fall back to `business_overview.
+  business_name` only when client_name is empty. Mechanical change in
+  `Wizard.tsx`. Lower risk than (a) — doesn't depend on the LLM behaving.
+- **(c)** Both — (b) immediately for the visible-fix, (a) later when
+  the scraper prompts get a broader pass.
+
+The interpolation is also used inside the wizard for transition-message
+copy ("Nice to meet {businessName}!" on the business_overview → goals
+transition). Same trade-off applies there but the awkwardness is less
+visible mid-flow than on the final headline.
+
+**Not blocking Stage 9.** Existing law-firm thank-yous have been fine
+because law-firm site scrapes tend to return cleaner brand_name values
+(firm names are typically short and quotable). Surfaces more visibly
+on home-services sites where the meta-title patterns are longer.
+
+---
+
 ## Home-services prefill: mean-confidence aggregation + no multiselect suggestion UX
 
 **Belred preview smoke, 2026-05-19.** Stage 9 added scraper-driven
