@@ -1,6 +1,17 @@
 import { z } from 'zod';
-import type { OnboardingStep } from './steps';
+import type { OnboardingStep, VerticalId } from './steps';
 import { STEP_ICONS } from './steps';
+import { ALL_TRADE_IDS, HOME_SERVICES_TAXONOMY } from './service-taxonomy';
+
+// Build the trade option list from the taxonomy at module load. The
+// service options aren't a flat list — they're grouped under their
+// trade in the renderer (see StepRenderer's resolveDynamicOptions
+// special-case for service_categories). So we only need the trades
+// here; services are fetched per-trade at render time.
+const HOME_SERVICES_TRADE_OPTIONS = ALL_TRADE_IDS.map((id) => ({
+  value: id,
+  label: HOME_SERVICES_TAXONOMY[id].label,
+}));
 
 // =============================================
 // V2 ONBOARDING STEP DEFINITIONS (12 steps, 66 questions)
@@ -482,14 +493,15 @@ export const onboardingStepsV2: OnboardingStep[] = [
         required: true,
         placeholder: 'e.g., Dallas, Fort Worth, Plano, Arlington',
       },
-      // S7.1: was a free-text textarea, now a multi-select checklist of
-      // common case types/services. The "other" option reveals a free-text
-      // input below so we can still capture verticals not on the list.
+      // --- Law-firm path (S7.1 / S7.2 from Stage 3) ---
+      // These three fields render ONLY when session.vertical = 'law_firm'.
+      // home_services sessions see the trade-toggle UI below instead.
       {
         name: 'primary_case_types_keywords',
         label: 'What are your primary case types or services?',
         type: 'multiselect',
-        required: true,
+        verticalIn: ['law_firm'],
+        requiredWhen: { field: 'vertical', equals: 'law_firm' },
         options: [
           { value: 'personal_injury', label: 'Personal Injury' },
           { value: 'car_accidents', label: 'Car Accidents' },
@@ -516,23 +528,72 @@ export const onboardingStepsV2: OnboardingStep[] = [
         name: 'primary_case_types_other',
         label: 'Tell us about your other case types',
         type: 'text',
+        verticalIn: ['law_firm'],
         placeholder: 'e.g., Maritime law, Aviation',
         dependsOn: { field: 'primary_case_types_keywords', includes: 'other' },
       },
-      // S7.2: was a free-text "e.g. Car Accidents" hint; now a radio whose
-      // options are exactly whatever was selected in primary_case_types_keywords.
-      // Renderer falls back to a helper message if the source is empty.
       {
         name: 'case_priority',
         label: 'Which case type should we focus on first?',
         type: 'radio',
+        verticalIn: ['law_firm'],
         optionsFromField: 'primary_case_types_keywords',
       },
+
+      // --- Home-services path (Stage 9) ---
+      // service_trades drives the visible service-category checklist
+      // below via the renderer's `optionsFromField` cascade. Unticking a
+      // trade auto-purges its child service IDs from service_categories
+      // (handled in StepRenderer's multiselect onChange for this field).
+      {
+        name: 'service_trades',
+        label: 'Which trades do you offer?',
+        type: 'multiselect',
+        verticalIn: ['home_services'],
+        requiredWhen: { field: 'vertical', equals: 'home_services' },
+        helpText: 'Tick every trade your business covers — sub-services appear below.',
+        options: HOME_SERVICES_TRADE_OPTIONS,
+      },
+      {
+        name: 'service_categories',
+        label: 'Which specific services do you offer?',
+        type: 'multiselect',
+        verticalIn: ['home_services'],
+        // Cascades on service_trades: only services whose parent trade
+        // is ticked render. The renderer also groups them visually
+        // under the trade label (StepRenderer special-cases this name).
+        optionsFromField: 'service_trades',
+        helpText: 'Tick the specific services you want to focus on. Untick a trade above to remove its services from this list.',
+      },
+      {
+        name: 'service_priority',
+        label: 'Which service should we focus on first?',
+        type: 'radio',
+        verticalIn: ['home_services'],
+        // Cascades on service_categories — only services the user
+        // actually ticked appear here.
+        optionsFromField: 'service_categories',
+      },
+      {
+        name: 'service_other',
+        label: 'Other service not listed?',
+        type: 'text',
+        verticalIn: ['home_services'],
+        placeholder: 'e.g., Solar install, Foundation repair',
+        helpText: 'Optional — only if there\'s something the checklist above missed.',
+      },
+
       {
         name: 'cases_to_avoid',
         label: 'Any case types you want to avoid?',
+        labelByVertical: {
+          home_services: 'Any service categories you want to avoid?',
+        },
         type: 'textarea',
         placeholder: 'e.g., Workers Comp, Criminal Defense',
+        helpTextByVertical: {
+          home_services: 'Optional — list services you don\'t want to take on.',
+        },
       },
       {
         name: 'has_gbp',
@@ -887,9 +948,19 @@ const stepValidationSchemasV2: Record<string, z.ZodSchema> = {
     // of canonical case-type values. The schema accepts the new array shape;
     // legacy textarea answers (strings) are still tolerated by callers that
     // read JSONB but won't pass validation when re-submitted.
-    primary_case_types_keywords: z
-      .array(z.string())
-      .min(1, 'Please pick at least one case type'),
+    //
+    // Stage 9: optional() (was .min(1)) so home_services sessions can save
+    // Step 7 without a case-types selection — that field's verticalIn gate
+    // hides it on those sessions and the per-field `requiredWhen` predicate
+    // is what actually enforces "pick at least one" for law_firm via the
+    // Almost There screen's missingFields scan. Keeping the .min(1) here
+    // would have blocked home_services on Next-click with an error about
+    // a field they can't see.
+    primary_case_types_keywords: z.array(z.string()).optional(),
+    // Stage 9: home_services counterpart. Shape-only — actual required-ness
+    // is gated on vertical via the field's `requiredWhen` predicate.
+    service_trades: z.array(z.string()).optional(),
+    service_categories: z.array(z.string()).optional(),
   }).passthrough(),
 
   legal_content_comms: z.object({}).passthrough(),
@@ -933,7 +1004,8 @@ export function validateStepDataV2(
 }
 
 export function getMissingRequiredFieldsV2(
-  answers: Record<string, Record<string, unknown>>
+  answers: Record<string, Record<string, unknown>>,
+  vertical?: VerticalId
 ): { stepKey: string; stepTitle: string; stepIndex: number; fieldName: string; fieldLabel: string }[] {
   const missing: { stepKey: string; stepTitle: string; stepIndex: number; fieldName: string; fieldLabel: string }[] = [];
 
@@ -941,9 +1013,27 @@ export function getMissingRequiredFieldsV2(
     const stepAnswers = answers[step.key] || {};
 
     step.fields.forEach((field) => {
-      if (!field.required) return;
+      // Stage 9: vertical-gated visibility — a field not in the current
+      // vertical's set is never required (and never rendered, but a
+      // missing-fields scan should agree with what the user actually
+      // sees so the Almost-There screen doesn't list invisible fields).
+      if (field.verticalIn && vertical && !field.verticalIn.includes(vertical)) return;
 
-      // Check dependency — if field depends on another and that condition isn't met, skip
+      // Determine whether this field is required for THIS vertical.
+      // The `requiredWhen` predicate overrides the static `required`
+      // flag when present — used for fields that are required only on
+      // one vertical (e.g. service_trades for home_services).
+      let isRequired = !!field.required;
+      if (field.requiredWhen?.field === 'vertical' && vertical) {
+        const eq = field.requiredWhen.equals;
+        const list = field.requiredWhen.valueIn;
+        isRequired =
+          (eq !== undefined && eq === vertical) ||
+          (list !== undefined && list.includes(vertical));
+      }
+      if (!isRequired) return;
+
+      // Sibling-answer dependsOn — unchanged from pre-Stage-9 behaviour.
       if (field.dependsOn) {
         const depValue = stepAnswers[field.dependsOn.field];
         if (depValue !== field.dependsOn.value) return;
@@ -957,12 +1047,15 @@ export function getMissingRequiredFieldsV2(
         (Array.isArray(value) && value.length === 0);
 
       if (isEmpty) {
+        // Surface the vertical-appropriate label if one is declared.
+        const renderedLabel =
+          (vertical && field.labelByVertical?.[vertical]) || field.label;
         missing.push({
           stepKey: step.key,
           stepTitle: step.title,
           stepIndex: index,
           fieldName: field.name,
-          fieldLabel: field.label,
+          fieldLabel: renderedLabel,
         });
       }
     });

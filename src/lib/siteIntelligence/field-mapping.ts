@@ -1,6 +1,10 @@
 import type { SiteInsights, TechStack, Branding, PrefillMap, PrefillEntry, Evidence } from './schemas';
 import { getPolicy } from './schemas';
 import { detectCallTrackingProvider } from './question-overrides';
+import {
+  matchScrapedServiceToTaxonomy,
+  getTradeForService,
+} from '@/lib/onboarding/service-taxonomy';
 
 // =============================================
 // Field Mapping: insight slots -> onboarding field keys
@@ -95,6 +99,93 @@ const MAPPING_RULES: MappingRule[] = [
       return {
         value: top.name,
         confidence: top.confidence * 0.9, // slightly lower — we're guessing priority
+        evidence: top.evidence,
+      };
+    },
+  },
+
+  // Stage 9: home_services prefill rules. matchScrapedServiceToTaxonomy
+  // returns null for anything that isn't a recognised trade-service label,
+  // so on a law_firm site these rules silently no-op (primary_services
+  // there is stuff like "Personal Injury", "DUI Defense" — no taxonomy
+  // match). On a home_services site the LLM-extracted service strings
+  // ("A/C Repair", "Drain Cleaning", "Furnace Install") collapse to
+  // canonical taxonomy IDs that line up with the trade-toggle UI.
+  //
+  // No vertical gate on the rule itself — verticalIn on the field
+  // definitions in steps-v2.ts handles the visibility side, so prefilling
+  // these on a mis-classified law_firm session is a no-op (the fields
+  // never render).
+  {
+    field_key: 'service_trades',
+    step_key: 'seo_targeting',
+    extract: (insights) => {
+      const all = [...insights.primary_services, ...insights.secondary_services];
+      if (all.length === 0) return null;
+      const tradeSet = new Set<string>();
+      const evidence: Evidence[] = [];
+      let confSum = 0;
+      let confCount = 0;
+      for (const svc of all) {
+        const sid = matchScrapedServiceToTaxonomy(svc.name);
+        if (!sid) continue;
+        const trade = getTradeForService(sid);
+        if (!trade) continue;
+        if (!tradeSet.has(trade)) evidence.push(...(svc.evidence ?? []));
+        tradeSet.add(trade);
+        confSum += svc.confidence;
+        confCount++;
+      }
+      if (tradeSet.size === 0) return null;
+      return {
+        value: Array.from(tradeSet),
+        confidence: confCount > 0 ? confSum / confCount : 0.7,
+        evidence: evidence.slice(0, 3),
+      };
+    },
+  },
+  {
+    field_key: 'service_categories',
+    step_key: 'seo_targeting',
+    extract: (insights) => {
+      const all = [...insights.primary_services, ...insights.secondary_services];
+      if (all.length === 0) return null;
+      const ids: string[] = [];
+      const seen = new Set<string>();
+      const evidence: Evidence[] = [];
+      let confSum = 0;
+      let confCount = 0;
+      for (const svc of all) {
+        const sid = matchScrapedServiceToTaxonomy(svc.name);
+        if (!sid || seen.has(sid)) continue;
+        seen.add(sid);
+        ids.push(sid);
+        evidence.push(...(svc.evidence ?? []));
+        confSum += svc.confidence;
+        confCount++;
+      }
+      if (ids.length === 0) return null;
+      return {
+        value: ids,
+        confidence: confCount > 0 ? confSum / confCount : 0.7,
+        evidence: evidence.slice(0, 3),
+      };
+    },
+  },
+  {
+    field_key: 'service_priority',
+    step_key: 'seo_targeting',
+    extract: (insights) => {
+      if (insights.primary_services.length === 0) return null;
+      const top = insights.primary_services[0];
+      const sid = matchScrapedServiceToTaxonomy(top.name);
+      if (!sid) return null;
+      return {
+        value: sid,
+        // Slightly lower than the source service's confidence — picking a
+        // single "focus" is more speculative than the list of services
+        // themselves (mirrors the law-firm case_priority rule above).
+        confidence: top.confidence * 0.9,
         evidence: top.evidence,
       };
     },

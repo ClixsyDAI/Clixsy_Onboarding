@@ -2,11 +2,13 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { getStepsForVersion, validateStepDataForVersion, getMissingRequiredFieldsForVersion } from '@/lib/onboarding/flow-version';
+import type { VerticalId } from '@/lib/onboarding/steps';
 import StepRenderer from './StepRenderer';
 import StepTransition from './StepTransition';
 import AccessChecklistStep from './AccessChecklistStep';
 import WebsiteSnapshot from './WebsiteSnapshot';
 import WelcomeModal from './WelcomeModal';
+import { clampInitialStep } from '@/lib/onboarding/wizard-state';
 import ThankYou from './ThankYou';
 import { getTransitionMessage, getWelcomeMessage } from '@/lib/onboarding/transition-messages';
 import type { TransitionMessage } from '@/lib/onboarding/transition-messages';
@@ -68,6 +70,12 @@ interface WizardProps {
    * "your account manager" in that case.
    */
   accountManager?: string | null;
+  /**
+   * Stage 9 / home-services PR: drives Step 7 branching and per-vertical
+   * copy. Defaults to 'law_firm' for backwards compat — every existing
+   * session row was law_firm by virtue of the migration 005 default.
+   */
+  vertical?: VerticalId;
   siteIntelligence?: SiteIntelligenceData | null;
 }
 
@@ -81,10 +89,18 @@ export default function Wizard({
   contactName = '',
   welcomeWizardSeen = true,
   accountManager = null,
+  vertical = 'law_firm',
   siteIntelligence = null,
 }: WizardProps) {
   const steps = useMemo(() => getStepsForVersion(flowVersion), [flowVersion]);
-  const [currentStepIndex, setCurrentStepIndex] = useState(initialStep);
+  // Defensive clamp against an out-of-bounds session.current_step (the
+  // goarco production smoke surfaced this — `steps[12]` is undefined
+  // when a 12-step session has current_step=12, which the submit
+  // handler sets on submit and an admin-driven rollback could leave
+  // behind). Pure helper in src/lib/onboarding/wizard-state.ts.
+  const [currentStepIndex, setCurrentStepIndex] = useState(() =>
+    clampInitialStep(initialStep, steps.length)
+  );
   const [answers, setAnswers] = useState<Record<string, Record<string, unknown>>>(() => {
     const initial: Record<string, Record<string, unknown>> = {};
     Object.entries(initialAnswers).forEach(([key, value]) => {
@@ -227,8 +243,8 @@ export default function Wizard({
 
   // Calculate missing required fields
   const missingFields = useMemo(() => {
-    return getMissingRequiredFieldsForVersion(flowVersion, answers);
-  }, [answers, flowVersion]);
+    return getMissingRequiredFieldsForVersion(flowVersion, answers, vertical);
+  }, [answers, flowVersion, vertical]);
 
   // Check if all required fields are complete (for blocking submission)
   const canSubmit = missingFields.length === 0;
@@ -845,6 +861,7 @@ export default function Wizard({
                 onChange={handleFieldChange}
                 questionOverrides={siteIntelligence?.question_overrides}
                 prefillMap={siteIntelligence?.prefill_map}
+                vertical={vertical}
               />
             )}
           </div>
