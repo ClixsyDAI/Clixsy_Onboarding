@@ -4,6 +4,11 @@ import { getFirecrawlKey } from '../config';
 import { extractColorsFromHtml, extractFontsFromHtml } from '../branding-extractor';
 import { extractPhoneFromHtml } from '../phone-extractor';
 import { sanitiseBrandName } from '../brand-name-sanitiser';
+import {
+  sanitiseLocations,
+  sanitiseBusinessSummary,
+  passesSummaryHygiene,
+} from '../extraction-sanitisers';
 
 const FIRECRAWL_BASE = 'https://api.firecrawl.dev/v1';
 
@@ -377,10 +382,27 @@ the shortest non-meta-title candidate you can find. Never return a
 string longer than 40 characters or one that contains commas separating
 service categories.
 
-Then include: a 2-4 sentence client-friendly summary of what the
-business does, their main services or practice areas, cities/areas they
-serve, contact details (phone, email, address), brand colors, fonts,
-and CMS platform.`,
+For business_summary (Stage 11 / Fix 3): write a 1-2 sentence factual
+summary of what this business does. Use the homepage hero, About page,
+or services page as primary sources. Do NOT use footer text, terms of
+service, privacy policy, marketing-consent checkboxes, or compliance
+disclaimers as source material. Never include phrases like "by
+checking this box", "consent to receive", "marketing and promotional",
+"opt out", "data rates apply", "privacy policy", "terms of service".
+If you can't find a clean summary in those primary sources, return an
+empty string — downstream code will supply a generic fallback.
+
+For locations_cities (Stage 11 / Fix 3): return geographic locations
+ONLY. Each entry must be a city, region, county, state, or country
+name. Reject sentence fragments with prepositions ("the Pacific
+Northwest for"), partial sentences, and any candidate containing "and
+pay", "required to", "taxes", "compliance", "license", or other
+business-license boilerplate. Each location is 1-4 words. If the only
+candidates are fragments, return an empty array — better empty than
+junk.
+
+Also include: primary_services, secondary_services, phone, email,
+address, brand_colors, fonts, and cms_platform per the schema.`,
         schema: {
           type: 'object',
           properties: {
@@ -408,8 +430,13 @@ and CMS platform.`,
         if (d.business_summary && typeof d.business_summary === 'string') {
           // LLM occasionally echoes markdown image/link syntax back into
           // the summary field. Same sanitisation as the fallback parser.
+          // Stage 11 / Fix 3: also run the hygiene check — drop summaries
+          // that are marketing-consent / terms-of-service boilerplate
+          // rather than actual business descriptions. The catch-all
+          // fallback at the end of run() supplies a generic line when
+          // every path comes up empty.
           const cleaned = cleanProseForDisplay(d.business_summary);
-          if (cleaned.length >= 30) businessSummary = cleaned;
+          if (passesSummaryHygiene(cleaned)) businessSummary = cleaned;
         }
         if (d.cms_platform && typeof d.cms_platform === 'string') cmsDetected = d.cms_platform;
 
@@ -428,9 +455,18 @@ and CMS platform.`,
           }
         }
         if (Array.isArray(d.locations_cities)) {
-          for (let i = 0; i < d.locations_cities.length; i++) {
-            const loc = d.locations_cities[i];
-            if (typeof loc === 'string' && loc.trim()) {
+          // Stage 11 / Fix 3: hygiene-filter the LLM output before
+          // ingesting. The LLM has occasionally returned sentence
+          // fragments ("the Pacific Northwest for", "and pay all
+          // necessary taxes and fees…") that surfaced as location pills.
+          // sanitiseLocations drops the obvious junk; the prompt update
+          // above tells the LLM to stop producing them in the first place.
+          const cleanLocs = sanitiseLocations(
+            d.locations_cities.filter((v): v is string => typeof v === 'string')
+          );
+          for (let i = 0; i < cleanLocs.length; i++) {
+            const loc = cleanLocs[i];
+            if (loc) {
               locations.push({ name: loc.trim(), type: 'city', confidence: i === 0 ? 0.85 : 0.70, evidence: [{ source_url: websiteUrl, excerpt: 'Location from website' }] });
             }
           }
@@ -480,13 +516,29 @@ and CMS platform.`,
           console.log(`[Firecrawl] Parsed ${services.length} services from markdown`);
         }
         if (locations.length === 0 && parsed.locations.length > 0) {
-          locations = parsed.locations;
-          console.log(`[Firecrawl] Parsed ${locations.length} locations from markdown`);
+          // Stage 11 / Fix 3: same hygiene filter for the markdown
+          // fallback path. The "serving the Pacific Northwest for"
+          // shape came from this branch on Belred.
+          const cleanParsedLocs = parsed.locations.filter((l) =>
+            // sanitiseLocations works on raw strings; the markdown
+            // parser produces structured {name, type, ...} entries.
+            // Reuse the per-string hygiene check directly.
+            !!l.name && sanitiseLocations([l.name]).length > 0
+          );
+          locations = cleanParsedLocs;
+          console.log(`[Firecrawl] Parsed ${locations.length} locations from markdown (after sanitise)`);
         }
         if (!phone && parsed.phone) phone = parsed.phone;
         if (!email && parsed.email) email = parsed.email;
         if (!address && parsed.address) address = parsed.address;
-        if (!businessSummary && parsed.businessSummary) businessSummary = parsed.businessSummary;
+        if (!businessSummary && parsed.businessSummary) {
+          // Stage 11 / Fix 3: gate the markdown-fallback summary on the
+          // same hygiene check so consent-boilerplate paragraphs don't
+          // sneak through this path either.
+          if (passesSummaryHygiene(parsed.businessSummary)) {
+            businessSummary = parsed.businessSummary;
+          }
+        }
 
         evidence.push({ source_url: websiteUrl, excerpt: `Parsed ${pagesContent.length} pages for business data` });
       }
@@ -594,6 +646,22 @@ and CMS platform.`,
     });
     if (brandBeforeSanitise !== brandName) {
       console.log(`[Firecrawl] brand_name sanitised: "${brandBeforeSanitise}" → "${brandName}"`);
+    }
+
+    // Stage 11 / Fix 3: catch-all summary fallback. If we got nothing or
+    // the LLM produced boilerplate, sanitiseBusinessSummary returns a
+    // generic "[Brand] is a local business." line so downstream surfaces
+    // (welcome wizard, WHAT WE FOUND panel, admin analysis pane) always
+    // have something readable. Vertical is unknown at scrape time —
+    // session vertical is set later in the admin Create flow — so the
+    // fallback uses the neutral "local business" form rather than a
+    // vertical-specific one.
+    const summaryBeforeFallback = businessSummary;
+    businessSummary = sanitiseBusinessSummary(businessSummary, brandName || '');
+    if (summaryBeforeFallback !== businessSummary) {
+      console.log(
+        `[Firecrawl] business_summary fallback applied: was=${summaryBeforeFallback ? `"${summaryBeforeFallback.slice(0, 40)}…"` : '(empty)'} → "${businessSummary}"`,
+      );
     }
 
     console.log(`[Firecrawl] Final: brand="${brandName}", services=${services.length}, locations=${locations.length}, screenshot=${!!screenshotUrl}, cms=${cmsDetected || 'none'}, colors=${colors.length}, fonts=${fonts.length}`);

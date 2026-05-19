@@ -194,6 +194,17 @@ export default function NewOnboardingPage() {
                     Send this 6-digit PIN to your client along with the link.
                     They&apos;ll enter it once to unlock the form.
                   </p>
+                  {/* Stage 11 / Fix 2: the PIN row had flex layout
+                      without min-w-0 on the input. The tracking-[0.5em]
+                      letter-spacing on a 2xl PIN gives the input a huge
+                      natural intrinsic width, which (combined with
+                      flex-1 but no min-width: 0) pushed the Copy button
+                      OUTSIDE the card on narrow mobile viewports. The
+                      operator saw an "orphan" Copy button floating to
+                      the right of the card. Fix: min-w-0 on the input
+                      so flex shrink kicks in, plus smaller text +
+                      tighter tracking on mobile so the digits stay
+                      readable inside the visible column. */}
                   <div className="bg-[#FFF8E1] border border-[#F5A524]/30 rounded-lg p-4 mb-4">
                     <div className="flex items-center gap-2">
                       <input
@@ -201,11 +212,11 @@ export default function NewOnboardingPage() {
                         value={generatedPin}
                         readOnly
                         aria-label="6-digit PIN"
-                        className="flex-1 bg-transparent text-[#0B0B0B] text-2xl font-mono tracking-[0.5em] text-center focus:outline-none"
+                        className="flex-1 min-w-0 bg-transparent text-[#0B0B0B] text-xl sm:text-2xl font-mono tracking-[0.2em] sm:tracking-[0.5em] text-center focus:outline-none"
                       />
                       <button
                         onClick={() => copyToClipboard(generatedPin, 'pin')}
-                        className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors"
+                        className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors whitespace-nowrap"
                       >
                         {copiedField === 'pin' ? 'Copied!' : 'Copy'}
                       </button>
