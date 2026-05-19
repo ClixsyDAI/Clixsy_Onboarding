@@ -35,6 +35,8 @@ interface SessionPayload {
     submittedAt: string | null;
     pinSet: boolean;
     welcomeWizardSeen: boolean;
+    /** Stage 8: rendered on the rebuilt thank-you screen. May be null on legacy rows. */
+    accountManager: string | null;
   };
   client: { name: string; contactName: string };
   answers: Record<string, { answers: Record<string, unknown>; completed: boolean }>;
@@ -154,6 +156,7 @@ export default function OnboardingShell({ token }: { token: string }) {
         clientName={payload.client.name}
         contactName={payload.client.contactName}
         welcomeWizardSeen={payload.session.welcomeWizardSeen}
+        accountManager={payload.session.accountManager}
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         siteIntelligence={payload.siteIntelligence as any}
       />

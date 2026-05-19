@@ -103,6 +103,10 @@ export async function GET(request: NextRequest) {
         // Stage 7: surface flags the client-side wizard uses to gate P3 + P4.
         pinSet: guard.pinSet,
         welcomeWizardSeen: (session as unknown as { welcome_wizard_seen?: boolean }).welcome_wizard_seen ?? false,
+        // Stage 8 / S12.2: account-manager name for the rebuilt thank-you
+        // screen copy. Defaults to "your account manager" client-side if
+        // unset (legacy / pre-Stage-1 rows).
+        accountManager: (session as unknown as { account_manager?: string | null }).account_manager ?? null,
       },
       client: {
         name: clientName,

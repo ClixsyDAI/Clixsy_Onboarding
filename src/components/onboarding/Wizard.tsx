@@ -7,6 +7,7 @@ import StepTransition from './StepTransition';
 import AccessChecklistStep from './AccessChecklistStep';
 import WebsiteSnapshot from './WebsiteSnapshot';
 import WelcomeModal from './WelcomeModal';
+import ThankYou from './ThankYou';
 import { getTransitionMessage, getWelcomeMessage } from '@/lib/onboarding/transition-messages';
 import type { TransitionMessage } from '@/lib/onboarding/transition-messages';
 
@@ -60,6 +61,13 @@ interface WizardProps {
    * only surfaces from the second login onward).
    */
   welcomeWizardSeen?: boolean;
+  /**
+   * Stage 8 / S12.2: rendered in the rebuilt thank-you screen copy.
+   * Pulled from `onboarding_sessions.account_manager` (set during admin
+   * Create — Stage 1 / P1). Null on legacy rows; ThankYou falls back to
+   * "your account manager" in that case.
+   */
+  accountManager?: string | null;
   siteIntelligence?: SiteIntelligenceData | null;
 }
 
@@ -72,6 +80,7 @@ export default function Wizard({
   clientName = '',
   contactName = '',
   welcomeWizardSeen = true,
+  accountManager = null,
   siteIntelligence = null,
 }: WizardProps) {
   const steps = useMemo(() => getStepsForVersion(flowVersion), [flowVersion]);
@@ -538,40 +547,17 @@ export default function Wizard({
     return () => container.removeEventListener('scroll', updateScrollIndicators);
   }, [updateScrollIndicators]);
 
-  // If submitted, show thank you screen
+  // Stage 8: rebuilt thank-you screen. Confetti + pop animation + new
+  // copy (S12.1 + S12.2 + S12.3 + S12.4) + star rating + Finish CTA all
+  // live in <ThankYou />. We hand it the Step-3 business name where
+  // available (clients fill that during the form) and fall back to the
+  // client_name set at session creation; the account manager is server-
+  // sourced (see OnboardingShell prop plumbing) with a friendly default
+  // when null on legacy rows.
   if (isSubmitted) {
-    return (
-      <div className="min-h-screen bg-[#F4F5F6]">
-        {/* Header */}
-        <header className="bg-[#0F1A14]">
-          <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-            <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
-            <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
-              Clixsy Onboarding Portal
-            </div>
-          </div>
-        </header>
-
-        <div className="flex items-center justify-center py-20">
-          <div className="max-w-md mx-auto p-8 bg-white rounded-2xl shadow-lg text-center">
-            <div className="w-16 h-16 mx-auto mb-6 bg-[#25DC7F]/10 rounded-full flex items-center justify-center">
-              <svg className="w-8 h-8 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-            </div>
-            <h1 className="text-2xl font-bold text-[#0B0B0B] mb-4">
-              Thank You!
-            </h1>
-            <p className="text-[#6B6B6B] mb-6">
-              Your onboarding has been submitted successfully. We&apos;ll review your information and be in touch soon.
-            </p>
-            <p className="text-sm text-[#A0A0A0]">
-              You can close this window now.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
+    const companyName = businessName || clientName || '';
+    const amName = accountManager?.trim() || '';
+    return <ThankYou companyName={companyName} accountManagerName={amName} token={token} />;
   }
 
   // Render "Almost There" review step
