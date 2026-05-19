@@ -744,19 +744,21 @@ export default function Wizard({
                 canScrollLeft ? 'opacity-100' : 'opacity-0'
               }`} />
 
-              {/* Scrollable container. Stage 10 / Fix 3: snap-x + per-button
-                  snap-center make finger-swipes on mobile land cleanly on
-                  an icon rather than between two. justify-center keeps the
-                  desktop layout (when all 12 fit). On overflow (mobile),
-                  scrollIntoView in the step-change effect uses inline:
-                  'center' so the active icon stays visible regardless of
-                  where in the list it sits — combined with snap, the
-                  active step ends up properly centered after a swipe.
-                  px-10 reserves room for the chevron + fade gradients on
-                  either edge so icons don't end up half-hidden under them. */}
+              {/* Scrollable container. Stage 10 / Fix 3 added snap-x +
+                  snap-center so finger-swipes land cleanly on an icon.
+                  Stage 12 / Fix 1: justify-center on overflow (mobile)
+                  was centring the wider-than-viewport icon row, which
+                  put the first icon off-screen to the LEFT at scrollLeft=0.
+                  scrollIntoView couldn't fully recover because scrollLeft
+                  can't go negative — icon 0 stayed clipped. Switching
+                  to justify-start on mobile keeps the first icon at the
+                  natural left edge (with the existing px-10 buffer
+                  reserving room for the chevron + fade overlays). On
+                  sm+ where the 12 icons usually fit, justify-center
+                  preserves the centered desktop look. */}
               <div
                 ref={scrollContainerRef}
-                className="flex items-center justify-center gap-2 overflow-x-auto px-10 py-2 scroll-smooth hide-scrollbar w-full snap-x snap-mandatory"
+                className="flex items-center justify-start sm:justify-center gap-2 overflow-x-auto px-10 py-2 scroll-smooth hide-scrollbar w-full snap-x snap-mandatory"
               >
                 {steps.map((step, index) => {
                   const isCompleted = completedStepsState.includes(step.key);

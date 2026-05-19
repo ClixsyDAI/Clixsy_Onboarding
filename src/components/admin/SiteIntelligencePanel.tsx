@@ -241,19 +241,22 @@ export default function SiteIntelligencePanel({
           </div>
         )}
 
-        {/* Brand Info */}
-        <div className="grid grid-cols-2 gap-4">
+        {/* Brand Info. Stage 12 / Fix 2: stack to 1-col on mobile so the
+            brand name and color chip rows each get the full card width.
+            Color chips also get flex-wrap so the 5-chip row doesn't
+            push the panel off-screen on narrow viewports. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {insights?.brand_name && (
             <div>
               <h4 className="text-xs font-semibold text-[#6B6B6B] uppercase mb-1">Brand Name</h4>
-              <p className="text-sm text-[#0B0B0B] font-medium">{insights.brand_name}</p>
+              <p className="text-sm text-[#0B0B0B] font-medium break-words">{insights.brand_name}</p>
             </div>
           )}
 
           {branding?.colors && branding.colors.length > 0 && (
             <div>
               <h4 className="text-xs font-semibold text-[#6B6B6B] uppercase mb-1">Brand Colors</h4>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 {branding.colors.slice(0, 5).map((color, i) => (
                   <div key={i} className="flex items-center gap-1">
                     <div className="w-5 h-5 rounded-full border border-[#E6E8EA]" style={{ backgroundColor: color }} />
@@ -335,33 +338,41 @@ export default function SiteIntelligencePanel({
           </div>
         )}
 
-        {/* Metrics */}
+        {/* Metrics. Stage 12 / Fix 2: 3-col grid was clipping "Performance"
+            and "Accessibility" labels on Android (~360px) — each box ended
+            up ~65-70px wide after p-3 padding, well below the ~110px the
+            text-xs label needed. Kept the 3-col layout (operator's option
+            b) but tightened mobile sizing: smaller padding, smaller font,
+            and leading-tight + break-words so long labels can wrap to 2
+            lines rather than overflow. Score numbers shrink one step on
+            mobile too so the box stays compact. min-w-0 lets the grid
+            children shrink below their intrinsic width. */}
         {metrics && (metrics.performance_score !== undefined || metrics.seo_score !== undefined) && (
           <div>
             <h4 className="text-xs font-semibold text-[#6B6B6B] uppercase mb-2">Quick Technical Snapshot</h4>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-3 gap-2 sm:gap-3">
               {metrics.performance_score !== undefined && (
-                <div className="text-center p-3 bg-white rounded-lg border border-[#E6E8EA]">
-                  <div className={`text-xl font-bold ${metrics.performance_score >= 70 ? 'text-[#25DC7F]' : metrics.performance_score >= 50 ? 'text-[#F5A524]' : 'text-[#E5484D]'}`}>
+                <div className="text-center min-w-0 p-2 sm:p-3 bg-white rounded-lg border border-[#E6E8EA]">
+                  <div className={`text-lg sm:text-xl font-bold ${metrics.performance_score >= 70 ? 'text-[#25DC7F]' : metrics.performance_score >= 50 ? 'text-[#F5A524]' : 'text-[#E5484D]'}`}>
                     {metrics.performance_score}
                   </div>
-                  <div className="text-xs text-[#6B6B6B]">Performance</div>
+                  <div className="text-[11px] sm:text-xs leading-tight break-words text-[#6B6B6B]">Performance</div>
                 </div>
               )}
               {metrics.accessibility_score !== undefined && (
-                <div className="text-center p-3 bg-white rounded-lg border border-[#E6E8EA]">
-                  <div className={`text-xl font-bold ${metrics.accessibility_score >= 70 ? 'text-[#25DC7F]' : 'text-[#F5A524]'}`}>
+                <div className="text-center min-w-0 p-2 sm:p-3 bg-white rounded-lg border border-[#E6E8EA]">
+                  <div className={`text-lg sm:text-xl font-bold ${metrics.accessibility_score >= 70 ? 'text-[#25DC7F]' : 'text-[#F5A524]'}`}>
                     {metrics.accessibility_score}
                   </div>
-                  <div className="text-xs text-[#6B6B6B]">Accessibility</div>
+                  <div className="text-[11px] sm:text-xs leading-tight break-words text-[#6B6B6B]">Accessibility</div>
                 </div>
               )}
               {metrics.seo_score !== undefined && (
-                <div className="text-center p-3 bg-white rounded-lg border border-[#E6E8EA]">
-                  <div className={`text-xl font-bold ${metrics.seo_score >= 70 ? 'text-[#25DC7F]' : 'text-[#F5A524]'}`}>
+                <div className="text-center min-w-0 p-2 sm:p-3 bg-white rounded-lg border border-[#E6E8EA]">
+                  <div className={`text-lg sm:text-xl font-bold ${metrics.seo_score >= 70 ? 'text-[#25DC7F]' : 'text-[#F5A524]'}`}>
                     {metrics.seo_score}
                   </div>
-                  <div className="text-xs text-[#6B6B6B]">SEO</div>
+                  <div className="text-[11px] sm:text-xs leading-tight break-words text-[#6B6B6B]">SEO</div>
                 </div>
               )}
             </div>
