@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { after } from 'next/server';
 import { getSessionByToken, getSessionAnswers, getSignedLogoUrl, createAuditEvent, createOpenEvent, getClientById } from '@/lib/supabase/server';
 import { getStepsForVersion } from '@/lib/onboarding/flow-version';
 import { getSiteIntelligenceSnapshots } from '@/lib/supabase/server';
@@ -98,18 +99,27 @@ export async function GET(request: NextRequest) {
 
     // Phase 1 of the workbook Onboarding tab (migration 008): append a
     // row to `onboarding_open_events` for the workbook's Open History
-    // modal (Phase 6.1 of the spec). Fire-and-forget — failures must
-    // never block the session response. IP is hashed (sha256(ip || salt))
+    // modal (Phase 6.1 of the spec). IP is hashed (sha256(ip || salt))
     // before storage; raw IP never lands in the DB.
     //
     // Emitted only after `guard.kind === 'ok'` (i.e. the caller has
     // passed PIN verification when one is configured). Locked /
     // needs_pin responses are not counted as opens.
-    void createOpenEvent(session.id, {
-      userAgent: capUserAgent(request.headers.get('user-agent')),
-      ipHash: hashRequestIp(request.headers.get('x-forwarded-for')),
-    }).catch((err) => {
-      console.warn('[session.GET] onboarding_open_events insert failed:', err);
+    //
+    // Use Next.js after() to run the INSERT after the response is sent.
+    // This keeps the serverless function alive on Vercel — a plain
+    // `void ... .catch(log)` fire-and-forget is torn down with the
+    // function when the response ships, so the Supabase HTTP request
+    // never lands (see PR #11 post-merge verification). Same pattern
+    // as src/app/api/admin/site-intelligence/analyze/route.ts.
+    const userAgent = capUserAgent(request.headers.get('user-agent'));
+    const ipHash = hashRequestIp(request.headers.get('x-forwarded-for'));
+    after(async () => {
+      try {
+        await createOpenEvent(session.id, { userAgent, ipHash });
+      } catch (err) {
+        console.warn('[session.GET] onboarding_open_events insert failed:', err);
+      }
     });
 
     // Format answers by step key
