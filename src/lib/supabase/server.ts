@@ -189,6 +189,32 @@ export async function createAuditEvent(
   });
 }
 
+/**
+ * Append a row to `onboarding_open_events` (migration 008). One row per
+ * resolution of the public token-load route — i.e. per page-load of the
+ * client-facing onboarding form once the session is found.
+ *
+ * Fire-and-forget by design: the caller awaits this only so a failure can
+ * be logged, never so it can fail the session response. Open-history is
+ * a Phase-6.1 modal in the workbook spec; missing rows degrade the modal,
+ * but the session-resolve path must NEVER block on this write.
+ *
+ * Both `userAgent` and `ipHash` are nullable in the schema — pass `null`
+ * (or just omit) if the caller can't compute them.
+ */
+export async function createOpenEvent(
+  sessionId: string,
+  opts: { userAgent?: string | null; ipHash?: string | null } = {}
+): Promise<void> {
+  const supabase = createServiceRoleClient();
+
+  await supabase.from('onboarding_open_events').insert({
+    session_id: sessionId,
+    user_agent: opts.userAgent ?? null,
+    ip_hash: opts.ipHash ?? null,
+  });
+}
+
 // Get site intelligence snapshots from session
 export async function getSiteIntelligenceSnapshots(sessionId: string): Promise<{
   prefill_map: Record<string, unknown> | null;

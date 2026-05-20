@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSessionByToken, getSessionAnswers, getSignedLogoUrl, createAuditEvent, getClientById } from '@/lib/supabase/server';
+import { getSessionByToken, getSessionAnswers, getSignedLogoUrl, createAuditEvent, createOpenEvent, getClientById } from '@/lib/supabase/server';
 import { getStepsForVersion } from '@/lib/onboarding/flow-version';
 import { getSiteIntelligenceSnapshots } from '@/lib/supabase/server';
 import { checkSessionGuard } from '@/lib/onboarding/session-guard';
+import { capUserAgent, hashRequestIp } from '@/lib/onboarding/open-event-ip';
 
 export async function GET(request: NextRequest) {
   try {
@@ -93,6 +94,22 @@ export async function GET(request: NextRequest) {
     await createAuditEvent(session.id, 'session_accessed', {
       ip: request.headers.get('x-forwarded-for') || 'unknown',
       userAgent: request.headers.get('user-agent') || 'unknown',
+    });
+
+    // Phase 1 of the workbook Onboarding tab (migration 008): append a
+    // row to `onboarding_open_events` for the workbook's Open History
+    // modal (Phase 6.1 of the spec). Fire-and-forget — failures must
+    // never block the session response. IP is hashed (sha256(ip || salt))
+    // before storage; raw IP never lands in the DB.
+    //
+    // Emitted only after `guard.kind === 'ok'` (i.e. the caller has
+    // passed PIN verification when one is configured). Locked /
+    // needs_pin responses are not counted as opens.
+    void createOpenEvent(session.id, {
+      userAgent: capUserAgent(request.headers.get('user-agent')),
+      ipHash: hashRequestIp(request.headers.get('x-forwarded-for')),
+    }).catch((err) => {
+      console.warn('[session.GET] onboarding_open_events insert failed:', err);
     });
 
     // Format answers by step key
