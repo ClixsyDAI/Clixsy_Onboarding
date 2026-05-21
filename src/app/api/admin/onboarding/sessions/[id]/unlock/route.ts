@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceRoleClient } from '@/lib/supabase/server';
 import { adminUnlockUpdate } from '@/lib/onboarding/pin';
+import { checkBearerToken } from '@/lib/onboarding/bearer-auth';
 
 /**
  * POST /api/admin/onboarding/sessions/[id]/unlock
@@ -10,20 +11,35 @@ import { adminUnlockUpdate } from '@/lib/onboarding/pin';
  * lockout, or 10+ → permanent) but still knows their PIN and the
  * admin just wants to give them another chance.
  *
+ * If you want to ALSO rotate the PIN (lost-PIN case, or suspected
+ * brute-force attempt where the attacker may have a guess in flight),
+ * use POST .../regenerate-pin instead.
+ *
+ * Phase 6 PR A: bearer-token gate via
+ * SHARED_INTEGRATION_BEARER_TOKEN — see lib/onboarding/bearer-auth.ts.
+ * The admin UI's unlock button uses a Server Action wrapper
+ * (unlockSessionAction) that bypasses the gate by calling the
+ * underlying logic in-process; this route is the cross-repo entry
+ * point.
+ *
  * Side effects:
  *   - pin_attempts → 0
  *   - pin_lockout_until → null
  *   - pin_locked_at → null
  *   - pin_hash unchanged
- *
- * If you want to ALSO rotate the PIN (lost-PIN case, or suspected
- * brute-force attempt where the attacker may have a guess in flight),
- * use POST .../regenerate-pin instead.
  */
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = checkBearerToken(request);
+  if (auth.kind === 'deny') {
+    return NextResponse.json(
+      { error: 'Unauthorized', reason: auth.reason },
+      { status: 401 }
+    );
+  }
+
   try {
     const { id } = await params;
     const supabase = createServiceRoleClient();

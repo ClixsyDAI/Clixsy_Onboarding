@@ -3,6 +3,14 @@
 import { useEffect, useState, use, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { getStepsForVersion } from '@/lib/onboarding/flow-version';
+// Phase 6 PR A: Server Actions replace the direct fetch() calls
+// the regenerate-pin and unlock buttons used to make. The route
+// handlers are now bearer-gated; Server Actions bypass the gate
+// since they run in-process. See lib/onboarding/admin-actions.ts.
+import {
+  regeneratePinAction,
+  unlockSessionAction,
+} from '@/lib/onboarding/admin-actions';
 
 const CLIXSY_LOGO_URL = 'https://res.cloudinary.com/dovgh19xr/image/upload/v1766427227/new_logo_nvrux0.svg';
 
@@ -95,15 +103,11 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     setPinActionError(null);
     setRevealedPin(null);
     try {
-      const res = await fetch(
-        `/api/admin/onboarding/sessions/${id}/regenerate-pin`,
-        { method: 'POST' },
-      );
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to regenerate PIN');
+      const result = await regeneratePinAction(id);
+      if (!result.ok) {
+        throw new Error(result.error);
       }
-      setRevealedPin(data.pin);
+      setRevealedPin(result.pin);
       // Optimistic local update — lockout state cleared, hash now set.
       if (session) {
         setSession({
@@ -134,13 +138,9 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     setPinActionLoading('unlock');
     setPinActionError(null);
     try {
-      const res = await fetch(
-        `/api/admin/onboarding/sessions/${id}/unlock`,
-        { method: 'POST' },
-      );
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to unlock session');
+      const result = await unlockSessionAction(id);
+      if (!result.ok) {
+        throw new Error(result.error);
       }
       if (session) {
         setSession({
