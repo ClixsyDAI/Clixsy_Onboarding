@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceRoleClient } from '@/lib/supabase/server';
-import { generatePin, hashPin } from '@/lib/onboarding/pin';
+import { rotatePin } from '@/lib/onboarding/rotate-pin';
+import { checkBearerToken } from '@/lib/onboarding/bearer-auth';
 
 /**
  * POST /api/admin/onboarding/sessions/[id]/regenerate-pin
@@ -11,7 +12,15 @@ import { generatePin, hashPin } from '@/lib/onboarding/pin';
  * since whoever was attempting the brute-force is back to square
  * one even if they had a guess in flight).
  *
- * Side effects:
+ * Phase 6 PR A:
+ *   - Bearer-token gate via SHARED_INTEGRATION_BEARER_TOKEN env
+ *     var (see lib/onboarding/bearer-auth.ts). Production blocks
+ *     unauthenticated callers; local / preview behaves as before.
+ *   - Rotation logic extracted to lib/onboarding/rotate-pin.ts so
+ *     the same-process Server Action used by the admin UI shares
+ *     the codepath.
+ *
+ * Side effects on success:
  *   - new PIN generated, hashed, stored
  *   - pin_attempts reset to 0
  *   - pin_lockout_until cleared
@@ -25,49 +34,37 @@ import { generatePin, hashPin } from '@/lib/onboarding/pin';
  * is consumed the PIN cannot be retrieved — only re-rotated.
  */
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = checkBearerToken(request);
+  if (auth.kind === 'deny') {
+    return NextResponse.json(
+      { error: 'Unauthorized', reason: auth.reason },
+      { status: 401 }
+    );
+  }
+
   try {
     const { id } = await params;
     const supabase = createServiceRoleClient();
+    const result = await rotatePin(supabase, id);
 
-    // Verify the session exists before doing crypto work.
-    const { data: existing, error: existingErr } = await supabase
-      .from('onboarding_sessions')
-      .select('id')
-      .eq('id', id)
-      .single();
-
-    if (existingErr || !existing) {
+    if (result.kind === 'not_found') {
       return NextResponse.json(
         { error: 'Session not found' },
         { status: 404 }
       );
     }
-
-    const pin = generatePin();
-    const pinHash = await hashPin(pin);
-
-    const { error: updateErr } = await supabase
-      .from('onboarding_sessions')
-      .update({
-        pin_hash: pinHash,
-        pin_attempts: 0,
-        pin_lockout_until: null,
-        pin_locked_at: null,
-      })
-      .eq('id', id);
-
-    if (updateErr) {
-      console.error('PIN regenerate update error:', updateErr);
+    if (result.kind === 'error') {
+      console.error('PIN regenerate failed:', result.message);
       return NextResponse.json(
-        { error: 'Failed to rotate PIN: ' + updateErr.message },
+        { error: result.message },
         { status: 500 }
       );
     }
 
-    return NextResponse.json({ success: true, pin });
+    return NextResponse.json({ success: true, pin: result.pin });
   } catch (error) {
     console.error('Error regenerating PIN:', error);
     return NextResponse.json(
