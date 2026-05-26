@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { createServiceRoleClient } from '@/lib/supabase/server';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
@@ -6,9 +7,45 @@ import { generatePin, hashPin } from '@/lib/onboarding/pin';
 
 type Vertical = 'law_firm' | 'home_services';
 
+// Empty-after-trim becomes undefined so downstream `?? null` coalesces
+// the optional contact columns the same way the original
+// `contactName?.trim() || null` path did.
+const optionalTrimmedString = z
+  .string()
+  .trim()
+  .transform((v) => (v === '' ? undefined : v))
+  .optional();
+
+const RequestBodySchema = z.object({
+  clientName: z.string().trim().min(1, 'Client name is required'),
+  accountManager: z.string().trim().min(1, 'Account manager is required'),
+  vertical: z.enum(['law_firm', 'home_services'], {
+    message: 'Vertical must be one of: law_firm, home_services',
+  }),
+  contactName: optionalTrimmedString,
+  contactEmail: optionalTrimmedString,
+  websiteUrl: optionalTrimmedString,
+  siteIntelligenceId: z.string().optional(),
+  // workbook_id (Basecamp project id) is set by the workbook-side
+  // automation; the existing admin /admin/onboarding/new UI omits
+  // it and the column stays null in that path. UNIQUE constraint
+  // `clients_workbook_id_unique` is enforced at the DB layer
+  // (migration 008) and surfaced as a 409 below.
+  workbookId: z.number().int().positive().optional(),
+});
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+
+    const parsed = RequestBodySchema.safeParse(body);
+    if (!parsed.success) {
+      const firstIssue = parsed.error.issues[0];
+      return NextResponse.json(
+        { error: firstIssue?.message ?? 'Invalid request body' },
+        { status: 400 }
+      );
+    }
     const {
       clientName,
       contactName,
@@ -17,35 +54,8 @@ export async function POST(request: NextRequest) {
       siteIntelligenceId,
       accountManager,
       vertical,
-    }: {
-      clientName?: string;
-      contactName?: string;
-      contactEmail?: string;
-      websiteUrl?: string;
-      siteIntelligenceId?: string;
-      accountManager?: string;
-      vertical?: string;
-    } = body;
-
-    // --- Validation -------------------------------------------------
-    if (!clientName || !clientName.trim()) {
-      return NextResponse.json(
-        { error: 'Client name is required' },
-        { status: 400 }
-      );
-    }
-    if (!accountManager || !accountManager.trim()) {
-      return NextResponse.json(
-        { error: 'Account manager is required' },
-        { status: 400 }
-      );
-    }
-    if (vertical !== 'law_firm' && vertical !== 'home_services') {
-      return NextResponse.json(
-        { error: 'Vertical must be one of: law_firm, home_services' },
-        { status: 400 }
-      );
-    }
+      workbookId,
+    } = parsed.data;
     const verticalValue: Vertical = vertical;
 
     const supabase = createServiceRoleClient();
@@ -89,18 +99,44 @@ export async function POST(request: NextRequest) {
     const pinHash = await hashPin(pin);
 
     // --- Create client --------------------------------------------
+    // workbook_id is only included in the INSERT payload when the
+    // caller supplied it — leaving the column NULL (its default)
+    // preserves the admin UI path's existing behaviour.
+    const clientInsert: Record<string, unknown> = {
+      id: clientId,
+      agency_id: agencyId,
+      client_name: clientName,
+      primary_contact_name: contactName ?? null,
+      primary_contact_email: contactEmail ?? null,
+      website_url: websiteUrl ?? null,
+    };
+    if (workbookId !== undefined) {
+      clientInsert.workbook_id = workbookId;
+    }
+
     const { error: clientError } = await supabase
       .from('clients')
-      .insert({
-        id: clientId,
-        agency_id: agencyId,
-        client_name: clientName.trim(),
-        primary_contact_name: contactName?.trim() || null,
-        primary_contact_email: contactEmail?.trim() || null,
-        website_url: websiteUrl?.trim() || null,
-      });
+      .insert(clientInsert);
 
     if (clientError) {
+      // Translate the workbook_id UNIQUE-violation into a structured
+      // 409 so the automation caller can distinguish "this Basecamp
+      // project already has an onboarding session" from a generic DB
+      // failure. Other 23505 violations fall through to the 500 path.
+      if (
+        clientError.code === '23505' &&
+        typeof clientError.message === 'string' &&
+        clientError.message.includes('clients_workbook_id_unique')
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'workbook_id_already_linked',
+            message: `Another client is already linked to workbook_id ${workbookId}. Use a different workbook_id or unlink the existing client.`,
+          },
+          { status: 409 }
+        );
+      }
       console.error('Client creation error:', clientError);
       return NextResponse.json(
         { error: 'Failed to create client: ' + clientError.message },
@@ -117,7 +153,7 @@ export async function POST(request: NextRequest) {
       status: 'draft',
       current_step: 0,
       flow_version: 'v2',
-      account_manager: accountManager.trim(),
+      account_manager: accountManager,
       vertical: verticalValue,
       pin_hash: pinHash,
       // pin_attempts defaults to 0 in DB; pin_lockout_until / pin_locked_at default null.
