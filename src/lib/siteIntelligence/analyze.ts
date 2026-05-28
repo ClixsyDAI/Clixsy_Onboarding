@@ -248,21 +248,42 @@ export async function runSiteAnalysis(recordId: string): Promise<void> {
     // route's link-only-on-completed guard would then trust the status
     // and overwrite a session's prior good prefill with the garbage.
     //
-    // Gate completion on real-business signals — any of: a brand name,
-    // primary services, or primary locations. junglelaw/dexterlaw/
-    // andrewpickett/cellinolaw all produce all three. An empty crawl
-    // produces none.
+    // The first attempt at this fix used { brand_name OR primary_services
+    // OR primary_locations }. Verification against
+    // https://invalid-domain-xyz.invalid surfaced a hole: Firecrawl
+    // SYNTHESIZES brand_name from the URL slug ("Invalid Domain Xyz")
+    // and produces a template business_summary ("X is a local
+    // business...") even when no real content was extracted. Both of
+    // those fields are bypassable by URL crafting and must NOT be
+    // trusted as gating signals.
+    //
+    // Tightened predicate — gate on signals that REQUIRE real-page
+    // content to populate. Any ONE of these is enough; the breadth
+    // is the safety margin against false-rejection of legitimately
+    // sparse sites:
+    //   - primary_services entries (Firecrawl needs to parse pages)
+    //   - primary_locations entries (needs schema or address text)
+    //   - a non-empty contact_public.phone (page text or schema)
+    //   - a non-empty contact_public.address (page text or schema)
+    //   - key_pages entries (Firecrawl found at least one real page)
+    //
+    // Explicit trim() on phone/address: an empty/whitespace contact
+    // object must not pass; matches the pattern used for brand_name
+    // checks elsewhere.
     //
     // Note: this changes admin /new flow behavior too — a previously
     // "completed but empty" admin analysis now shows as 'failed' with
     // the plain-language error below. SiteIntelligencePanel already
-    // has a failed-state render (red banner + Retry button) so no
-    // admin UI change is needed.
+    // has a failed-state render (red banner + Retry button at
+    // lines 175-198) so no admin UI change is needed.
     const hasUsableContent =
-      (typeof merged.insights.brand_name === 'string' &&
-        merged.insights.brand_name.trim().length > 0) ||
       (merged.insights.primary_services?.length ?? 0) > 0 ||
-      (merged.insights.primary_locations?.length ?? 0) > 0;
+      (merged.insights.primary_locations?.length ?? 0) > 0 ||
+      (typeof merged.insights.contact_public?.phone === 'string' &&
+        merged.insights.contact_public.phone.trim().length > 0) ||
+      (typeof merged.insights.contact_public?.address === 'string' &&
+        merged.insights.contact_public.address.trim().length > 0) ||
+      (merged.insights.key_pages?.length ?? 0) > 0;
 
     if (!hasUsableContent) {
       // Preserve provider-level error detail in console logs for
