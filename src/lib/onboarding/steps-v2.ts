@@ -30,6 +30,20 @@ export const onboardingStepsV2: OnboardingStep[] = [
     estimatedTime: '1 min',
     icon: STEP_ICONS.user,
     fields: [
+      // Phase 3 followup: website_url moved to the front of step 1 so
+      // the wizard can trigger site-intelligence analysis as early as
+      // possible (the analyzer runs in the background while the client
+      // fills in the rest of step 1). Defensive read of the old
+      // business_overview.website_url location is in Wizard.tsx so any
+      // session created before this change still surfaces its URL here.
+      {
+        name: 'website_url',
+        label: 'Your Website',
+        type: 'url',
+        required: true,
+        placeholder: 'https://example.com',
+        helpText: "Once you enter your website, we'll analyze it and pre-fill many of the questions below so you don't have to type everything from scratch.",
+      },
       {
         name: 'main_contact_name',
         label: 'Full Name',
@@ -165,7 +179,10 @@ export const onboardingStepsV2: OnboardingStep[] = [
     icon: STEP_ICONS.building,
     fields: [
       { name: 'business_name', label: 'Business Name', type: 'text', required: true, placeholder: 'Smith & Associates Law Firm' },
-      { name: 'website_url', label: 'Main Website URL', type: 'url', required: true, placeholder: 'https://example.com' },
+      // Phase 3 followup: website_url moved to primary_contact (step 1).
+      // Removed from this step's render-set. Zod still accepts it as
+      // optional in stepValidationSchemasV2.business_overview for
+      // back-compat with existing answer rows.
       { name: 'business_phone', label: 'Main Business Phone', type: 'tel', required: true, placeholder: '(555) 123-4567' },
       { name: 'physical_address', label: 'Physical Company Address', type: 'textarea', required: true, placeholder: '123 Main St, Suite 100\nCity, State ZIP' },
       {
@@ -919,6 +936,10 @@ export const onboardingStepsV2: OnboardingStep[] = [
 
 const stepValidationSchemasV2: Record<string, z.ZodSchema> = {
   primary_contact: z.object({
+    // Phase 3 followup: website_url moved from business_overview to here
+    // (first field on step 1). See the field's placement in the step
+    // definition above for the rationale.
+    website_url: z.string().min(1, 'Website URL is required'),
     main_contact_name: z.string().min(1, 'Full name is required'),
     main_contact_title: z.string().min(1, 'Title/Role is required'),
     main_contact_email: z.string().email('Please enter a valid email'),
@@ -929,7 +950,11 @@ const stepValidationSchemasV2: Record<string, z.ZodSchema> = {
 
   business_overview: z.object({
     business_name: z.string().min(1, 'Business name is required'),
-    website_url: z.string().min(1, 'Website URL is required'),
+    // Phase 3 followup: website_url moved to primary_contact (step 1).
+    // Kept here as optional for back-compat with pre-existing answer
+    // rows that still have it at this step_key — the wizard reads from
+    // primary_contact first and falls back here.
+    website_url: z.string().optional().or(z.literal('')),
     business_phone: z.string().min(1, 'Business phone is required'),
     physical_address: z.string().min(1, 'Physical address is required'),
   }).passthrough(),

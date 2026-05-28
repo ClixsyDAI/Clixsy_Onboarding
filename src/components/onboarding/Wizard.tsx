@@ -8,6 +8,7 @@ import StepTransition from './StepTransition';
 import AccessChecklistStep from './AccessChecklistStep';
 import WebsiteSnapshot from './WebsiteSnapshot';
 import WelcomeModal from './WelcomeModal';
+import AnalyzePanel, { type AnalyzeState } from './AnalyzePanel';
 import { clampInitialStep } from '@/lib/onboarding/wizard-state';
 import ThankYou from './ThankYou';
 import { getTransitionMessage, getWelcomeMessage } from '@/lib/onboarding/transition-messages';
@@ -90,8 +91,16 @@ export default function Wizard({
   welcomeWizardSeen = true,
   accountManager = null,
   vertical = 'law_firm',
-  siteIntelligence = null,
+  siteIntelligence: initialSiteIntelligence = null,
 }: WizardProps) {
+  // Phase 3 followup: siteIntelligence is now a state value, not just a
+  // prop. Initial value comes from the server-side load (admin-flow
+  // sessions where the AM ran analyze on /new). Updates happen client-
+  // side when the public-wizard analyze flow completes — see triggerAnalyze
+  // / pollAnalyzeStatus below. The existing prefill useEffect (further
+  // down) depends on this state, so a successful client-side analyze
+  // applies its prefill_map to empty fields in-place.
+  const [siteIntelligence, setSiteIntelligence] = useState(initialSiteIntelligence);
   const steps = useMemo(() => getStepsForVersion(flowVersion), [flowVersion]);
   // Defensive clamp against an out-of-bounds session.current_step (the
   // goarco production smoke surfaced this — `steps[12]` is undefined
@@ -117,6 +126,58 @@ export default function Wizard({
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showSnapshot, setShowSnapshot] = useState(!!siteIntelligence?.insights);
+
+  // -----------------------------------------------------------
+  // Phase 3 followup: client-side analyze state machine.
+  // -----------------------------------------------------------
+  // Used by the AnalyzePanel rendered above the step-1 form card.
+  // States: idle → analyzing → completed | failed | timed_out.
+  // 'completed' is also the initial state when the session already
+  // has a linked completed analysis (admin-flow sessions).
+  const [analyzeState, setAnalyzeState] = useState<AnalyzeState>(
+    initialSiteIntelligence?.prefill_map ? 'completed' : 'idle',
+  );
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  // Bug #2 fix: the recordId for the current analyze cycle is held
+  // in a closure (triggerAnalyze → pollAnalyzeStatus param) — not
+  // component state. The status endpoint reads THAT record directly
+  // rather than session.site_intelligence_id (which only updates
+  // after a successful analyze completes). On re-analyze, any
+  // in-flight poll from the prior cycle gets cancelled via
+  // analyzePollTimerRef before the new cycle starts, so there's
+  // never more than one poll loop running at a time.
+  const analyzeStartedAtRef = useRef<number>(0);
+  const analyzePollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ANALYZE_TIMEOUT_MS = 90_000;
+  const ANALYZE_POLL_INTERVAL_MS = 2500;
+
+  // Cancel any pending poll on unmount.
+  useEffect(() => () => {
+    if (analyzePollTimerRef.current) clearTimeout(analyzePollTimerRef.current);
+  }, []);
+
+  // Defensive read: pre-existing sessions may have website_url stored
+  // under the OLD step key (business_basics for v1, business_overview
+  // for v2). Copy it into primary_contact.website_url on mount so the
+  // step-1 field surfaces it. Only runs once and only fills empty.
+  useEffect(() => {
+    setAnswers(prev => {
+      const pcExisting = (prev['primary_contact']?.website_url ?? '') as string;
+      if (pcExisting.trim()) return prev;
+      const fallback =
+        (prev['business_basics']?.website_url as string | undefined) ??
+        (prev['business_overview']?.website_url as string | undefined) ??
+        '';
+      if (!fallback.trim()) return prev;
+      return {
+        ...prev,
+        primary_contact: {
+          ...(prev['primary_contact'] ?? {}),
+          website_url: fallback,
+        },
+      };
+    });
+  }, []); // run once on mount
 
   // Step transition state
   const [transitioning, setTransitioning] = useState(false);
@@ -160,7 +221,11 @@ export default function Wizard({
     return fromV1 || fromV2 || clientName || '';
   }, [answers, clientName]);
 
-  // Apply site intelligence prefill on mount (only to empty fields, only once)
+  // Apply site intelligence prefill — runs on mount AND any time
+  // siteIntelligence state updates (e.g. when the client-side analyze
+  // flow completes mid-session). Idempotent: only fills empty fields,
+  // so re-runs on the same data don't disturb anything the client has
+  // already typed and re-runs on FRESH data only fill what's still empty.
   useEffect(() => {
     if (!siteIntelligence?.prefill_map) return;
     const prefillMap = siteIntelligence.prefill_map;
@@ -193,7 +258,136 @@ export default function Wizard({
       }
       return updated;
     });
-  }, []); // Only run once on mount
+  }, [siteIntelligence, steps]);
+
+  // -----------------------------------------------------------
+  // Phase 3 followup: analyze trigger + status polling.
+  // -----------------------------------------------------------
+  const pollAnalyzeStatus = useCallback((recordId: string) => {
+    const tick = async () => {
+      if (Date.now() - analyzeStartedAtRef.current > ANALYZE_TIMEOUT_MS) {
+        setAnalyzeState('timed_out');
+        return;
+      }
+      try {
+        const res = await fetch('/api/public/site-intelligence/status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          // Pass recordId on every tick so the endpoint reads the
+          // analysis we triggered, not whatever's currently linked
+          // to the session (which may be a stale prior record).
+          body: JSON.stringify({ token, recordId }),
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          setAnalyzeState('failed');
+          setAnalyzeError(body.error ?? 'Status check failed');
+          return;
+        }
+        if (body.status === 'completed') {
+          // Replace siteIntelligence with the fresh polled data — the
+          // existing prefill useEffect will pick it up and apply
+          // prefill_map to any still-empty fields.
+          setSiteIntelligence(body);
+          setAnalyzeState('completed');
+          // Surface the WebsiteSnapshot panel below the form for
+          // sessions whose initial mount had no insights (it would
+          // otherwise stay hidden because of its initial-state default).
+          if (body.insights) setShowSnapshot(true);
+          return;
+        }
+        if (body.status === 'failed') {
+          setAnalyzeState('failed');
+          setAnalyzeError(body.error ?? 'Analysis failed');
+          return;
+        }
+        analyzePollTimerRef.current = setTimeout(tick, ANALYZE_POLL_INTERVAL_MS);
+      } catch (err) {
+        setAnalyzeState('failed');
+        setAnalyzeError(err instanceof Error ? err.message : 'Network error');
+      }
+    };
+    tick();
+  }, [token]);
+
+  const triggerAnalyze = useCallback(async () => {
+    const url = ((answers['primary_contact']?.website_url as string | undefined) ?? '').trim();
+    if (!url) return;
+    // Cancel any in-flight poll from a prior analyze cycle so we
+    // don't have two poll loops running concurrently with different
+    // recordIds racing each other to setAnalyzeState.
+    if (analyzePollTimerRef.current) {
+      clearTimeout(analyzePollTimerRef.current);
+      analyzePollTimerRef.current = null;
+    }
+    setAnalyzeState('analyzing');
+    setAnalyzeError(null);
+    analyzeStartedAtRef.current = Date.now();
+    try {
+      const res = await fetch('/api/public/site-intelligence/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, websiteUrl: url }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setAnalyzeState('failed');
+        setAnalyzeError(body.error ?? 'Could not start analysis');
+        return;
+      }
+      // Capture the recordId for THIS analysis cycle. The closure
+      // carries it through the poll loop. On re-analyze, the
+      // analyzePollTimerRef cancellation at the top of triggerAnalyze
+      // tears down any prior poll loop so we never have two
+      // concurrent loops reading stale ids.
+      const newRecordId: string | undefined = typeof body.recordId === 'string' ? body.recordId : undefined;
+      if (!newRecordId) {
+        setAnalyzeState('failed');
+        setAnalyzeError('Server did not return a recordId');
+        return;
+      }
+      // Server may return reused=true (cache hit) with status=completed —
+      // either way, kick off the poll loop which will read terminal
+      // state on the first tick.
+      pollAnalyzeStatus(newRecordId);
+    } catch (err) {
+      setAnalyzeState('failed');
+      setAnalyzeError(err instanceof Error ? err.message : 'Network error');
+    }
+  }, [answers, token, pollAnalyzeStatus]);
+
+  const skipAnalyze = useCallback(() => {
+    if (analyzePollTimerRef.current) {
+      clearTimeout(analyzePollTimerRef.current);
+      analyzePollTimerRef.current = null;
+    }
+    setAnalyzeState('idle');
+    setAnalyzeError(null);
+  }, []);
+
+  // When the client edits the URL after a completed analysis, reset
+  // analyzeState back to idle so the "Analyze my site" button re-appears
+  // (re-analyze flow). We watch the answers map's primary_contact entry.
+  const lastSeenUrlRef = useRef<string>('');
+  useEffect(() => {
+    const url = ((answers['primary_contact']?.website_url as string | undefined) ?? '').trim();
+    if (analyzeState === 'completed' && lastSeenUrlRef.current && url && url !== lastSeenUrlRef.current) {
+      setAnalyzeState('idle');
+      setAnalyzeError(null);
+      // Cancel any pending poll from the prior cycle. The next
+      // triggerAnalyze will start its own loop with the new recordId.
+      if (analyzePollTimerRef.current) {
+        clearTimeout(analyzePollTimerRef.current);
+        analyzePollTimerRef.current = null;
+      }
+    }
+    if (analyzeState === 'completed' && !lastSeenUrlRef.current) {
+      lastSeenUrlRef.current = url;
+    }
+    if (analyzeState !== 'completed') {
+      lastSeenUrlRef.current = url;
+    }
+  }, [answers, analyzeState]);
 
   // P4 (Stage 7): once the P3 modal has been dismissed, every subsequent
   // visit is a "returning" visit by definition. The previous heuristic
@@ -847,6 +1041,22 @@ export default function Wizard({
               {currentStep.description}
             </p>
           </div>
+
+          {/* Phase 3 followup: client-side site-intelligence trigger.
+              Visible only on step 1 (primary_contact). Drives the analyze
+              + poll flow; non-blocking so the client can continue
+              filling the form below in parallel. */}
+          {currentStep?.key === 'primary_contact' && (
+            <AnalyzePanel
+              state={analyzeState}
+              error={analyzeError}
+              websiteUrl={(answers['primary_contact']?.website_url as string | undefined) ?? ''}
+              hasExistingAnalysis={!!initialSiteIntelligence?.prefill_map}
+              onAnalyze={triggerAnalyze}
+              onRetry={triggerAnalyze}
+              onSkip={skipAnalyze}
+            />
+          )}
 
           {/* Content Card */}
           <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-6">

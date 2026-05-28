@@ -3,8 +3,17 @@ import { after } from 'next/server';
 import { isSiteIntelligenceEnabled } from '@/lib/siteIntelligence/config';
 import { createSiteIntelligenceRecord, runSiteAnalysis, linkSiteIntelligenceToSession } from '@/lib/siteIntelligence/analyze';
 
-// Allow up to 60 seconds for Firecrawl crawl + extract
-export const maxDuration = 60;
+// Allow up to 300 seconds (Vercel's platform max) for Firecrawl crawl
+// + LLM extraction + PageSpeed. Historical median for client sites is
+// ~40s with a max around 52s, so 60s mostly worked — but deep sites
+// like clixsy.com itself hit >180s, and when the function times out
+// mid-run the `runSiteAnalysis` code never reaches its terminal
+// UPDATE status='completed' or 'failed' statements, leaving the
+// record stuck in 'running' permanently. 300s is Vercel's plan max
+// and gives headroom for any realistic client site. If a future
+// site exceeds this too, the next step is moving the analyzer onto
+// a queue-based worker rather than further increasing the limit.
+export const maxDuration = 300;
 
 export async function POST(request: NextRequest) {
   try {
