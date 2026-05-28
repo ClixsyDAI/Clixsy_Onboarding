@@ -40,6 +40,11 @@ export interface OnboardingSession {
   pin_locked_at: string | null;
   // Stage 7 (migration 006) — first-login welcome modal flag.
   welcome_wizard_seen: boolean;
+  // Site-intelligence link — points to onboarding_site_intelligence.id
+  // when the AM (admin flow) or the client (public wizard step 1 flow)
+  // has run a site analysis for this session. Null when no analysis
+  // has been linked yet (default state for cron-created sessions).
+  site_intelligence_id: string | null;
 }
 
 export interface OnboardingAnswer {
