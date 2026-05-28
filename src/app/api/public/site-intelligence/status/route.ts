@@ -4,17 +4,29 @@
 //
 // Client-side polling endpoint. Mirrors the public-auth pattern
 // (token + checkSessionGuard cookie) so the wizard can ask "what's
-// the state of my session's currently-linked analysis?" without
-// needing the analysis recordId on the client.
+// the state of THIS analysis I just triggered" (active poll) OR
+// "what's currently linked to my session" (initial mount).
+//
+// Two read paths:
+//   1. body.recordId present  → read that specific record directly.
+//      The wizard owns the polling context and supplies the recordId
+//      from the analyze POST response. This is the bug-#2 fix path —
+//      the previous "always read session.site_intelligence_id"
+//      behavior would return STALE data on re-analyze, because the
+//      session's linked record only updates AFTER the new analysis
+//      completes.
+//   2. body.recordId absent   → fall back to session.site_intelligence_id.
+//      Used by initial-mount fallback paths if the wizard ever needs
+//      to fetch "whatever's currently linked" without an active poll.
 //
 // Returns one of:
-//   - { status: 'none' }                  — no analysis linked yet
+//   - { status: 'none' }                  — no recordId resolved
 //   - { status: 'queued'|'running' ...}  — in-flight
 //   - { status: 'completed' ...prefill}  — terminal happy path
 //   - { status: 'failed' ...error}       — terminal sad path
 //
 // POST (not GET) because the body carries the session token and
-// the PIN cookie rides via headers — same shape as the existing
+// (optionally) the recordId — same shape as the existing
 // /api/public/onboarding/submit endpoint.
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -25,7 +37,7 @@ import { checkSessionGuard } from '@/lib/onboarding/session-guard';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { token } = body;
+    const { token, recordId } = body;
 
     if (!token || typeof token !== 'string') {
       return NextResponse.json({ error: 'Token is required' }, { status: 400 });
@@ -49,16 +61,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // No analysis ever linked → tell the client the field is empty
-    // so the wizard can show the "Analyze my site" affordance.
-    if (!session.site_intelligence_id) {
+    // Resolve which record to read. Active-poll path (recordId supplied)
+    // takes priority — the wizard knows which analysis it's tracking.
+    // Fall back to session.site_intelligence_id only when no recordId
+    // is supplied (initial-mount / fallback path).
+    const targetRecordId: string | null =
+      typeof recordId === 'string' && recordId
+        ? recordId
+        : session.site_intelligence_id ?? null;
+
+    if (!targetRecordId) {
+      // No record to read — neither an active poll target nor anything
+      // linked to the session. Tell the wizard to show the "Analyze my
+      // site" affordance.
       return NextResponse.json({ status: 'none' });
     }
 
-    const record = await getSiteIntelligence(session.site_intelligence_id);
+    const record = await getSiteIntelligence(targetRecordId);
     if (!record) {
-      // Orphan link — shouldn't happen but defensively return 'none'
-      // so the wizard recovers by offering to re-analyze.
+      // Orphan link or invalid recordId — defensively return 'none' so
+      // the wizard recovers by offering to re-analyze.
       return NextResponse.json({ status: 'none' });
     }
 

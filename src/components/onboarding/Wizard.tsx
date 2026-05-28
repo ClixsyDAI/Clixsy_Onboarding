@@ -138,6 +138,14 @@ export default function Wizard({
     initialSiteIntelligence?.prefill_map ? 'completed' : 'idle',
   );
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  // Bug #2 fix: the recordId for the current analyze cycle is held
+  // in a closure (triggerAnalyze → pollAnalyzeStatus param) — not
+  // component state. The status endpoint reads THAT record directly
+  // rather than session.site_intelligence_id (which only updates
+  // after a successful analyze completes). On re-analyze, any
+  // in-flight poll from the prior cycle gets cancelled via
+  // analyzePollTimerRef before the new cycle starts, so there's
+  // never more than one poll loop running at a time.
   const analyzeStartedAtRef = useRef<number>(0);
   const analyzePollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ANALYZE_TIMEOUT_MS = 90_000;
@@ -255,7 +263,7 @@ export default function Wizard({
   // -----------------------------------------------------------
   // Phase 3 followup: analyze trigger + status polling.
   // -----------------------------------------------------------
-  const pollAnalyzeStatus = useCallback(() => {
+  const pollAnalyzeStatus = useCallback((recordId: string) => {
     const tick = async () => {
       if (Date.now() - analyzeStartedAtRef.current > ANALYZE_TIMEOUT_MS) {
         setAnalyzeState('timed_out');
@@ -265,7 +273,10 @@ export default function Wizard({
         const res = await fetch('/api/public/site-intelligence/status', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token }),
+          // Pass recordId on every tick so the endpoint reads the
+          // analysis we triggered, not whatever's currently linked
+          // to the session (which may be a stale prior record).
+          body: JSON.stringify({ token, recordId }),
         });
         const body = await res.json();
         if (!res.ok) {
@@ -302,6 +313,13 @@ export default function Wizard({
   const triggerAnalyze = useCallback(async () => {
     const url = ((answers['primary_contact']?.website_url as string | undefined) ?? '').trim();
     if (!url) return;
+    // Cancel any in-flight poll from a prior analyze cycle so we
+    // don't have two poll loops running concurrently with different
+    // recordIds racing each other to setAnalyzeState.
+    if (analyzePollTimerRef.current) {
+      clearTimeout(analyzePollTimerRef.current);
+      analyzePollTimerRef.current = null;
+    }
     setAnalyzeState('analyzing');
     setAnalyzeError(null);
     analyzeStartedAtRef.current = Date.now();
@@ -317,10 +335,21 @@ export default function Wizard({
         setAnalyzeError(body.error ?? 'Could not start analysis');
         return;
       }
+      // Capture the recordId for THIS analysis cycle. The closure
+      // carries it through the poll loop. On re-analyze, the
+      // analyzePollTimerRef cancellation at the top of triggerAnalyze
+      // tears down any prior poll loop so we never have two
+      // concurrent loops reading stale ids.
+      const newRecordId: string | undefined = typeof body.recordId === 'string' ? body.recordId : undefined;
+      if (!newRecordId) {
+        setAnalyzeState('failed');
+        setAnalyzeError('Server did not return a recordId');
+        return;
+      }
       // Server may return reused=true (cache hit) with status=completed —
-      // either way, kick off the poll loop which will read terminal state
-      // on the first tick.
-      pollAnalyzeStatus();
+      // either way, kick off the poll loop which will read terminal
+      // state on the first tick.
+      pollAnalyzeStatus(newRecordId);
     } catch (err) {
       setAnalyzeState('failed');
       setAnalyzeError(err instanceof Error ? err.message : 'Network error');
@@ -345,6 +374,12 @@ export default function Wizard({
     if (analyzeState === 'completed' && lastSeenUrlRef.current && url && url !== lastSeenUrlRef.current) {
       setAnalyzeState('idle');
       setAnalyzeError(null);
+      // Cancel any pending poll from the prior cycle. The next
+      // triggerAnalyze will start its own loop with the new recordId.
+      if (analyzePollTimerRef.current) {
+        clearTimeout(analyzePollTimerRef.current);
+        analyzePollTimerRef.current = null;
+      }
     }
     if (analyzeState === 'completed' && !lastSeenUrlRef.current) {
       lastSeenUrlRef.current = url;

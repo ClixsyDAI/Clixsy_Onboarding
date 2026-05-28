@@ -170,11 +170,18 @@ export async function POST(request: NextRequest) {
     after(async () => {
       try {
         await runSiteAnalysis(recordId);
-        // Always link on completion. If the session already had a
-        // different site_intelligence_id (re-analyze flow), this
-        // replaces it — the old record is orphaned but kept in the
-        // table for audit / debugging.
-        await linkSiteIntelligenceToSession(session.id, recordId);
+        // Bug #2 fix: link to the session ONLY if the analysis
+        // actually succeeded. If we relinked unconditionally (or
+        // pre-linked on record creation), a failed re-analyze would
+        // overwrite a prior good record's link with a failed one —
+        // orphaning the good prefill data the session was already
+        // benefiting from. By gating on status='completed' here, a
+        // failed re-analyze leaves the session pointing at whatever
+        // last-good record it had (or NULL if none).
+        const record = await getSiteIntelligence(recordId);
+        if (record && record.status === 'completed') {
+          await linkSiteIntelligenceToSession(session.id, recordId);
+        }
       } catch (err) {
         console.error(
           '[public site-intel analyze] background analysis failed:',
