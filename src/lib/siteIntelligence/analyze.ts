@@ -239,6 +239,55 @@ export async function runSiteAnalysis(recordId: string): Promise<void> {
     // Merge results
     const merged = mergeProviderResults(successfulResults);
 
+    // Bug #1 fix: a "completed" analysis must contain ACTUAL business
+    // signals. The old test (successfulResults.length > 0) treated any
+    // fulfilled provider result as success — but Firecrawl returns
+    // fulfilled-with-empty-content for non-resolving domains, robots.txt-
+    // blocked URLs, and domain-parking pages. Those previously wrote
+    // status='completed' with garbage data, and the public analyze
+    // route's link-only-on-completed guard would then trust the status
+    // and overwrite a session's prior good prefill with the garbage.
+    //
+    // Gate completion on real-business signals — any of: a brand name,
+    // primary services, or primary locations. junglelaw/dexterlaw/
+    // andrewpickett/cellinolaw all produce all three. An empty crawl
+    // produces none.
+    //
+    // Note: this changes admin /new flow behavior too — a previously
+    // "completed but empty" admin analysis now shows as 'failed' with
+    // the plain-language error below. SiteIntelligencePanel already
+    // has a failed-state render (red banner + Retry button) so no
+    // admin UI change is needed.
+    const hasUsableContent =
+      (typeof merged.insights.brand_name === 'string' &&
+        merged.insights.brand_name.trim().length > 0) ||
+      (merged.insights.primary_services?.length ?? 0) > 0 ||
+      (merged.insights.primary_locations?.length ?? 0) > 0;
+
+    if (!hasUsableContent) {
+      // Preserve provider-level error detail in console logs for
+      // operator debugging (Vercel logs). The record's `error` column
+      // gets the plain-language line so admin + client UIs render a
+      // useful message uniformly.
+      if (errors.length > 0) {
+        console.error(
+          '[runSiteAnalysis] Discarding empty-content analysis for record',
+          recordId,
+          '— providers failed:',
+          errors.join('; ')
+        );
+      } else {
+        console.error(
+          '[runSiteAnalysis] Discarding empty-content analysis for record',
+          recordId,
+          '— providers fulfilled but extracted no brand_name, primary_services, or primary_locations.'
+        );
+      }
+      throw new Error(
+        'Could not extract usable information from this website. It may be unreachable, blocked, or have no readable content.'
+      );
+    }
+
     // Build prefill map and question overrides
     const prefillMap = buildPrefillMap(merged.insights, merged.techStack, merged.branding);
     const questionOverrides = buildQuestionOverrides(merged.insights, merged.techStack.cms, merged.techStack);
