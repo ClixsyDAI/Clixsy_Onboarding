@@ -26,12 +26,23 @@ const RequestBodySchema = z.object({
   contactEmail: optionalTrimmedString,
   websiteUrl: optionalTrimmedString,
   siteIntelligenceId: z.string().optional(),
-  // workbook_id (Basecamp project id) is set by the workbook-side
-  // automation; the existing admin /admin/onboarding/new UI omits
-  // it and the column stays null in that path. UNIQUE constraint
-  // `clients_workbook_id_unique` is enforced at the DB layer
-  // (migration 008) and surfaced as a 409 below.
-  workbookId: z.number().int().positive().optional(),
+  // workbook_id is set by the workbook-side automation. Format
+  // changed during the GHL pivot:
+  //   - Pre-pivot Basecamp poller sent numeric project ids (e.g.
+  //     "25949341"). Those still need to round-trip — the 63
+  //     migrated workbook entries hold these stringified-numeric
+  //     ids verbatim.
+  //   - Post-pivot GHL webhook sends 20-char alphanumeric
+  //     opportunity ids (e.g. "abcDEF0123456789xyzZ").
+  // The regex accepts both shapes (and a slightly wider 1-32 char
+  // band to leave headroom for future id formats). The DB column
+  // was migrated from bigint → text in migration 009 to match.
+  // UNIQUE constraint `clients_workbook_id_unique` (migration 008)
+  // survives the type change and is still surfaced as a 409 below.
+  workbookId: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,32}$/, "must be 1-32 alphanumeric, '_', or '-' characters")
+    .optional(),
 });
 
 export async function POST(request: NextRequest) {
