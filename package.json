@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:submit": "npx tsx src/app/api/public/onboarding/submit/route.test.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.8.0",
