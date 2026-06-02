@@ -628,6 +628,8 @@ export default function Wizard({
 
   // Handle submit
   const handleSubmit = async () => {
+    // Race guard: prevent the autosave useEffect from firing a clobbering save-step after handleSubmit starts.
+    pendingSaveRef.current = false;
     // Block submission if there are missing required fields
     if (!canSubmit) {
       setSaveError('Please complete all required fields before submitting. Go back to the "Almost There" step to see what\'s missing.');
@@ -677,7 +679,8 @@ export default function Wizard({
     pendingSaveRef.current = true;
 
     const timeout = setTimeout(() => {
-      if (Object.keys(stepAnswers).length > 0 && !isSaving && !currentStep.isReviewStep && pendingSaveRef.current) {
+      // Race guard: the submit step's completed=true is owned solely by handleSubmit — never autosave it.
+      if (Object.keys(stepAnswers).length > 0 && !isSaving && !currentStep.isReviewStep && currentStep.key !== 'submit' && pendingSaveRef.current) {
         pendingSaveRef.current = false;
         const isAlreadyCompleted = completedStepsState.includes(currentStep.key);
         saveStep(isAlreadyCompleted);
@@ -708,7 +711,7 @@ export default function Wizard({
     lastNavClickRef.current = now;
 
     const shouldSave =
-      Object.keys(stepAnswers).length > 0 && !currentStep.isReviewStep;
+      Object.keys(stepAnswers).length > 0 && !currentStep.isReviewStep && currentStep.key !== 'submit';
     const isAlreadyCompleted = completedStepsState.includes(currentStep.key);
 
     setIsNavigating(true);
