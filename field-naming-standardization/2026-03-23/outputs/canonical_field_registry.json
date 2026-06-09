@@ -1,0 +1,605 @@
+[
+  {
+    "id": 1,
+    "section": "s1_contacts",
+    "question": "Primary contact full name",
+    "field_key": "contacts.primary.full_name",
+    "field_type": "text",
+    "required": false,
+    "notes": ""
+  },
+  {
+    "id": 2,
+    "section": "s1_contacts",
+    "question": "Primary contact title / role",
+    "field_key": "contacts.primary.title",
+    "field_type": "text",
+    "required": false,
+    "notes": ""
+  },
+  {
+    "id": 3,
+    "section": "s1_contacts",
+    "question": "Primary contact email",
+    "field_key": "contacts.primary.email",
+    "field_type": "email",
+    "required": false,
+    "notes": ""
+  },
+  {
+    "id": 4,
+    "section": "s1_contacts",
+    "question": "Primary contact phone",
+    "field_key": "contacts.primary.phone",
+    "field_type": "phone",
+    "required": false,
+    "notes": "E.164 format"
+  },
+  {
+    "id": 5,
+    "section": "s1_contacts",
+    "question": "Secondary contact full name",
+    "field_key": "contacts.secondary.full_name",
+    "field_type": "text",
+    "required": false,
+    "notes": ""
+  },
+  {
+    "id": 6,
+    "section": "s1_contacts",
+    "question": "Secondary contact email",
+    "field_key": "contacts.secondary.email",
+    "field_type": "email",
+    "required": false,
+    "notes": ""
+  },
+  {
+    "id": 7,
+    "section": "s1_contacts",
+    "question": "Secondary contact phone",
+    "field_key": "contacts.secondary.phone",
+    "field_type": "phone",
+    "required": false,
+    "notes": "E.164 format"
+  },
+  {
+    "id": 8,
+    "section": "s1_contacts",
+    "question": "IT contact full name",
+    "field_key": "contacts.it.full_name",
+    "field_type": "text",
+    "required": false,
+    "notes": ""
+  },
+  {
+    "id": 9,
+    "section": "s1_contacts",
+    "question": "IT contact email",
+    "field_key": "contacts.it.email",
+    "field_type": "email",
+    "required": false,
+    "notes": ""
+  },
+  {
+    "id": 10,
+    "section": "s1_contacts",
+    "question": "IT contact phone",
+    "field_key": "contacts.it.phone",
+    "field_type": "phone",
+    "required": false,
+    "notes": "E.164 format"
+  },
+  {
+    "id": 11,
+    "section": "s1_contacts",
+    "question": "Previous agency contact details",
+    "field_key": "contacts.previous_agency_contact",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: full_name, email, company"
+  },
+  {
+    "id": 12,
+    "section": "s2_business_profile",
+    "question": "Business name",
+    "field_key": "business.name",
+    "field_type": "text",
+    "required": false,
+    "notes": ""
+  },
+  {
+    "id": 13,
+    "section": "s2_business_profile",
+    "question": "Main website URL",
+    "field_key": "business.main_url",
+    "field_type": "url",
+    "required": false,
+    "notes": "Must include https://"
+  },
+  {
+    "id": 14,
+    "section": "s2_business_profile",
+    "question": "Owner / partner full names",
+    "field_key": "business.owner_names",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: full_name (string array)"
+  },
+  {
+    "id": 15,
+    "section": "s2_business_profile",
+    "question": "Physical address (GBP-exact)",
+    "field_key": "business.address",
+    "field_type": "text",
+    "required": false,
+    "notes": "Match GBP formatted_address exactly"
+  },
+  {
+    "id": 16,
+    "section": "s2_business_profile",
+    "question": "Move-in date at current location",
+    "field_key": "business.move_in_date",
+    "field_type": "date",
+    "required": false,
+    "notes": "YYYY-MM-DD"
+  },
+  {
+    "id": 17,
+    "section": "s2_business_profile",
+    "question": "Main business phone",
+    "field_key": "business.main_phone",
+    "field_type": "phone",
+    "required": false,
+    "notes": "E.164 format"
+  },
+  {
+    "id": 18,
+    "section": "s2_business_profile",
+    "question": "Year founded",
+    "field_key": "business.year_founded",
+    "field_type": "number",
+    "required": false,
+    "notes": "4-digit year"
+  },
+  {
+    "id": 19,
+    "section": "s2_business_profile",
+    "question": "Languages spoken at firm",
+    "field_key": "business.languages_spoken",
+    "field_type": "multi-select",
+    "required": false,
+    "notes": "e.g. English, Spanish, Mandarin, French"
+  },
+  {
+    "id": 20,
+    "section": "s2_business_profile",
+    "question": "Owner license number",
+    "field_key": "business.owner_license_number",
+    "field_type": "text",
+    "required": false,
+    "notes": ""
+  },
+  {
+    "id": 21,
+    "section": "s2_business_profile",
+    "question": "License issue date",
+    "field_key": "business.license_issue_date",
+    "field_type": "date",
+    "required": false,
+    "notes": "YYYY-MM-DD"
+  },
+  {
+    "id": 22,
+    "section": "s2_business_profile",
+    "question": "EIN",
+    "field_key": "business.ein",
+    "field_type": "text",
+    "required": false,
+    "notes": "Format: XX-XXXXXXX"
+  },
+  {
+    "id": 23,
+    "section": "s3_vision_&_kpis",
+    "question": "Success definition (12-month)",
+    "field_key": "strategy.success_definition_12mo",
+    "field_type": "textarea",
+    "required": false,
+    "notes": "Free-form, parsed by LLM"
+  },
+  {
+    "id": 24,
+    "section": "s3_vision_&_kpis",
+    "question": "'Magic wand' outcome",
+    "field_key": "strategy.magic_wand_outcome",
+    "field_type": "textarea",
+    "required": false,
+    "notes": "Free-form, parsed by LLM"
+  },
+  {
+    "id": 25,
+    "section": "s3_vision_&_kpis",
+    "question": "Current marketing challenges",
+    "field_key": "strategy.current_challenges",
+    "field_type": "textarea",
+    "required": false,
+    "notes": "Free-form, parsed by LLM"
+  },
+  {
+    "id": 26,
+    "section": "s3_vision_&_kpis",
+    "question": "Key Performance Indicators",
+    "field_key": "strategy.kpis",
+    "field_type": "multi-select",
+    "required": false,
+    "notes": "website_traffic, signed_leads, wanted_leads, google_reviews, seo_rankings, gbp_calls, other"
+  },
+  {
+    "id": 27,
+    "section": "s4_technical_assets",
+    "question": "Domain owned by client?",
+    "field_key": "technical.domain_owned_by_client",
+    "field_type": "boolean",
+    "required": false,
+    "notes": "true / false"
+  },
+  {
+    "id": 28,
+    "section": "s4_technical_assets",
+    "question": "Client has DNS control?",
+    "field_key": "technical.dns_control",
+    "field_type": "boolean",
+    "required": false,
+    "notes": "true / false"
+  },
+  {
+    "id": 29,
+    "section": "s4_technical_assets",
+    "question": "Other redirecting domains",
+    "field_key": "technical.other_domains",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: domain (url string array)"
+  },
+  {
+    "id": 30,
+    "section": "s4_technical_assets",
+    "question": "Website built on WordPress?",
+    "field_key": "technical.cms",
+    "field_type": "select",
+    "required": false,
+    "notes": "WordPress, Webflow, Squarespace, Wix, Custom, Other"
+  },
+  {
+    "id": 31,
+    "section": "s4_technical_assets",
+    "question": "Written content owned by client?",
+    "field_key": "technical.content_owned_by_client",
+    "field_type": "boolean",
+    "required": false,
+    "notes": "true / false"
+  },
+  {
+    "id": 32,
+    "section": "s4_technical_assets",
+    "question": "Imagery/video properly licensed",
+    "field_key": "technical.imagery_licensed",
+    "field_type": "boolean",
+    "required": false,
+    "notes": "true / false"
+  },
+  {
+    "id": 33,
+    "section": "s4_technical_assets",
+    "question": "Anti-spam solution adequate?",
+    "field_key": "technical.anti_spam_adequate",
+    "field_type": "boolean",
+    "required": false,
+    "notes": "true / false"
+  },
+  {
+    "id": 34,
+    "section": "s4_technical_assets",
+    "question": "Form submission destinations",
+    "field_key": "lead_management.form_submission_destinations",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: email (email array)"
+  },
+  {
+    "id": 35,
+    "section": "s4_technical_assets",
+    "question": "Call tracking in use?",
+    "field_key": "lead_management.call_tracking_enabled",
+    "field_type": "boolean",
+    "required": false,
+    "notes": "true / false"
+  },
+  {
+    "id": 36,
+    "section": "s4_technical_assets",
+    "question": "Call tracking provider",
+    "field_key": "lead_management.call_tracking_provider",
+    "field_type": "select",
+    "required": false,
+    "notes": "CallRail, CallTrackingMetrics, WhatConverts, Other, None"
+  },
+  {
+    "id": 37,
+    "section": "s4_technical_assets",
+    "question": "Who owns call tracking account?",
+    "field_key": "lead_management.call_tracking_account_owner",
+    "field_type": "select",
+    "required": false,
+    "notes": "client, agency"
+  },
+  {
+    "id": 38,
+    "section": "s4_technical_assets",
+    "question": "Can previous agency access be removed?",
+    "field_key": "agency_access.previous_agencies_can_be_removed",
+    "field_type": "boolean",
+    "required": false,
+    "notes": "true / false"
+  },
+  {
+    "id": 39,
+    "section": "s4_technical_assets",
+    "question": "Which agencies to remove?",
+    "field_key": "agency_access.agencies_to_remove",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: agency_name (string array)"
+  },
+  {
+    "id": 40,
+    "section": "s5_seo_targets",
+    "question": "Main geographical targets",
+    "field_key": "seo.geo_targets",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: city, state, country"
+  },
+  {
+    "id": 41,
+    "section": "s5_seo_targets",
+    "question": "Primary case types & keywords",
+    "field_key": "seo.primary_case_types",
+    "field_type": "multi-select",
+    "required": false,
+    "notes": "car_accident, truck_accident, motorcycle, wrongful_death, catastrophic_injury, dog_bite, premises_liability, pedestrian, other"
+  },
+  {
+    "id": 42,
+    "section": "s5_seo_targets",
+    "question": "Initial focus case types",
+    "field_key": "seo.initial_focus_case_types",
+    "field_type": "multi-select",
+    "required": false,
+    "notes": "Subset of primary_case_types"
+  },
+  {
+    "id": 43,
+    "section": "s5_seo_targets",
+    "question": "Secondary GBP locations",
+    "field_key": "seo.secondary_gbp_locations",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: name, address, gbp_id"
+  },
+  {
+    "id": 44,
+    "section": "s5_seo_targets",
+    "question": "Attorney photos for LSA",
+    "field_key": "seo.lsa_attorney_images_provided",
+    "field_type": "file_upload",
+    "required": false,
+    "notes": "ZIP of images named by attorney. Accepted: jpg, png"
+  },
+  {
+    "id": 45,
+    "section": "s5_seo_targets",
+    "question": "Additional campaign information",
+    "field_key": "seo.additional_campaign_info",
+    "field_type": "textarea",
+    "required": false,
+    "notes": "Free-form"
+  },
+  {
+    "id": 46,
+    "section": "s6_legal_&_compliance",
+    "question": "State advertising restrictions URL",
+    "field_key": "compliance.state_bar_advertising_rules_url",
+    "field_type": "url",
+    "required": false,
+    "notes": "Auto-inferred from geo; verify with client"
+  },
+  {
+    "id": 47,
+    "section": "s6_legal_&_compliance",
+    "question": "Legal disclaimers required",
+    "field_key": "compliance.legal_disclaimers",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: disclaimer_text (string array)"
+  },
+  {
+    "id": 48,
+    "section": "s6_legal_&_compliance",
+    "question": "Forbidden words / phrases",
+    "field_key": "compliance.forbidden_words",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: term (string array)"
+  },
+  {
+    "id": 49,
+    "section": "s6_legal_&_compliance",
+    "question": "Imagery to avoid",
+    "field_key": "compliance.forbidden_imagery",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: description (string array)"
+  },
+  {
+    "id": 50,
+    "section": "s6_legal_&_compliance",
+    "question": "Topics to avoid",
+    "field_key": "compliance.forbidden_topics",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: topic (string array)"
+  },
+  {
+    "id": 51,
+    "section": "s6_legal_&_compliance",
+    "question": "Content approval required?",
+    "field_key": "compliance.content_approval_required",
+    "field_type": "boolean",
+    "required": false,
+    "notes": "true / false"
+  },
+  {
+    "id": 52,
+    "section": "s7_communication",
+    "question": "Reporting distribution list",
+    "field_key": "contacts.reporting_distribution",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: name, email, role"
+  },
+  {
+    "id": 53,
+    "section": "s7_communication",
+    "question": "Missed call preference",
+    "field_key": "communication.missed_call_preference",
+    "field_type": "select",
+    "required": false,
+    "notes": "video_recap, reschedule"
+  },
+  {
+    "id": 54,
+    "section": "s7_communication",
+    "question": "Call frequency preference",
+    "field_key": "communication.call_frequency",
+    "field_type": "select",
+    "required": false,
+    "notes": "monthly, quarterly_strategy_with_recaps"
+  },
+  {
+    "id": 55,
+    "section": "s8_platform_access",
+    "question": "WordPress admin access",
+    "field_key": "access.wordpress.status",
+    "field_type": "select",
+    "required": false,
+    "notes": "not_requested, pending, granted, failed"
+  },
+  {
+    "id": 56,
+    "section": "s8_platform_access",
+    "question": "Domain registrar",
+    "field_key": "access.domain_registrar.registrar_name",
+    "field_type": "select",
+    "required": false,
+    "notes": "GoDaddy, Namecheap, Google Domains, Cloudflare, Porkbun, Other"
+  },
+  {
+    "id": 57,
+    "section": "s8_platform_access",
+    "question": "DNS provider",
+    "field_key": "access.dns.dns_provider",
+    "field_type": "select",
+    "required": false,
+    "notes": "Cloudflare, GoDaddy, Route53, Google, Other"
+  },
+  {
+    "id": 58,
+    "section": "s8_platform_access",
+    "question": "Google Search Console property",
+    "field_key": "access.gsc.property_url",
+    "field_type": "url",
+    "required": false,
+    "notes": "Must include https://"
+  },
+  {
+    "id": 59,
+    "section": "s8_platform_access",
+    "question": "Google Analytics property ID",
+    "field_key": "access.ga.property_id",
+    "field_type": "text",
+    "required": false,
+    "notes": "Format: G-XXXXXXXXXX"
+  },
+  {
+    "id": 60,
+    "section": "s8_platform_access",
+    "question": "GBP profiles (all locations)",
+    "field_key": "access.gbp.profiles",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: name, gbp_id, status"
+  },
+  {
+    "id": 61,
+    "section": "s8_platform_access",
+    "question": "YouTube channel",
+    "field_key": "access.youtube.channel_id",
+    "field_type": "url",
+    "required": false,
+    "notes": "Full channel URL or ID"
+  },
+  {
+    "id": 62,
+    "section": "s8_platform_access",
+    "question": "Wistia / Vimeo credentials",
+    "field_key": "access.video_other",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: platform, login_url, username"
+  },
+  {
+    "id": 63,
+    "section": "s8_platform_access",
+    "question": "LSA Customer IDs",
+    "field_key": "access.lsa.cids",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: cid (string array)"
+  },
+  {
+    "id": 64,
+    "section": "s8_platform_access",
+    "question": "Other credentials (social/ads)",
+    "field_key": "access.social_and_ads",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: platform, account_id, notes"
+  },
+  {
+    "id": 65,
+    "section": "s9_gifts_&_logistics",
+    "question": "Office gift recipient + address",
+    "field_key": "gifts.office_gift",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: recipient_name, shipping_address"
+  },
+  {
+    "id": 66,
+    "section": "s9_gifts_&_logistics",
+    "question": "Individual gift recipient + address",
+    "field_key": "gifts.individual_gift",
+    "field_type": "repeater",
+    "required": false,
+    "notes": "fields: recipient_name, shipping_address"
+  },
+  {
+    "id": 67,
+    "section": "s9_gifts_&_logistics",
+    "question": "Delay shipment?",
+    "field_key": "gifts.delay_shipment",
+    "field_type": "boolean",
+    "required": false,
+    "notes": "true / false"
+  }
+]
