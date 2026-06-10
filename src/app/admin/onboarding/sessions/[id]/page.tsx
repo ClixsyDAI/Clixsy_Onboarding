@@ -11,6 +11,7 @@ import {
   regeneratePinAction,
   unlockSessionAction,
 } from '@/lib/onboarding/admin-actions';
+import GbpLocationsPanel from '@/components/admin/GbpLocationsPanel';
 
 const CLIXSY_LOGO_URL = 'https://res.cloudinary.com/dovgh19xr/image/upload/v1766427227/new_logo_nvrux0.svg';
 
@@ -79,6 +80,19 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   const [copiedSummary, setCopiedSummary] = useState(false);
   const [copiedJSON, setCopiedJSON] = useState(false);
   const [copiedMissingAccess, setCopiedMissingAccess] = useState(false);
+  // GBP 5b: bumped by GbpLocationsPanel after a successful apply so
+  // the answers/checklist refetch and the new gbp_locations rows show
+  // up in the step sections below without a manual reload.
+  const [refreshKey, setRefreshKey] = useState(0);
+  // Distinguishes the initial load from refreshKey-triggered refetches:
+  // the expand-all-completed seeding and the full-page error swap only
+  // apply on first load. A refetch must neither wipe the admin's manual
+  // expand/collapse state nor replace an already-rendered page with the
+  // error screen when a transient refetch fails (the panel would unmount
+  // and the error state would be unrecoverable without a reload).
+  // Keyed by session id so client-side navigation to a different
+  // session gets first-load behavior again.
+  const initialLoadDoneForRef = useRef<string | null>(null);
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   // PIN management state — set after a successful regenerate so the
@@ -184,21 +198,31 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
         setAnswers(data.answers || []);
         setAccessChecklist(data.accessChecklist || null);
 
-        // Auto-expand all sections that have answers
-        const completedSteps = new Set<string>();
-        (data.answers || []).forEach((a: Answer) => {
-          if (a.completed) completedSteps.add(a.step_key);
-        });
-        setExpandedSteps(completedSteps);
+        // Auto-expand all sections that have answers — first load only,
+        // so a post-apply refetch keeps the admin's expand/collapse state.
+        if (initialLoadDoneForRef.current !== id) {
+          const completedSteps = new Set<string>();
+          (data.answers || []).forEach((a: Answer) => {
+            if (a.completed) completedSteps.add(a.step_key);
+          });
+          setExpandedSteps(completedSteps);
+        }
+        initialLoadDoneForRef.current = id;
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch session details');
+        if (initialLoadDoneForRef.current === id) {
+          // Refetch failure on an already-rendered page: keep the page
+          // (the apply itself succeeded; data is saved server-side).
+          console.error('Session refetch failed:', err);
+        } else {
+          setError(err instanceof Error ? err.message : 'Failed to fetch session details');
+        }
       } finally {
         setIsLoading(false);
       }
     }
 
     fetchSessionDetail();
-  }, [id]);
+  }, [id, refreshKey]);
 
   // Get version-aware steps
   const flowVersion = session?.flow_version || 'v1';
@@ -215,7 +239,17 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   const formatValue = (value: unknown): string => {
     if (value === null || value === undefined) return '-';
     if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-    if (Array.isArray(value)) return value.join(', ') || '-';
+    if (Array.isArray(value)) {
+      // GBP 5b: row-object arrays (e.g. gbp_locations: [{url}]) would
+      // join to "[object Object]" — surface the url (or JSON) instead.
+      return value
+        .map((v) =>
+          v && typeof v === 'object'
+            ? ((v as { url?: string }).url ?? JSON.stringify(v))
+            : String(v),
+        )
+        .join(', ') || '-';
+    }
     if (typeof value === 'object') return JSON.stringify(value);
     return String(value) || '-';
   };
@@ -830,6 +864,14 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
             </div>
           </div>
         )}
+
+        {/* GBP Locations (5b) — fetch from the agency Google account,
+            apply into the form's gbp_locations rows */}
+        <GbpLocationsPanel
+          sessionId={id}
+          sessionStatus={session.status}
+          onApplied={() => setRefreshKey((k) => k + 1)}
+        />
 
         {/* Jump to Section Navigation */}
         <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-6 mb-6">
