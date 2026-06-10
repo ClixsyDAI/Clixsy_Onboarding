@@ -2,6 +2,7 @@
 
 import { Fragment, useLayoutEffect, useRef, useState } from 'react';
 import { OnboardingStep, OnboardingField, type VerticalId } from '@/lib/onboarding/steps';
+import RepeatingRows from './RepeatingRows';
 import {
   HOME_SERVICES_TAXONOMY,
   getServicesForTrade,
@@ -594,6 +595,38 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                 />
               )}
             </>
+          );
+        }
+
+        case 'repeating': {
+          // GBP 5a: array-of-row-objects shape, rendered by RepeatingRows.
+          // Legacy read-fallback: pre-5a sessions stored the single-URL
+          // shape under `gbp_listing_url` (string). When the new key is
+          // empty and the legacy key has a value, seed the first row from
+          // it so existing answers don't appear lost. First save with the
+          // new shape writes the array under the new key; the legacy
+          // string key remains in JSONB as orphan data (no consumer).
+          const directValue = value;
+          const legacyValue =
+            (directValue === undefined ||
+              directValue === null ||
+              directValue === '') &&
+            field.name === 'gbp_locations'
+              ? values['gbp_listing_url']
+              : undefined;
+          const seed = directValue ?? legacyValue;
+          const rows: Record<string, string>[] = Array.isArray(seed)
+            ? (seed as Record<string, string>[])
+            : typeof seed === 'string' && seed
+              ? [{ url: seed }]
+              : [];
+          return (
+            <RepeatingRows
+              values={rows}
+              rowFields={field.rowFields ?? []}
+              onChange={(next) => onChange(field.name, next)}
+              addButtonLabel={field.addButtonLabel ?? 'Add another'}
+            />
           );
         }
 

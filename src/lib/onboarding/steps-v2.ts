@@ -623,14 +623,23 @@ export const onboardingStepsV2: OnboardingStep[] = [
         ],
       },
       {
-        name: 'gbp_listing_url',
-        label: 'Google Business Profile URL',
-        type: 'url',
-        placeholder: 'https://business.google.com/...',
+        name: 'gbp_locations',
+        label: 'Google Business Profile URLs',
+        type: 'repeating',
         dependsOn: { field: 'has_gbp', value: 'yes' },
-        // S7.3: inline button so the client can sanity-check the detected
-        // listing in a new tab without copy-pasting.
-        linkAction: { label: 'View GBP profile' },
+        addButtonLabel: 'Add another GBP profile',
+        // GBP 5a: multi-location support. Each row carries one URL +
+        // an inline "View GBP" button (the S7.3 linkAction precedent,
+        // moved per-row). Legacy single-string `gbp_listing_url` answers
+        // are tolerated at read time and seed the first row.
+        rowFields: [
+          {
+            name: 'url',
+            type: 'url',
+            placeholder: 'https://business.google.com/...',
+            linkAction: { label: 'View GBP' },
+          },
+        ],
       },
     ],
   },

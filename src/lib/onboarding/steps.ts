@@ -13,10 +13,24 @@ import { z } from 'zod';
  */
 export type VerticalId = 'law_firm' | 'home_services';
 
+/**
+ * Sub-field config for a `repeating` field. The full OnboardingField
+ * type carries too much baggage (dependsOn, verticalIn, requiredWhen, etc.)
+ * for a per-row leaf input — repeating rows are simple value carriers,
+ * not gated by other row siblings. Keep this tight on purpose.
+ */
+export interface RepeatingRowField {
+  name: string;
+  label?: string;
+  type: 'text' | 'email' | 'url' | 'tel';
+  placeholder?: string;
+  linkAction?: { label: string };
+}
+
 export interface OnboardingField {
   name: string;
   label: string;
-  type: 'text' | 'email' | 'url' | 'tel' | 'textarea' | 'select' | 'multiselect' | 'checkbox' | 'radio' | 'file';
+  type: 'text' | 'email' | 'url' | 'tel' | 'textarea' | 'select' | 'multiselect' | 'checkbox' | 'radio' | 'file' | 'repeating';
   placeholder?: string;
   required?: boolean;
   options?: { value: string; label: string }[];
@@ -97,6 +111,14 @@ export interface OnboardingField {
   gatePreviewOn?: { field: string; value: string };
   videoUrl?: string;
   videoTitle?: string;
+  /**
+   * For `type: 'repeating'` only. Defines the per-row sub-fields rendered
+   * inside each repeating row, plus the "add another" button label. The
+   * stored shape is an array of objects keyed by sub-field name — e.g.
+   * `gbp_locations: [{ url: 'https://…' }, { url: 'https://…' }]`.
+   */
+  rowFields?: RepeatingRowField[];
+  addButtonLabel?: string;
 }
 
 export interface OnboardingStep {
@@ -829,11 +851,19 @@ export const onboardingSteps: OnboardingStep[] = [
         ]
       },
       {
-        name: 'gbp_listing_url',
-        label: 'Google Business Profile URL',
-        type: 'url',
-        placeholder: 'https://g.page/...',
-        dependsOn: { field: 'has_gbp', value: 'yes' }
+        name: 'gbp_locations',
+        label: 'Google Business Profile URLs',
+        type: 'repeating',
+        dependsOn: { field: 'has_gbp', value: 'yes' },
+        addButtonLabel: 'Add another GBP profile',
+        rowFields: [
+          {
+            name: 'url',
+            type: 'url',
+            placeholder: 'https://g.page/...',
+            linkAction: { label: 'View GBP' },
+          },
+        ],
       },
       {
         name: 'current_review_count',
@@ -1459,7 +1489,13 @@ export const stepValidationSchemas: Record<string, z.ZodSchema> = {
 
   google_business: z.object({
     has_gbp: z.string().min(1, 'Please indicate GBP status'),
-    gbp_listing_url: optionalUrl,
+    // GBP 5a: flipped from a single URL string to an array of row objects
+    // (multi-location support). Per-row url validation stays non-blocking
+    // so partial entries don't trap users on submit — matches the
+    // optionalUrl precedent. Legacy single-string answers tolerated at
+    // read time by RepeatingRows; first save with new shape writes the
+    // canonical array.
+    gbp_locations: z.array(z.object({ url: z.string().optional() })).optional(),
     current_review_count: optionalString,
     current_rating: optionalString,
   }),
