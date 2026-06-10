@@ -66,96 +66,27 @@ const CHECKLIST_ROWS: {
   statusField: string;
   label: string;
   whatWeNeed: string;
-  gatedBy?: { field: string; value: string };
   statusOptions: { value: string; label: string }[];
 }[] = (() => {
   // Filter out LSA (deferred in v2), build from ACCESS_ITEMS
   const items = ACCESS_ITEMS.filter(item => item.key !== 'lsa');
   return items.map(item => {
     const statusField = `${item.key === 'domain' ? 'domain' : item.key}_access_status`;
-    let gatedBy: { field: string; value: string } | undefined;
-    if (item.key === 'ga') gatedBy = { field: 'has_google_analytics', value: 'yes' };
-    if (item.key === 'youtube') gatedBy = { field: 'has_youtube', value: 'yes' };
     return {
       accessKey: item.key,
       statusField,
       label: item.label,
       whatWeNeed: item.whatWeNeed,
-      gatedBy,
       statusOptions: item.key === 'youtube' ? YOUTUBE_STATUS_OPTIONS : ACCESS_STATUS_OPTIONS,
     };
   });
 })();
 
 export default function AccessChecklistStep({ values, errors, onChange }: AccessChecklistStepProps) {
-  const hasGA = values.has_google_analytics as string;
-  const hasYT = values.has_youtube as string;
   const [expandedVideo, setExpandedVideo] = useState<string | null>(null);
 
   return (
     <div className="space-y-6">
-      {/* Gating questions */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Google Analytics gate */}
-        <div>
-          <label className="block text-sm font-medium text-[#0B0B0B] mb-2">
-            Do you have Google Analytics set up?
-          </label>
-          <div className="flex gap-3">
-            {[
-              { value: 'yes', label: 'Yes' },
-              { value: 'no', label: 'No' },
-              { value: 'not_sure', label: 'Not sure' },
-            ].map(opt => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => onChange('has_google_analytics', opt.value)}
-                className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                  hasGA === opt.value
-                    ? 'bg-[#25DC7F]/10 border-[#25DC7F] text-[#0B0B0B]'
-                    : 'border-[#E6E8EA] text-[#6B6B6B] hover:bg-[#F4F5F6]'
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          {errors.has_google_analytics && (
-            <p className="mt-1 text-sm text-[#E5484D]">{errors.has_google_analytics}</p>
-          )}
-        </div>
-
-        {/* YouTube gate */}
-        <div>
-          <label className="block text-sm font-medium text-[#0B0B0B] mb-2">
-            Do you have a YouTube channel?
-          </label>
-          <div className="flex gap-3">
-            {[
-              { value: 'yes', label: 'Yes' },
-              { value: 'no', label: 'No' },
-            ].map(opt => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => onChange('has_youtube', opt.value)}
-                className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                  hasYT === opt.value
-                    ? 'bg-[#25DC7F]/10 border-[#25DC7F] text-[#0B0B0B]'
-                    : 'border-[#E6E8EA] text-[#6B6B6B] hover:bg-[#F4F5F6]'
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          {errors.has_youtube && (
-            <p className="mt-1 text-sm text-[#E5484D]">{errors.has_youtube}</p>
-          )}
-        </div>
-      </div>
-
       {/* Checklist table / cards */}
       <div className="border border-[#E6E8EA] rounded-xl overflow-hidden">
         {/* Desktop table header */}
@@ -168,12 +99,6 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
         {/* Rows */}
         <div className="divide-y divide-[#E6E8EA]">
           {CHECKLIST_ROWS.map(row => {
-            // Check gating
-            if (row.gatedBy) {
-              const gateValue = values[row.gatedBy.field] as string;
-              if (gateValue !== row.gatedBy.value) return null;
-            }
-
             const currentStatus = (values[row.statusField] as string) || '';
 
             const tutorial = TUTORIAL_VIDEOS[row.accessKey];
