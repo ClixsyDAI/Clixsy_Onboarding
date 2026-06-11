@@ -8,6 +8,7 @@ import StepTransition from './StepTransition';
 import AccessChecklistStep from './AccessChecklistStep';
 import WebsiteSnapshot from './WebsiteSnapshot';
 import WelcomeModal from './WelcomeModal';
+import WelcomeAccessWizard from './WelcomeAccessWizard';
 import AnalyzePanel, { type AnalyzeState } from './AnalyzePanel';
 import { clampInitialStep } from '@/lib/onboarding/wizard-state';
 import ThankYou from './ThankYou';
@@ -425,6 +426,47 @@ export default function Wizard({
     !welcomeWizardSeen && sessionStatus !== 'submitted' && !isAmBypass,
   );
   const showP3Modal = welcomeModalOpen;
+
+  // Sprint 2 / #3: finish handler for the v2 WelcomeAccessWizard. The
+  // wizard's two status selections are REAL form data — merged into the
+  // access_checklist step (local state + persisted via save-step,
+  // completed=false so the step still needs a real visit) — then the
+  // welcome flag flips server-side and the wizard closes. Persistence
+  // failures are logged but never trap the user in the modal: the next
+  // load re-fires the wizard (flag unset), which is the right recovery.
+  const handleWelcomeWizardFinish = async (statuses: {
+    wordpress_access_status: string;
+    gsc_access_status: string;
+  }) => {
+    const stepKey = 'access_checklist';
+    const stepIndex = steps.findIndex((s) => s.key === stepKey);
+    const merged = { ...(answers[stepKey] ?? {}), ...statuses };
+    setAnswers((prev) => ({ ...prev, [stepKey]: merged }));
+    try {
+      if (stepIndex >= 0) {
+        const resp = await fetch('/api/public/onboarding/save-step', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, stepKey, stepIndex, answers: merged, completed: false }),
+        });
+        if (!resp.ok) {
+          console.error('welcome wizard save-step failed', await resp.text().catch(() => ''));
+        }
+      }
+      const seen = await fetch('/api/public/onboarding/mark-welcome-seen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      });
+      if (!seen.ok) {
+        console.error('mark-welcome-seen failed', await seen.text().catch(() => ''));
+      }
+    } catch (err) {
+      console.error('welcome wizard finish error', err);
+    } finally {
+      setWelcomeModalOpen(false);
+    }
+  };
 
   useEffect(() => {
     // If we're going to show the P3 modal, skip the legacy green
@@ -902,15 +944,27 @@ export default function Wizard({
 
   return (
     <>
-      {/* P3 (Stage 7): first-login welcome modal. Mounted before the
-          step interstitial so it sits on top of any in-flight transition
-          and the user always sees the welcome FIRST on a fresh session. */}
+      {/* P3 (Stage 7) / Sprint 2 (#3): first-login welcome experience.
+          Mounted before the step interstitial so it sits on top of any
+          in-flight transition and the user always sees the welcome FIRST
+          on a fresh session. v2 sessions get the three-step
+          WelcomeAccessWizard (welcome → urgent access → confirmation);
+          v1 sessions keep the legacy two-step WelcomeModal because the
+          wizard's status fields write to the v2 access_checklist step,
+          which doesn't exist in the v1 flow. */}
       {showP3Modal && (
-        <WelcomeModal
-          companyName={clientName}
-          token={token}
-          onDismiss={() => setWelcomeModalOpen(false)}
-        />
+        flowVersion === 'v2' ? (
+          <WelcomeAccessWizard
+            companyName={clientName}
+            onFinish={handleWelcomeWizardFinish}
+          />
+        ) : (
+          <WelcomeModal
+            companyName={clientName}
+            token={token}
+            onDismiss={() => setWelcomeModalOpen(false)}
+          />
+        )
       )}
 
       {/* Step Transition Interstitial */}

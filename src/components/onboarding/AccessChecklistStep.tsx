@@ -9,7 +9,9 @@ interface AccessChecklistStepProps {
   onChange: (name: string, value: unknown) => void;
 }
 
-const ACCESS_STATUS_OPTIONS = [
+// Exported (Sprint 2 / #3): the WelcomeAccessWizard's status dropdowns
+// must mirror these values exactly — same const, no drift possible.
+export const ACCESS_STATUS_OPTIONS = [
   { value: 'done', label: 'Done — access granted' },
   { value: 'later', label: "I'll do this later" },
   { value: 'need_help', label: 'I need help' },
@@ -23,7 +25,9 @@ const YOUTUBE_STATUS_OPTIONS = [
 ];
 
 // Tutorial videos for each access service (from v1 steps 20-25)
-const TUTORIAL_VIDEOS: Record<string, { url: string; title: string }> = {
+// Exported (Sprint 2 / #3): reused by the WelcomeAccessWizard so the
+// urgent-access rows embed the same production tutorials as this step.
+export const TUTORIAL_VIDEOS: Record<string, { url: string; title: string }> = {
   ga: {
     url: 'https://youtu.be/8nWZRo_l8bs',
     title: 'Tutorial - How to add admin user to Google Analytics',
