@@ -224,6 +224,17 @@ const SUMMARY_REJECT_PHRASES = [
   'free shipping',
   'shop now',
   'view cart',
+  // E2E F1 (2026-06-11 run) — Shopify CART-DRAWER copy. The badge-strip
+  // fix above held, but the4x4store's homepage markdown ALSO carries the
+  // cart drawer ("R 0.00Subtotal - Tax included. Shipping calculated at
+  // checkout.") which is prose-SHAPED — passesProseShape correctly lets
+  // it through (8 distinct words, one symbol token), so the phrase layer
+  // has to know cart furniture by name.
+  'subtotal',
+  'tax included',
+  'shipping calculated',
+  'checkout',
+  'your cart',
 ];
 
 const MIN_SUMMARY_LENGTH = 30;
