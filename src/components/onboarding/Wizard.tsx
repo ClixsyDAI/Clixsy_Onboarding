@@ -260,6 +260,11 @@ export default function Wizard({
 
     setAnswers(prev => {
       const updated = { ...prev };
+      // Track whether the scan autofilled any brand color so we can also
+      // seed knows_brand_colors='no' (i.e. "pull from website") below —
+      // the operator wants the radio defaulted ON when the scan found
+      // colors, so the user opts OUT of using them rather than opts IN.
+      let brandColorAutofilled = false;
       for (const [fieldKey, entry] of Object.entries(prefillMap)) {
         if (entry.policy !== 'autofill') continue;
 
@@ -279,6 +284,26 @@ export default function Wizard({
             updated[stepKey] = {
               ...updated[stepKey],
               [fieldKey]: entry.suggested_value,
+            };
+            if (fieldKey === 'primary_color' || fieldKey === 'secondary_color') {
+              brandColorAutofilled = true;
+            }
+          }
+          break;
+        }
+      }
+      // Seed knows_brand_colors='no' in whichever step owns it when the
+      // scan delivered colors and the user hasn't picked a value yet.
+      // Idempotent against re-runs: only writes when currently empty.
+      if (brandColorAutofilled) {
+        for (const step of steps) {
+          const owns = step.fields.some(f => f.name === 'knows_brand_colors');
+          if (!owns) continue;
+          const current = updated[step.key]?.knows_brand_colors;
+          if (current === undefined || current === null || current === '') {
+            updated[step.key] = {
+              ...updated[step.key],
+              knows_brand_colors: 'no',
             };
           }
           break;
