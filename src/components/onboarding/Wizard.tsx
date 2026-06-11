@@ -89,6 +89,20 @@ interface WizardProps {
   isAmBypass?: boolean;
   /** The raw bypass signature from the URL, sent as the x-am-bypass header. */
   amToken?: string | null;
+  /**
+   * Auto-prefill resume: a site-intelligence scan linked to this session
+   * that was still in-flight (queued/running) or had failed at load time.
+   * Set when the GHL webhook kicked off the scan and the client/AM opened
+   * the form before it finished. The wizard resumes polling it (so the
+   * prefill lands without a manual click) or shows the retry affordance
+   * (failed). Null when there's no scan, or a completed one (whose data
+   * arrives via `siteIntelligence`).
+   */
+  pendingSiteIntelligence?: {
+    recordId: string;
+    status: string;
+    error: string | null;
+  } | null;
 }
 
 export default function Wizard({
@@ -105,6 +119,7 @@ export default function Wizard({
   siteIntelligence: initialSiteIntelligence = null,
   isAmBypass = false,
   amToken = null,
+  pendingSiteIntelligence = null,
 }: WizardProps) {
   // Phase 3 followup: siteIntelligence is now a state value, not just a
   // prop. Initial value comes from the server-side load (admin-flow
@@ -411,6 +426,41 @@ export default function Wizard({
       lastSeenUrlRef.current = url;
     }
   }, [answers, analyzeState]);
+
+  // Auto-prefill resume (#1, automatic path): if a scan linked to this
+  // session was still in-flight when the page loaded — e.g. the GHL
+  // webhook kicked it off and the client/AM opened the form before it
+  // finished — resume polling so the prefill applies the moment it lands,
+  // instead of showing the idle "Analyze my site" button. A linked-but-
+  // FAILED scan surfaces the retry affordance with its error.
+  //
+  // Runs once: the ref guard makes React's dev double-invoke (and the
+  // analyzeState dep below) idempotent so we never start two poll loops.
+  // Only acts from the 'idle' initial state — a session that loaded with
+  // a completed analysis starts in 'completed' and is left untouched.
+  const resumeAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (resumeAttemptedRef.current) return;
+    if (!pendingSiteIntelligence) return;
+    if (analyzeState !== 'idle') return;
+    resumeAttemptedRef.current = true;
+
+    const { recordId, status, error } = pendingSiteIntelligence;
+    if (status === 'queued' || status === 'running') {
+      setAnalyzeState('analyzing');
+      setAnalyzeError(null);
+      // Reset the client-side timeout window to "now" — the 90s budget is
+      // for how long WE poll, not how long the scan has already run. If a
+      // deep site outlives it, the panel's timed_out → Retry re-enters
+      // analyze, which dedups onto this same in-flight record (no new
+      // scan) and resumes polling.
+      analyzeStartedAtRef.current = Date.now();
+      pollAnalyzeStatus(recordId);
+    } else if (status === 'failed') {
+      setAnalyzeState('failed');
+      setAnalyzeError(error ?? 'We could not analyze your website.');
+    }
+  }, [pendingSiteIntelligence, analyzeState, pollAnalyzeStatus]);
 
   // P4 (Stage 7): once the P3 modal has been dismissed, every subsequent
   // visit is a "returning" visit by definition. The previous heuristic

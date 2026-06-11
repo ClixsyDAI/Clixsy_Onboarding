@@ -3,6 +3,7 @@ import { after } from 'next/server';
 import { getSessionByToken, getSessionAnswers, getSignedLogoUrl, createAuditEvent, createOpenEvent, getClientById } from '@/lib/supabase/server';
 import { getStepsForVersion } from '@/lib/onboarding/flow-version';
 import { getSiteIntelligenceSnapshots } from '@/lib/supabase/server';
+import { getSiteIntelligence } from '@/lib/siteIntelligence/analyze';
 import { resolveSessionAccess } from '@/lib/onboarding/session-guard';
 import { capUserAgent, hashRequestIp } from '@/lib/onboarding/open-event-ip';
 
@@ -94,6 +95,28 @@ export async function GET(request: NextRequest) {
 
     // Get site intelligence snapshots (from session snapshots)
     const siteIntelligence = await getSiteIntelligenceSnapshots(session.id);
+
+    // Auto-prefill resume: when a scan is linked to this session but
+    // hasn't completed, `siteIntelligence` is null (no snapshots written
+    // yet). Surface the linked record's live state so the wizard can
+    // resume polling (queued/running) — e.g. the GHL webhook kicked off
+    // the scan and the client/AM opened before it finished — or show the
+    // retry affordance (failed), instead of falling back to the idle
+    // "Analyze my site" button. Only queried in the no-snapshot case, so
+    // the completed happy path adds no extra read.
+    let siteIntelligencePending:
+      | { recordId: string; status: string; error: string | null }
+      | null = null;
+    if (!siteIntelligence && session.site_intelligence_id) {
+      const linked = await getSiteIntelligence(session.site_intelligence_id);
+      if (linked && linked.status !== 'completed') {
+        siteIntelligencePending = {
+          recordId: linked.id,
+          status: linked.status,
+          error: linked.error ?? null,
+        };
+      }
+    }
 
     // Create audit event for session access. Sprint 2 / #4: suppressed
     // entirely for AM-bypass opens — an AM preparing the form must not
@@ -195,6 +218,10 @@ export async function GET(request: NextRequest) {
       })),
       totalSteps: steps.length,
       siteIntelligence: siteIntelligence || null,
+      // Auto-prefill resume: present only when a linked scan is in-flight
+      // (queued/running) or failed at load time; null otherwise (no scan,
+      // or a completed scan whose data is already in siteIntelligence).
+      siteIntelligencePending,
     });
   } catch (error) {
     // Pre-fix logging was a single `console.error('Error fetching session:', error)`
