@@ -10,6 +10,7 @@ import {
 } from '@/lib/supabase/server';
 import { getStepsForVersion } from '@/lib/onboarding/flow-version';
 import { checkSessionGuard as realCheckSessionGuard, type GuardResult, type SessionRow } from '@/lib/onboarding/session-guard';
+import { verifyAmBypass, AM_BYPASS_HEADER } from '@/lib/onboarding/am-bypass';
 
 // ---------------------------------------------------------------------------
 // Test-mode shim
@@ -121,16 +122,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Sprint 2 / #4: AM bypass — same per-request signature verification
+    // as save-step. Submission itself proceeds normally (real data); only
+    // the audit event below is suppressed.
+    const isAmBypass = verifyAmBypass(
+      session.id,
+      request.headers.get(AM_BYPASS_HEADER),
+    );
+
     // Stage 7: PIN gate — same protection as save-step.
-    const guard = await checkSessionGuard(session);
-    if (guard.kind === 'locked') {
-      return NextResponse.json(
-        { error: 'Session is locked. Contact your Clixsy account manager.' },
-        { status: guard.lock === 'permanent' ? 423 : 429 }
-      );
-    }
-    if (guard.kind === 'needs_pin') {
-      return NextResponse.json({ error: 'PIN verification required' }, { status: 401 });
+    if (!isAmBypass) {
+      const guard = await checkSessionGuard(session);
+      if (guard.kind === 'locked') {
+        return NextResponse.json(
+          { error: 'Session is locked. Contact your Clixsy account manager.' },
+          { status: guard.lock === 'permanent' ? 423 : 429 }
+        );
+      }
+      if (guard.kind === 'needs_pin') {
+        return NextResponse.json({ error: 'PIN verification required' }, { status: 401 });
+      }
     }
 
     // Check if already submitted
@@ -191,11 +202,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create audit event
-    await createAuditEvent(session.id, 'session_submitted', {
-      totalStepsCompleted: answeredSteps.size,
-      totalSteps: steps.length,
-    });
+    // Create audit event — suppressed for AM-bypass submissions (#4).
+    if (!isAmBypass) {
+      await createAuditEvent(session.id, 'session_submitted', {
+        totalStepsCompleted: answeredSteps.size,
+        totalSteps: steps.length,
+      });
+    }
 
     return NextResponse.json({
       success: true,

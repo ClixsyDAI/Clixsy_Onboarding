@@ -10,6 +10,7 @@ import { getStepsForVersion } from '@/lib/onboarding/flow-version';
 import {
   regeneratePinAction,
   unlockSessionAction,
+  getAmBypassLinkAction,
 } from '@/lib/onboarding/admin-actions';
 
 const CLIXSY_LOGO_URL = 'https://res.cloudinary.com/dovgh19xr/image/upload/v1766427227/new_logo_nvrux0.svg';
@@ -167,6 +168,27 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
       setTimeout(() => setCopiedPin(false), 1500);
     } catch {
       // Silent — value is also selectable.
+    }
+  };
+
+  // Sprint 2 / #4: AM-bypass link. Signature is minted server-side via
+  // Server Action; the assembled link opens the form with PIN skipped
+  // and zero audit/tracking — for AMs filling the form on the client's
+  // behalf. Form writes through that link save as real data.
+  const [copiedAmLink, setCopiedAmLink] = useState(false);
+  const [amLinkError, setAmLinkError] = useState<string | null>(null);
+
+  const handleCopyAmLink = async () => {
+    setAmLinkError(null);
+    try {
+      const result = await getAmBypassLinkAction(id);
+      if (!result.ok) throw new Error(result.error);
+      const url = `${window.location.origin}/onboarding/${result.token}?am=${encodeURIComponent(result.sig)}`;
+      await navigator.clipboard.writeText(url);
+      setCopiedAmLink(true);
+      setTimeout(() => setCopiedAmLink(false), 1500);
+    } catch (err) {
+      setAmLinkError(err instanceof Error ? err.message : 'Failed to mint AM link');
     }
   };
 
@@ -600,7 +622,21 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               >
                 Copy Link
               </button>
+              <button
+                onClick={handleCopyAmLink}
+                title="Open-as-AM link: skips the PIN, fires no tracking, suppresses the welcome wizard. Form entries save as real client data."
+                className="px-4 py-2 border border-[#25DC7F] text-[#25DC7F] rounded-lg text-sm font-semibold hover:bg-[#25DC7F]/10 transition-colors whitespace-nowrap"
+              >
+                {copiedAmLink ? 'Copied!' : 'Copy AM Link'}
+              </button>
             </div>
+            {amLinkError && (
+              <p className="mt-1 text-sm text-[#E5484D]">{amLinkError}</p>
+            )}
+            <p className="mt-1 text-xs text-[#6B6B6B]">
+              AM Link opens the form without a PIN and with tracking off — for filling
+              the form on the client&apos;s behalf. Don&apos;t send it to clients.
+            </p>
           </div>
 
           {/* PIN Access (P2) */}

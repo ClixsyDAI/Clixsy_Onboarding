@@ -25,6 +25,7 @@
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { adminUnlockUpdate } from "./pin";
 import { rotatePin } from "./rotate-pin";
+import { signAmBypass } from "./am-bypass";
 
 export type RegeneratePinActionResult =
   | { ok: true; pin: string }
@@ -97,4 +98,33 @@ export async function unlockSessionAction(
   }
 
   return { ok: true };
+}
+
+export type AmBypassLinkResult =
+  | { ok: true; token: string; sig: string }
+  | { ok: false; error: string };
+
+/**
+ * Sprint 2 / #4: mint the AM-bypass link parts for a session. The
+ * signature must be computed server-side (HMAC secret); the client
+ * assembles `${origin}/onboarding/${token}?am=${sig}`. Server Action so
+ * the admin UI gets it without a bearer-gated route — same Phase 6 PR A
+ * rationale as the PIN actions above.
+ */
+export async function getAmBypassLinkAction(
+  sessionId: string,
+): Promise<AmBypassLinkResult> {
+  const supabase = createServiceRoleClient();
+
+  const { data: session, error } = await supabase
+    .from("onboarding_sessions")
+    .select("id, token")
+    .eq("id", sessionId)
+    .single();
+
+  if (error || !session) {
+    return { ok: false, error: "Session not found" };
+  }
+
+  return { ok: true, token: session.token, sig: signAmBypass(session.id) };
 }

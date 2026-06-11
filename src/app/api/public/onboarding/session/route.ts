@@ -5,6 +5,7 @@ import { getStepsForVersion } from '@/lib/onboarding/flow-version';
 import { getSiteIntelligenceSnapshots } from '@/lib/supabase/server';
 import { checkSessionGuard } from '@/lib/onboarding/session-guard';
 import { capUserAgent, hashRequestIp } from '@/lib/onboarding/open-event-ip';
+import { verifyAmBypass, AM_BYPASS_PARAM } from '@/lib/onboarding/am-bypass';
 
 export async function GET(request: NextRequest) {
   try {
@@ -43,11 +44,23 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Sprint 2 / #4: AM bypass. A valid signature on the `am` query param
+    // authorises the caller as an account manager filling the form on the
+    // client's behalf — PIN entry is skipped and NO tracking fires below.
+    // Verified per-request against the session id; an invalid/absent
+    // signature falls through to the normal PIN gate.
+    const isAmBypass = verifyAmBypass(
+      session.id,
+      searchParams.get(AM_BYPASS_PARAM),
+    );
+
     // Stage 7: PIN gate. Resolve whether the caller is authorised to see
     // the full session. Locked sessions / unauthenticated sessions get a
     // minimal payload — just enough for the page to render the right
     // screen (PIN entry / "locked" message) without leaking answers.
-    const guard = await checkSessionGuard(session);
+    const guard = isAmBypass
+      ? ({ kind: 'ok', pinSet: session.pin_hash !== null } as const)
+      : await checkSessionGuard(session);
 
     // We still want to surface the client company name on the gated
     // screens because the PIN-entry page should show e.g. "Enter your
@@ -91,11 +104,15 @@ export async function GET(request: NextRequest) {
     // Get site intelligence snapshots (from session snapshots)
     const siteIntelligence = await getSiteIntelligenceSnapshots(session.id);
 
-    // Create audit event for session access
-    await createAuditEvent(session.id, 'session_accessed', {
-      ip: request.headers.get('x-forwarded-for') || 'unknown',
-      userAgent: request.headers.get('user-agent') || 'unknown',
-    });
+    // Create audit event for session access. Sprint 2 / #4: suppressed
+    // entirely for AM-bypass opens — an AM preparing the form must not
+    // look like client activity in the audit trail.
+    if (!isAmBypass) {
+      await createAuditEvent(session.id, 'session_accessed', {
+        ip: request.headers.get('x-forwarded-for') || 'unknown',
+        userAgent: request.headers.get('user-agent') || 'unknown',
+      });
+    }
 
     // Phase 1 of the workbook Onboarding tab (migration 008): append a
     // row to `onboarding_open_events` for the workbook's Open History
@@ -112,15 +129,19 @@ export async function GET(request: NextRequest) {
     // function when the response ships, so the Supabase HTTP request
     // never lands (see PR #11 post-merge verification). Same pattern
     // as src/app/api/admin/site-intelligence/analyze/route.ts.
-    const userAgent = capUserAgent(request.headers.get('user-agent'));
-    const ipHash = hashRequestIp(request.headers.get('x-forwarded-for'));
-    after(async () => {
-      try {
-        await createOpenEvent(session.id, { userAgent, ipHash });
-      } catch (err) {
-        console.warn('[session.GET] onboarding_open_events insert failed:', err);
-      }
-    });
+    // Sprint 2 / #4: open events are likewise suppressed for AM-bypass —
+    // the workbook's Open History must only count real client opens.
+    if (!isAmBypass) {
+      const userAgent = capUserAgent(request.headers.get('user-agent'));
+      const ipHash = hashRequestIp(request.headers.get('x-forwarded-for'));
+      after(async () => {
+        try {
+          await createOpenEvent(session.id, { userAgent, ipHash });
+        } catch (err) {
+          console.warn('[session.GET] onboarding_open_events insert failed:', err);
+        }
+      });
+    }
 
     // Format answers by step key
     const answersByStep: Record<string, { answers: Record<string, unknown>; completed: boolean }> = {};
@@ -156,6 +177,10 @@ export async function GET(request: NextRequest) {
         // Stage 7: surface flags the client-side wizard uses to gate P3 + P4.
         pinSet: guard.pinSet,
         welcomeWizardSeen: (session as unknown as { welcome_wizard_seen?: boolean }).welcome_wizard_seen ?? false,
+        // Sprint 2 / #4: informs the Wizard it's running in AM-bypass mode
+        // (suppress popups, attach the bypass header to mutating calls).
+        // Display-only — every write endpoint re-verifies the signature.
+        isAmBypass,
         // Stage 8 / S12.2: account-manager name for the rebuilt thank-you
         // screen copy. Defaults to "your account manager" client-side if
         // unset (legacy / pre-Stage-1 rows).

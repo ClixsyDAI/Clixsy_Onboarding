@@ -78,6 +78,16 @@ interface WizardProps {
    */
   vertical?: VerticalId;
   siteIntelligence?: SiteIntelligenceData | null;
+  /**
+   * Sprint 2 / #4: true when the session was opened through a verified
+   * AM-bypass link. Suppresses the welcome modal/wizard (an AM preparing
+   * the form must not consume the client's first-time UX) and causes
+   * mutating calls to attach the bypass header. Server routes re-verify
+   * the signature on every request — this prop is presentation-only.
+   */
+  isAmBypass?: boolean;
+  /** The raw bypass signature from the URL, sent as the x-am-bypass header. */
+  amToken?: string | null;
 }
 
 export default function Wizard({
@@ -92,6 +102,8 @@ export default function Wizard({
   accountManager = null,
   vertical = 'law_firm',
   siteIntelligence: initialSiteIntelligence = null,
+  isAmBypass = false,
+  amToken = null,
 }: WizardProps) {
   // Phase 3 followup: siteIntelligence is now a state value, not just a
   // prop. Initial value comes from the server-side load (admin-flow
@@ -405,7 +417,13 @@ export default function Wizard({
   // truly only ever fires once per session — surviving cleared cookies.
   // Local `welcomeModalOpen` lets the user dismiss within this render
   // before the server flag round-trip completes.
-  const [welcomeModalOpen, setWelcomeModalOpen] = useState(!welcomeWizardSeen && sessionStatus !== 'submitted');
+  // Sprint 2 / #4: !isAmBypass — the welcome experience belongs to the
+  // client; an AM opening via bypass link must neither see it nor (via
+  // the dismiss round-trip) consume it. Second layer: the
+  // mark-welcome-seen endpoint independently no-ops on a bypass header.
+  const [welcomeModalOpen, setWelcomeModalOpen] = useState(
+    !welcomeWizardSeen && sessionStatus !== 'submitted' && !isAmBypass,
+  );
   const showP3Modal = welcomeModalOpen;
 
   useEffect(() => {
@@ -488,7 +506,11 @@ export default function Wizard({
     try {
       const response = await fetch('/api/public/onboarding/save-step', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // Sprint 2 / #4: bypass signature, server-verified per request.
+          ...(isAmBypass && amToken ? { 'x-am-bypass': amToken } : {}),
+        },
         body: JSON.stringify({
           token,
           stepKey: currentStep.key,
@@ -654,7 +676,11 @@ export default function Wizard({
     try {
       const response = await fetch('/api/public/onboarding/submit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // Sprint 2 / #4: bypass signature, server-verified per request.
+          ...(isAmBypass && amToken ? { 'x-am-bypass': amToken } : {}),
+        },
         body: JSON.stringify({ token }),
       });
 
