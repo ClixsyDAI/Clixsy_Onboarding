@@ -9,7 +9,8 @@ import {
   type OnboardingAnswer,
 } from '@/lib/supabase/server';
 import { getStepsForVersion } from '@/lib/onboarding/flow-version';
-import { checkSessionGuard as realCheckSessionGuard, type GuardResult, type SessionRow } from '@/lib/onboarding/session-guard';
+import { checkSessionGuard as realCheckSessionGuard, decideAccess, type GuardResult, type SessionRow } from '@/lib/onboarding/session-guard';
+import { isAmBypassRequest } from '@/lib/onboarding/am-bypass';
 
 // ---------------------------------------------------------------------------
 // Test-mode shim
@@ -121,17 +122,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Stage 7: PIN gate — same protection as save-step.
-    const guard = await checkSessionGuard(session);
-    if (guard.kind === 'locked') {
+    // Stage 7 + Sprint 2 / #4: PIN gate, AM-bypass-aware. Uses decideAccess
+    // with the (possibly test-shimmed) checkSessionGuard so the same
+    // lock-always / PIN-skippable rule applies without bypassing the
+    // submit route's in-memory test guard. Submission writes real data;
+    // only the session_submitted audit below is suppressed under bypass.
+    const access = decideAccess(
+      await checkSessionGuard(session),
+      isAmBypassRequest(session.id, request),
+    );
+    if (access.kind === 'locked') {
       return NextResponse.json(
         { error: 'Session is locked. Contact your Clixsy account manager.' },
-        { status: guard.lock === 'permanent' ? 423 : 429 }
+        { status: access.lock === 'permanent' ? 423 : 429 }
       );
     }
-    if (guard.kind === 'needs_pin') {
+    if (access.kind === 'needs_pin') {
       return NextResponse.json({ error: 'PIN verification required' }, { status: 401 });
     }
+    const isAmBypass = access.isAmBypass;
 
     // Check if already submitted
     if (session.status === 'submitted') {
@@ -191,11 +200,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create audit event
-    await createAuditEvent(session.id, 'session_submitted', {
-      totalStepsCompleted: answeredSteps.size,
-      totalSteps: steps.length,
-    });
+    // Create audit event — suppressed for AM-bypass submissions (#4).
+    if (!isAmBypass) {
+      await createAuditEvent(session.id, 'session_submitted', {
+        totalStepsCompleted: answeredSteps.size,
+        totalSteps: steps.length,
+      });
+    }
 
     return NextResponse.json({
       success: true,

@@ -35,6 +35,8 @@ interface SessionPayload {
     submittedAt: string | null;
     pinSet: boolean;
     welcomeWizardSeen: boolean;
+    /** Sprint 2 / #4: server-verified AM-bypass flag for this load. */
+    isAmBypass?: boolean;
     /** Stage 8: rendered on the rebuilt thank-you screen. May be null on legacy rows. */
     accountManager: string | null;
     /**
@@ -48,6 +50,14 @@ interface SessionPayload {
   client: { name: string; contactName: string };
   answers: Record<string, { answers: Record<string, unknown>; completed: boolean }>;
   siteIntelligence: SiteIntelligence | null;
+  /** Auto-prefill resume: a linked scan that's in-flight or failed at
+   *  load time. Lets the wizard resume polling / show retry instead of
+   *  the idle trigger. Null when no scan or a completed one. */
+  siteIntelligencePending?: {
+    recordId: string;
+    status: string;
+    error: string | null;
+  } | null;
 }
 
 interface GateResponse {
@@ -59,7 +69,18 @@ interface GateResponse {
 
 const CLIXSY_LOGO_URL = 'https://res.cloudinary.com/dovgh19xr/image/upload/v1766427227/new_logo_nvrux0.svg';
 
-export default function OnboardingShell({ token }: { token: string }) {
+export default function OnboardingShell({
+  token,
+  amToken = null,
+}: {
+  token: string;
+  /**
+   * Sprint 2 / #4: AM-bypass signature from the page URL's `am` query
+   * param. Forwarded to the session API (which verifies it server-side)
+   * and down to the Wizard so mutating calls can attach it as a header.
+   */
+  amToken?: string | null;
+}) {
   const [loading, setLoading] = useState(true);
   const [payload, setPayload] = useState<SessionPayload | null>(null);
   const [gate, setGate] = useState<GateResponse | null>(null);
@@ -79,7 +100,8 @@ export default function OnboardingShell({ token }: { token: string }) {
     try {
       let resp: Response;
       try {
-        resp = await fetch(`/api/public/onboarding/session?token=${encodeURIComponent(token)}`, {
+        const amQuery = amToken ? `&am=${encodeURIComponent(amToken)}` : '';
+        resp = await fetch(`/api/public/onboarding/session?token=${encodeURIComponent(token)}${amQuery}`, {
           cache: 'no-store',
         });
       } catch (networkErr) {
@@ -129,7 +151,7 @@ export default function OnboardingShell({ token }: { token: string }) {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, amToken]);
 
   useEffect(() => {
     void fetchSession();
@@ -250,8 +272,11 @@ export default function OnboardingShell({ token }: { token: string }) {
         welcomeWizardSeen={payload.session.welcomeWizardSeen}
         accountManager={payload.session.accountManager}
         vertical={payload.session.vertical}
+        isAmBypass={payload.session.isAmBypass ?? false}
+        amToken={amToken}
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         siteIntelligence={payload.siteIntelligence as any}
+        pendingSiteIntelligence={payload.siteIntelligencePending ?? null}
       />
     );
   }

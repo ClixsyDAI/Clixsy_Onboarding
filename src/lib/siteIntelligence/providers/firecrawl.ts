@@ -9,6 +9,32 @@ import {
   sanitiseBusinessSummary,
   passesSummaryHygiene,
 } from '../extraction-sanitisers';
+import { parse as parseHtml } from 'node-html-parser';
+
+/**
+ * Pull the first sensible `<h1>` text out of an HTML document.
+ *
+ * Previously a greedy regex (`/<h1[^>]*>([\s\S]*?)<\/h1>/i`) — which the
+ * Walk fixture broke against: the homepage's first `<h1>` was an SVG-wrapped
+ * logo (text inside `<svg><foreignObject>…<h1>…</h1></foreignObject></svg>`).
+ * The regex's tag-strip stripped the SVG markup but the inner text was
+ * SEO-prose, not the brand label. A real parser also lets us skip H1s
+ * whose textContent is empty (icon-only headings, screen-reader-hidden
+ * decorative H1s) and walk to the next candidate.
+ */
+function extractFirstUsableH1(html: string): string | null {
+  try {
+    const root = parseHtml(html, { comment: false });
+    const headings = root.querySelectorAll('h1');
+    for (const h of headings) {
+      const text = h.text.replace(/\s+/g, ' ').trim();
+      if (text.length > 0) return text;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 const FIRECRAWL_BASE = 'https://api.firecrawl.dev/v1';
 
@@ -307,12 +333,8 @@ export class FirecrawlProvider implements SiteIntelligenceProvider {
         // as another sanitiser candidate. Brand is occasionally the H1
         // when the title tag is SEO-prose ("Welcome to ACME Plumbing").
         if (homepageHtml && !firstH1) {
-          const h1Match = homepageHtml.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-          if (h1Match) {
-            // Strip tags + collapse whitespace.
-            const text = h1Match[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
-            if (text.length > 0) firstH1 = text;
-          }
+          const candidate = extractFirstUsableH1(homepageHtml);
+          if (candidate) firstH1 = candidate;
         }
 
         // Check for WordPress indicators in the HTML/markdown
