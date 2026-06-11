@@ -276,6 +276,39 @@ export default function SiteIntelligencePanel({
           </div>
         )}
 
+        {/* Detected Contact (phone / email / address). Surfacing this so
+            operators can confirm the scan picked up the right business
+            details before they hand the form to the client. */}
+        {insights?.contact_public && (
+          insights.contact_public.phone ||
+          insights.contact_public.email ||
+          insights.contact_public.address
+        ) && (
+          <div>
+            <h4 className="text-xs font-semibold text-[#6B6B6B] uppercase mb-2">Detected Contact</h4>
+            <dl className="space-y-1 text-sm">
+              {insights.contact_public.phone && (
+                <div className="flex gap-2">
+                  <dt className="w-16 shrink-0 text-[#6B6B6B]">Phone</dt>
+                  <dd className="text-[#0B0B0B]">{insights.contact_public.phone}</dd>
+                </div>
+              )}
+              {insights.contact_public.email && (
+                <div className="flex gap-2">
+                  <dt className="w-16 shrink-0 text-[#6B6B6B]">Email</dt>
+                  <dd className="text-[#0B0B0B] break-all">{insights.contact_public.email}</dd>
+                </div>
+              )}
+              {insights.contact_public.address && (
+                <div className="flex gap-2">
+                  <dt className="w-16 shrink-0 text-[#6B6B6B]">Address</dt>
+                  <dd className="text-[#0B0B0B]">{insights.contact_public.address}</dd>
+                </div>
+              )}
+            </dl>
+          </div>
+        )}
+
         {/* Services */}
         {insights?.primary_services && insights.primary_services.length > 0 && (
           <div>

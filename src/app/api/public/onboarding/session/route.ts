@@ -3,7 +3,8 @@ import { after } from 'next/server';
 import { getSessionByToken, getSessionAnswers, getSignedLogoUrl, createAuditEvent, createOpenEvent, getClientById } from '@/lib/supabase/server';
 import { getStepsForVersion } from '@/lib/onboarding/flow-version';
 import { getSiteIntelligenceSnapshots } from '@/lib/supabase/server';
-import { checkSessionGuard } from '@/lib/onboarding/session-guard';
+import { getSiteIntelligence } from '@/lib/siteIntelligence/analyze';
+import { resolveSessionAccess } from '@/lib/onboarding/session-guard';
 import { capUserAgent, hashRequestIp } from '@/lib/onboarding/open-event-ip';
 
 export async function GET(request: NextRequest) {
@@ -43,11 +44,14 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Stage 7: PIN gate. Resolve whether the caller is authorised to see
-    // the full session. Locked sessions / unauthenticated sessions get a
-    // minimal payload — just enough for the page to render the right
-    // screen (PIN entry / "locked" message) without leaking answers.
-    const guard = await checkSessionGuard(session);
+    // Stage 7 + Sprint 2 / #4: PIN gate, AM-bypass-aware. resolveSessionAccess
+    // applies the shared rule — a locked session is ALWAYS blocked (the
+    // bypass token skips the PIN, not the lock); needs_pin is waived only
+    // under a valid `am` signature. Locked / needs_pin get a minimal
+    // payload (just the client name for the gated screen) without leaking
+    // answers; `ok` carries the verified isAmBypass flag used to suppress
+    // the two tracking writes below.
+    const access = await resolveSessionAccess(session, request);
 
     // We still want to surface the client company name on the gated
     // screens because the PIN-entry page should show e.g. "Enter your
@@ -56,18 +60,18 @@ export async function GET(request: NextRequest) {
     const client = await getClientById(session.client_id);
     const clientName = client?.client_name || '';
 
-    if (guard.kind === 'locked') {
+    if (access.kind === 'locked') {
       return NextResponse.json(
         {
-          locked: guard.lock,
-          retryAfter: guard.retryAfter ?? null,
+          locked: access.lock,
+          retryAfter: access.retryAfter ?? null,
           client: { name: clientName },
         },
-        { status: guard.lock === 'permanent' ? 423 : 429 }
+        { status: access.lock === 'permanent' ? 423 : 429 }
       );
     }
 
-    if (guard.kind === 'needs_pin') {
+    if (access.kind === 'needs_pin') {
       return NextResponse.json(
         {
           needsPin: true,
@@ -77,7 +81,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // guard.kind === 'ok' — proceed with full payload.
+    // access.kind === 'ok' — proceed with full payload.
+    const isAmBypass = access.isAmBypass;
 
     // Get all answers for this session
     const answers = await getSessionAnswers(session.id);
@@ -91,11 +96,37 @@ export async function GET(request: NextRequest) {
     // Get site intelligence snapshots (from session snapshots)
     const siteIntelligence = await getSiteIntelligenceSnapshots(session.id);
 
-    // Create audit event for session access
-    await createAuditEvent(session.id, 'session_accessed', {
-      ip: request.headers.get('x-forwarded-for') || 'unknown',
-      userAgent: request.headers.get('user-agent') || 'unknown',
-    });
+    // Auto-prefill resume: when a scan is linked to this session but
+    // hasn't completed, `siteIntelligence` is null (no snapshots written
+    // yet). Surface the linked record's live state so the wizard can
+    // resume polling (queued/running) — e.g. the GHL webhook kicked off
+    // the scan and the client/AM opened before it finished — or show the
+    // retry affordance (failed), instead of falling back to the idle
+    // "Analyze my site" button. Only queried in the no-snapshot case, so
+    // the completed happy path adds no extra read.
+    let siteIntelligencePending:
+      | { recordId: string; status: string; error: string | null }
+      | null = null;
+    if (!siteIntelligence && session.site_intelligence_id) {
+      const linked = await getSiteIntelligence(session.site_intelligence_id);
+      if (linked && linked.status !== 'completed') {
+        siteIntelligencePending = {
+          recordId: linked.id,
+          status: linked.status,
+          error: linked.error ?? null,
+        };
+      }
+    }
+
+    // Create audit event for session access. Sprint 2 / #4: suppressed
+    // entirely for AM-bypass opens — an AM preparing the form must not
+    // look like client activity in the audit trail.
+    if (!isAmBypass) {
+      await createAuditEvent(session.id, 'session_accessed', {
+        ip: request.headers.get('x-forwarded-for') || 'unknown',
+        userAgent: request.headers.get('user-agent') || 'unknown',
+      });
+    }
 
     // Phase 1 of the workbook Onboarding tab (migration 008): append a
     // row to `onboarding_open_events` for the workbook's Open History
@@ -112,15 +143,19 @@ export async function GET(request: NextRequest) {
     // function when the response ships, so the Supabase HTTP request
     // never lands (see PR #11 post-merge verification). Same pattern
     // as src/app/api/admin/site-intelligence/analyze/route.ts.
-    const userAgent = capUserAgent(request.headers.get('user-agent'));
-    const ipHash = hashRequestIp(request.headers.get('x-forwarded-for'));
-    after(async () => {
-      try {
-        await createOpenEvent(session.id, { userAgent, ipHash });
-      } catch (err) {
-        console.warn('[session.GET] onboarding_open_events insert failed:', err);
-      }
-    });
+    // Sprint 2 / #4: open events are likewise suppressed for AM-bypass —
+    // the workbook's Open History must only count real client opens.
+    if (!isAmBypass) {
+      const userAgent = capUserAgent(request.headers.get('user-agent'));
+      const ipHash = hashRequestIp(request.headers.get('x-forwarded-for'));
+      after(async () => {
+        try {
+          await createOpenEvent(session.id, { userAgent, ipHash });
+        } catch (err) {
+          console.warn('[session.GET] onboarding_open_events insert failed:', err);
+        }
+      });
+    }
 
     // Format answers by step key
     const answersByStep: Record<string, { answers: Record<string, unknown>; completed: boolean }> = {};
@@ -154,8 +189,12 @@ export async function GET(request: NextRequest) {
         lastSavedAt: session.last_saved_at,
         submittedAt: session.submitted_at,
         // Stage 7: surface flags the client-side wizard uses to gate P3 + P4.
-        pinSet: guard.pinSet,
+        pinSet: access.pinSet,
         welcomeWizardSeen: (session as unknown as { welcome_wizard_seen?: boolean }).welcome_wizard_seen ?? false,
+        // Sprint 2 / #4: informs the Wizard it's running in AM-bypass mode
+        // (suppress popups, attach the bypass header to mutating calls).
+        // Display-only — every write endpoint re-verifies the signature.
+        isAmBypass,
         // Stage 8 / S12.2: account-manager name for the rebuilt thank-you
         // screen copy. Defaults to "your account manager" client-side if
         // unset (legacy / pre-Stage-1 rows).
@@ -179,6 +218,10 @@ export async function GET(request: NextRequest) {
       })),
       totalSteps: steps.length,
       siteIntelligence: siteIntelligence || null,
+      // Auto-prefill resume: present only when a linked scan is in-flight
+      // (queued/running) or failed at load time; null otherwise (no scan,
+      // or a completed scan whose data is already in siteIntelligence).
+      siteIntelligencePending,
     });
   } catch (error) {
     // Pre-fix logging was a single `console.error('Error fetching session:', error)`
