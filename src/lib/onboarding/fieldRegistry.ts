@@ -170,7 +170,13 @@ export const LEGACY_FIELD_ALIASES: Record<string, string> = {
   'main_geographical_areas': 'seo.geo_targets',
   'primary_case_types_keywords': 'seo.primary_case_types',
   'case_priority': 'seo.initial_focus_case_types',
+  // GBP 5a: legacy single-string key kept in this map so older sessions
+  // whose answers blob still has the string form continue to alias
+  // correctly. New canonical key for the multi-location array shape
+  // (also maps to access.gbp.profiles since canonical field 60 was
+  // always typed as `repeater`).
   'gbp_listing_url': 'access.gbp.profiles',
+  'gbp_locations': 'access.gbp.profiles',
 
   // s6_legal_&_compliance: legal_content_comms step
   'advertising_regulations': 'compliance.state_bar_advertising_rules_url',
