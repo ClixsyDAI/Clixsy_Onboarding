@@ -45,6 +45,7 @@ import {
   createAuditEvent,
 } from '@/lib/supabase/server';
 import { checkSessionGuard } from '@/lib/onboarding/session-guard';
+import { isAmBypassRequest } from '@/lib/onboarding/am-bypass';
 
 // Same Vercel platform max as the admin route — see the comment in
 // src/app/api/admin/site-intelligence/analyze/route.ts for the
@@ -84,23 +85,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Auth: session lookup + PIN guard.
+    // Auth: session lookup + PIN guard. Sprint 2 / #4: a valid AM-bypass
+    // signature skips the PIN gate — running the scan to pre-fill the
+    // form is the core reason the AM link exists. The analyze-requested
+    // audit below is suppressed under bypass so the AM's prep doesn't
+    // register as client activity (zero-tracking invariant).
     const session = await getSessionByToken(token);
     if (!session) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 });
     }
-    const guard = await checkSessionGuard(session);
-    if (guard.kind === 'locked') {
-      return NextResponse.json(
-        { error: 'Session is locked. Contact your Clixsy account manager.' },
-        { status: guard.lock === 'permanent' ? 423 : 429 }
-      );
-    }
-    if (guard.kind === 'needs_pin') {
-      return NextResponse.json(
-        { error: 'PIN verification required' },
-        { status: 401 }
-      );
+    const isAmBypass = isAmBypassRequest(session.id, request);
+    if (!isAmBypass) {
+      const guard = await checkSessionGuard(session);
+      if (guard.kind === 'locked') {
+        return NextResponse.json(
+          { error: 'Session is locked. Contact your Clixsy account manager.' },
+          { status: guard.lock === 'permanent' ? 423 : 429 }
+        );
+      }
+      if (guard.kind === 'needs_pin') {
+        return NextResponse.json(
+          { error: 'PIN verification required' },
+          { status: 401 }
+        );
+      }
     }
 
     const normalizedUrl = normalizeUrl(websiteUrl);
@@ -152,14 +160,21 @@ export async function POST(request: NextRequest) {
     // limit even if the analyzer later fails. Audit payload notes
     // the via-channel so a future analytics query can distinguish
     // admin /new triggers from public wizard triggers.
-    await createAuditEvent(
-      session.id,
-      'site_intelligence_analyze_requested',
-      {
-        website_url: normalizedUrl,
-        via: 'public_wizard_step_1',
-      }
-    );
+    // Sprint 2 / #4: suppressed under AM bypass — this is a tracking
+    // write (and the rate-limit counter), so an AM-run scan neither
+    // logs as client activity nor counts against the client's hourly
+    // limit. The rate-limit CHECK above still runs (protects against a
+    // real-client flood); AM runs simply aren't recorded.
+    if (!isAmBypass) {
+      await createAuditEvent(
+        session.id,
+        'site_intelligence_analyze_requested',
+        {
+          website_url: normalizedUrl,
+          via: 'public_wizard_step_1',
+        }
+      );
+    }
 
     // Create the record (status='queued'), kick the analyzer off
     // via after(), return immediately. The wizard polls

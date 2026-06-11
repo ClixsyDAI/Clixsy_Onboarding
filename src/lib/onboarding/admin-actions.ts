@@ -22,10 +22,32 @@
 // enough to inline here), and never go through the bearer gate
 // because they don't traverse the public HTTP interface.
 
+import { cookies } from "next/headers";
+import { createHash } from "node:crypto";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { adminUnlockUpdate } from "./pin";
 import { rotatePin } from "./rotate-pin";
 import { signAmBypass } from "./am-bypass";
+
+/**
+ * Server Actions are publicly-invocable POST endpoints: Next resolves
+ * them by action-id from a global manifest regardless of which route
+ * receives the POST, so the /admin/* proxy matcher does NOT gate them.
+ * Every action here mints or mutates privileged state (PINs, unlock,
+ * bypass links), so each must authenticate the caller itself. This
+ * re-derives the same admin_token cookie the proxy checks
+ * (sha256("<ADMIN_PASSWORD>:<ADMIN_SESSION_SECRET>")) and fails closed
+ * when either env var is unset — never granting access via a default.
+ */
+async function isAdmin(): Promise<boolean> {
+  const pw = process.env.ADMIN_PASSWORD;
+  const secret = process.env.ADMIN_SESSION_SECRET;
+  if (!pw || !secret) return false;
+  const expected = createHash("sha256").update(`${pw}:${secret}`).digest("hex");
+  const cookieStore = await cookies();
+  const token = cookieStore.get("admin_token")?.value;
+  return Boolean(token && token === expected);
+}
 
 export type RegeneratePinActionResult =
   | { ok: true; pin: string }
@@ -39,6 +61,7 @@ export type RegeneratePinActionResult =
 export async function regeneratePinAction(
   sessionId: string,
 ): Promise<RegeneratePinActionResult> {
+  if (!(await isAdmin())) return { ok: false, error: "Not authorised" };
   const supabase = createServiceRoleClient();
   const result = await rotatePin(supabase, sessionId);
 
@@ -65,6 +88,7 @@ export type UnlockActionResult =
 export async function unlockSessionAction(
   sessionId: string,
 ): Promise<UnlockActionResult> {
+  if (!(await isAdmin())) return { ok: false, error: "Not authorised" };
   const supabase = createServiceRoleClient();
 
   const { data: existing, error: existingErr } = await supabase
@@ -114,6 +138,7 @@ export type AmBypassLinkResult =
 export async function getAmBypassLinkAction(
   sessionId: string,
 ): Promise<AmBypassLinkResult> {
+  if (!(await isAdmin())) return { ok: false, error: "Not authorised" };
   const supabase = createServiceRoleClient();
 
   const { data: session, error } = await supabase

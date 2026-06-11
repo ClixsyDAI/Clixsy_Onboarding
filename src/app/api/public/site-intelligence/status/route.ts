@@ -33,6 +33,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSiteIntelligence } from '@/lib/siteIntelligence/analyze';
 import { getSessionByToken } from '@/lib/supabase/server';
 import { checkSessionGuard } from '@/lib/onboarding/session-guard';
+import { isAmBypassRequest } from '@/lib/onboarding/am-bypass';
 
 export async function POST(request: NextRequest) {
   try {
@@ -47,18 +48,23 @@ export async function POST(request: NextRequest) {
     if (!session) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 });
     }
-    const guard = await checkSessionGuard(session);
-    if (guard.kind === 'locked') {
-      return NextResponse.json(
-        { error: 'Session is locked. Contact your Clixsy account manager.' },
-        { status: guard.lock === 'permanent' ? 423 : 429 }
-      );
-    }
-    if (guard.kind === 'needs_pin') {
-      return NextResponse.json(
-        { error: 'PIN verification required' },
-        { status: 401 }
-      );
+    // Sprint 2 / #4: AM bypass skips the PIN gate. This is a pure read
+    // (no audit writes) so there's nothing to suppress — it just needs
+    // to not 401 the AM polling the scan they kicked off.
+    if (!isAmBypassRequest(session.id, request)) {
+      const guard = await checkSessionGuard(session);
+      if (guard.kind === 'locked') {
+        return NextResponse.json(
+          { error: 'Session is locked. Contact your Clixsy account manager.' },
+          { status: guard.lock === 'permanent' ? 423 : 429 }
+        );
+      }
+      if (guard.kind === 'needs_pin') {
+        return NextResponse.json(
+          { error: 'PIN verification required' },
+          { status: 401 }
+        );
+      }
     }
 
     // Resolve which record to read. Active-poll path (recordId supplied)

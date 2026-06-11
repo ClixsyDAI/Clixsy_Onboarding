@@ -27,6 +27,7 @@
 // flipping a boolean in the page payload.
 
 import crypto from 'node:crypto';
+import type { NextRequest } from 'next/server';
 import { getCookieSecret } from './pin-cookie';
 
 export const AM_BYPASS_PARAM = 'am';
@@ -51,6 +52,26 @@ export function verifyAmBypass(
 ): boolean {
   if (!provided || !sessionId) return false;
   const expected = signAmBypass(sessionId);
-  if (provided.length !== expected.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
+  // Compare BYTE lengths, not string lengths: a base64url signature is
+  // pure ASCII, but a crafted `provided` with the same character count
+  // yet a multi-byte char would pass a `.length` check and then make
+  // crypto.timingSafeEqual throw RangeError ("buffers must have the
+  // same byte length"). Build the buffers first and length-guard those.
+  const providedBuf = Buffer.from(provided);
+  const expectedBuf = Buffer.from(expected);
+  if (providedBuf.length !== expectedBuf.length) return false;
+  return crypto.timingSafeEqual(providedBuf, expectedBuf);
+}
+
+/**
+ * Resolve whether a request carries a valid AM-bypass signature for the
+ * session. Checks the `x-am-bypass` header (mutating routes) first, then
+ * the `am` query param (the session-load GET). One helper so every
+ * public route reads the bypass the same way — the param/header split
+ * was a per-route footgun. Server-only (reads NextRequest).
+ */
+export function isAmBypassRequest(sessionId: string, request: NextRequest): boolean {
+  if (verifyAmBypass(sessionId, request.headers.get(AM_BYPASS_HEADER))) return true;
+  const param = new URL(request.url).searchParams.get(AM_BYPASS_PARAM);
+  return verifyAmBypass(sessionId, param);
 }

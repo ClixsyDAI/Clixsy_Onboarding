@@ -285,7 +285,12 @@ export default function Wizard({
       try {
         const res = await fetch('/api/public/site-intelligence/status', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            // Sprint 2 / #4: bypass signature so the AM's poll isn't
+            // PIN-gated (server re-verifies).
+            ...(isAmBypass && amToken ? { 'x-am-bypass': amToken } : {}),
+          },
           // Pass recordId on every tick so the endpoint reads the
           // analysis we triggered, not whatever's currently linked
           // to the session (which may be a stale prior record).
@@ -321,7 +326,7 @@ export default function Wizard({
       }
     };
     tick();
-  }, [token]);
+  }, [token, isAmBypass, amToken]);
 
   const triggerAnalyze = useCallback(async () => {
     const url = ((answers['primary_contact']?.website_url as string | undefined) ?? '').trim();
@@ -339,7 +344,12 @@ export default function Wizard({
     try {
       const res = await fetch('/api/public/site-intelligence/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // Sprint 2 / #4: bypass signature so an AM can run the scan
+          // that pre-fills the form (server re-verifies; audit suppressed).
+          ...(isAmBypass && amToken ? { 'x-am-bypass': amToken } : {}),
+        },
         body: JSON.stringify({ token, websiteUrl: url }),
       });
       const body = await res.json();
@@ -367,7 +377,7 @@ export default function Wizard({
       setAnalyzeState('failed');
       setAnalyzeError(err instanceof Error ? err.message : 'Network error');
     }
-  }, [answers, token, pollAnalyzeStatus]);
+  }, [answers, token, pollAnalyzeStatus, isAmBypass, amToken]);
 
   const skipAnalyze = useCallback(() => {
     if (analyzePollTimerRef.current) {
@@ -440,9 +450,19 @@ export default function Wizard({
   }) => {
     const stepKey = 'access_checklist';
     const stepIndex = steps.findIndex((s) => s.key === stepKey);
+    // Use the functional updater's prev, not the closure's `answers`, so
+    // any access_checklist write between this render and the click (e.g.
+    // a late site-intelligence prefill) isn't clobbered.
+    setAnswers((prev) => ({ ...prev, [stepKey]: { ...(prev[stepKey] ?? {}), ...statuses } }));
     const merged = { ...(answers[stepKey] ?? {}), ...statuses };
-    setAnswers((prev) => ({ ...prev, [stepKey]: merged }));
     try {
+      // The two urgent-access statuses are the whole point of the wizard.
+      // Only flip the one-shot welcome flag once they're durably saved —
+      // otherwise a transient save failure would silently drop the
+      // answers AND suppress the wizard on the next load. On save failure
+      // we close the wizard for this visit but leave the flag unset, so
+      // the next load re-fires it (the intended recovery).
+      let saved = true;
       if (stepIndex >= 0) {
         const resp = await fetch('/api/public/onboarding/save-step', {
           method: 'POST',
@@ -450,16 +470,19 @@ export default function Wizard({
           body: JSON.stringify({ token, stepKey, stepIndex, answers: merged, completed: false }),
         });
         if (!resp.ok) {
+          saved = false;
           console.error('welcome wizard save-step failed', await resp.text().catch(() => ''));
         }
       }
-      const seen = await fetch('/api/public/onboarding/mark-welcome-seen', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token }),
-      });
-      if (!seen.ok) {
-        console.error('mark-welcome-seen failed', await seen.text().catch(() => ''));
+      if (saved) {
+        const seen = await fetch('/api/public/onboarding/mark-welcome-seen', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        });
+        if (!seen.ok) {
+          console.error('mark-welcome-seen failed', await seen.text().catch(() => ''));
+        }
       }
     } catch (err) {
       console.error('welcome wizard finish error', err);
@@ -471,7 +494,13 @@ export default function Wizard({
   useEffect(() => {
     // If we're going to show the P3 modal, skip the legacy green
     // interstitial entirely (it would just play behind the modal).
-    if (showP3Modal) {
+    if (showP3Modal || isAmBypass) {
+      // Sprint 2 / #4: under AM bypass, suppress BOTH the welcome wizard
+      // (gated above via showP3Modal) AND this legacy first-load greeting
+      // interstitial. Without this, a bypass open with the wizard
+      // suppressed falls through to getWelcomeMessage() and plays a
+      // full-screen "Hey {client}!" overlay at the AM — exactly the
+      // popup the matrix says must never render under bypass.
       setContentVisible(true);
       setShowWelcome(false);
       return;
@@ -863,7 +892,7 @@ export default function Wizard({
   if (isSubmitted) {
     const companyName = businessName || clientName || '';
     const amName = accountManager?.trim() || '';
-    return <ThankYou companyName={companyName} accountManagerName={amName} token={token} />;
+    return <ThankYou companyName={companyName} accountManagerName={amName} token={token} isAmBypass={isAmBypass} amToken={amToken} />;
   }
 
   // Render "Almost There" review step

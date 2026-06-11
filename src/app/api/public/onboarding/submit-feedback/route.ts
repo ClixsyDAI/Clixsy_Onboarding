@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceRoleClient } from '@/lib/supabase/server';
 import { getSessionByToken } from '@/lib/supabase/server';
 import { checkSessionGuard } from '@/lib/onboarding/session-guard';
+import { isAmBypassRequest } from '@/lib/onboarding/am-bypass';
 
 /**
  * POST /api/public/onboarding/submit-feedback
@@ -39,6 +40,14 @@ export async function POST(request: NextRequest) {
   const session = await getSessionByToken(token);
   if (!session) {
     return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+  }
+
+  // Sprint 2 / #4: under AM bypass, no-op with success. The star rating
+  // is client sentiment about THEIR onboarding — an AM filling the form
+  // must not write it (it would pollute feedback_rating) and the
+  // thank-you UI must not error. Mirror the mark-welcome-seen no-op.
+  if (isAmBypassRequest(session.id, request)) {
+    return NextResponse.json({ success: true, skipped: 'am_bypass' });
   }
 
   const guard = await checkSessionGuard(session);
