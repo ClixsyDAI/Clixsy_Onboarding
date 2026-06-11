@@ -71,7 +71,15 @@ export function verifyAmBypass(
  * was a per-route footgun. Server-only (reads NextRequest).
  */
 export function isAmBypassRequest(sessionId: string, request: NextRequest): boolean {
-  if (verifyAmBypass(sessionId, request.headers.get(AM_BYPASS_HEADER))) return true;
-  const param = new URL(request.url).searchParams.get(AM_BYPASS_PARAM);
-  return verifyAmBypass(sessionId, param);
+  try {
+    // Optional chaining + try/catch so a partial request (test harness
+    // mocks without .headers, or a relative request.url) can never throw
+    // — an unreadable signal just means "no bypass", never a 500.
+    const header = request.headers?.get?.(AM_BYPASS_HEADER) ?? null;
+    if (verifyAmBypass(sessionId, header)) return true;
+    const param = new URL(request.url).searchParams.get(AM_BYPASS_PARAM);
+    return verifyAmBypass(sessionId, param);
+  } catch {
+    return false;
+  }
 }

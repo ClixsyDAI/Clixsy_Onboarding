@@ -44,8 +44,7 @@ import {
   createServiceRoleClient,
   createAuditEvent,
 } from '@/lib/supabase/server';
-import { checkSessionGuard } from '@/lib/onboarding/session-guard';
-import { isAmBypassRequest } from '@/lib/onboarding/am-bypass';
+import { resolveSessionAccess } from '@/lib/onboarding/session-guard';
 
 // Same Vercel platform max as the admin route — see the comment in
 // src/app/api/admin/site-intelligence/analyze/route.ts for the
@@ -94,22 +93,20 @@ export async function POST(request: NextRequest) {
     if (!session) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 });
     }
-    const isAmBypass = isAmBypassRequest(session.id, request);
-    if (!isAmBypass) {
-      const guard = await checkSessionGuard(session);
-      if (guard.kind === 'locked') {
-        return NextResponse.json(
-          { error: 'Session is locked. Contact your Clixsy account manager.' },
-          { status: guard.lock === 'permanent' ? 423 : 429 }
-        );
-      }
-      if (guard.kind === 'needs_pin') {
-        return NextResponse.json(
-          { error: 'PIN verification required' },
-          { status: 401 }
-        );
-      }
+    const access = await resolveSessionAccess(session, request);
+    if (access.kind === 'locked') {
+      return NextResponse.json(
+        { error: 'Session is locked. Contact your Clixsy account manager.' },
+        { status: access.lock === 'permanent' ? 423 : 429 }
+      );
     }
+    if (access.kind === 'needs_pin') {
+      return NextResponse.json(
+        { error: 'PIN verification required' },
+        { status: 401 }
+      );
+    }
+    const isAmBypass = access.isAmBypass;
 
     const normalizedUrl = normalizeUrl(websiteUrl);
 

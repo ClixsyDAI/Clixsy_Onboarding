@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ACCESS_ITEMS } from '@/lib/onboarding/accessChecklist';
 import { ACCESS_STATUS_OPTIONS, TUTORIAL_VIDEOS } from './AccessChecklistStep';
+import { youTubeId } from '@/lib/onboarding/youtube';
 
 /**
  * Sprint 2 / #3: the welcome wizard. Replaces the two-step WelcomeModal
@@ -41,11 +42,6 @@ const STEP_TITLES = ['Welcome aboard', '2 things we need urgently', "You're all 
 
 const URGENT_KEYS = ['wordpress', 'gsc'] as const;
 type UrgentKey = (typeof URGENT_KEYS)[number];
-
-function videoIdFromUrl(url: string): string | null {
-  const m = url.match(/youtu\.be\/([a-zA-Z0-9_-]+)/) || url.match(/[?&]v=([a-zA-Z0-9_-]+)/);
-  return m ? m[1] : null;
-}
 
 /** Render whatWeNeed copy with the email styled as a code chip. */
 function WhatWeNeed({ text }: { text: string }) {
@@ -86,7 +82,7 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
           label: item?.label ?? key,
           whatWeNeed: item?.whatWeNeed ?? '',
           tutorialTitle: tutorial?.title ?? '',
-          videoId: tutorial ? videoIdFromUrl(tutorial.url) : null,
+          videoId: tutorial ? youTubeId(tutorial.url) : null,
         };
       }),
     [],

@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceRoleClient } from '@/lib/supabase/server';
 import { getSessionByToken } from '@/lib/supabase/server';
-import { checkSessionGuard } from '@/lib/onboarding/session-guard';
-import { isAmBypassRequest } from '@/lib/onboarding/am-bypass';
+import { resolveSessionAccess } from '@/lib/onboarding/session-guard';
 
 /**
  * POST /api/public/onboarding/submit-feedback
@@ -42,20 +41,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Session not found' }, { status: 404 });
   }
 
+  const access = await resolveSessionAccess(session, request);
+  if (access.kind === 'locked') {
+    return NextResponse.json({ error: 'Session is locked.' }, { status: access.lock === 'permanent' ? 423 : 429 });
+  }
+  if (access.kind === 'needs_pin') {
+    return NextResponse.json({ error: 'PIN verification required' }, { status: 401 });
+  }
   // Sprint 2 / #4: under AM bypass, no-op with success. The star rating
   // is client sentiment about THEIR onboarding — an AM filling the form
   // must not write it (it would pollute feedback_rating) and the
   // thank-you UI must not error. Mirror the mark-welcome-seen no-op.
-  if (isAmBypassRequest(session.id, request)) {
+  if (access.isAmBypass) {
     return NextResponse.json({ success: true, skipped: 'am_bypass' });
-  }
-
-  const guard = await checkSessionGuard(session);
-  if (guard.kind === 'locked') {
-    return NextResponse.json({ error: 'Session is locked.' }, { status: guard.lock === 'permanent' ? 423 : 429 });
-  }
-  if (guard.kind === 'needs_pin') {
-    return NextResponse.json({ error: 'PIN verification required' }, { status: 401 });
   }
 
   const supabase = createServiceRoleClient();

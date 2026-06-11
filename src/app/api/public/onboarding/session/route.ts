@@ -3,9 +3,8 @@ import { after } from 'next/server';
 import { getSessionByToken, getSessionAnswers, getSignedLogoUrl, createAuditEvent, createOpenEvent, getClientById } from '@/lib/supabase/server';
 import { getStepsForVersion } from '@/lib/onboarding/flow-version';
 import { getSiteIntelligenceSnapshots } from '@/lib/supabase/server';
-import { checkSessionGuard } from '@/lib/onboarding/session-guard';
+import { resolveSessionAccess } from '@/lib/onboarding/session-guard';
 import { capUserAgent, hashRequestIp } from '@/lib/onboarding/open-event-ip';
-import { verifyAmBypass, AM_BYPASS_PARAM } from '@/lib/onboarding/am-bypass';
 
 export async function GET(request: NextRequest) {
   try {
@@ -44,23 +43,14 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Sprint 2 / #4: AM bypass. A valid signature on the `am` query param
-    // authorises the caller as an account manager filling the form on the
-    // client's behalf — PIN entry is skipped and NO tracking fires below.
-    // Verified per-request against the session id; an invalid/absent
-    // signature falls through to the normal PIN gate.
-    const isAmBypass = verifyAmBypass(
-      session.id,
-      searchParams.get(AM_BYPASS_PARAM),
-    );
-
-    // Stage 7: PIN gate. Resolve whether the caller is authorised to see
-    // the full session. Locked sessions / unauthenticated sessions get a
-    // minimal payload — just enough for the page to render the right
-    // screen (PIN entry / "locked" message) without leaking answers.
-    const guard = isAmBypass
-      ? ({ kind: 'ok', pinSet: session.pin_hash !== null } as const)
-      : await checkSessionGuard(session);
+    // Stage 7 + Sprint 2 / #4: PIN gate, AM-bypass-aware. resolveSessionAccess
+    // applies the shared rule — a locked session is ALWAYS blocked (the
+    // bypass token skips the PIN, not the lock); needs_pin is waived only
+    // under a valid `am` signature. Locked / needs_pin get a minimal
+    // payload (just the client name for the gated screen) without leaking
+    // answers; `ok` carries the verified isAmBypass flag used to suppress
+    // the two tracking writes below.
+    const access = await resolveSessionAccess(session, request);
 
     // We still want to surface the client company name on the gated
     // screens because the PIN-entry page should show e.g. "Enter your
@@ -69,18 +59,18 @@ export async function GET(request: NextRequest) {
     const client = await getClientById(session.client_id);
     const clientName = client?.client_name || '';
 
-    if (guard.kind === 'locked') {
+    if (access.kind === 'locked') {
       return NextResponse.json(
         {
-          locked: guard.lock,
-          retryAfter: guard.retryAfter ?? null,
+          locked: access.lock,
+          retryAfter: access.retryAfter ?? null,
           client: { name: clientName },
         },
-        { status: guard.lock === 'permanent' ? 423 : 429 }
+        { status: access.lock === 'permanent' ? 423 : 429 }
       );
     }
 
-    if (guard.kind === 'needs_pin') {
+    if (access.kind === 'needs_pin') {
       return NextResponse.json(
         {
           needsPin: true,
@@ -90,7 +80,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // guard.kind === 'ok' — proceed with full payload.
+    // access.kind === 'ok' — proceed with full payload.
+    const isAmBypass = access.isAmBypass;
 
     // Get all answers for this session
     const answers = await getSessionAnswers(session.id);
@@ -175,7 +166,7 @@ export async function GET(request: NextRequest) {
         lastSavedAt: session.last_saved_at,
         submittedAt: session.submitted_at,
         // Stage 7: surface flags the client-side wizard uses to gate P3 + P4.
-        pinSet: guard.pinSet,
+        pinSet: access.pinSet,
         welcomeWizardSeen: (session as unknown as { welcome_wizard_seen?: boolean }).welcome_wizard_seen ?? false,
         // Sprint 2 / #4: informs the Wizard it's running in AM-bypass mode
         // (suppress popups, attach the bypass header to mutating calls).

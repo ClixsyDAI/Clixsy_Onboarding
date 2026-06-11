@@ -9,8 +9,8 @@ import {
   type OnboardingAnswer,
 } from '@/lib/supabase/server';
 import { getStepsForVersion } from '@/lib/onboarding/flow-version';
-import { checkSessionGuard as realCheckSessionGuard, type GuardResult, type SessionRow } from '@/lib/onboarding/session-guard';
-import { verifyAmBypass, AM_BYPASS_HEADER } from '@/lib/onboarding/am-bypass';
+import { checkSessionGuard as realCheckSessionGuard, decideAccess, type GuardResult, type SessionRow } from '@/lib/onboarding/session-guard';
+import { isAmBypassRequest } from '@/lib/onboarding/am-bypass';
 
 // ---------------------------------------------------------------------------
 // Test-mode shim
@@ -122,27 +122,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Sprint 2 / #4: AM bypass — same per-request signature verification
-    // as save-step. Submission itself proceeds normally (real data); only
-    // the audit event below is suppressed.
-    const isAmBypass = verifyAmBypass(
-      session.id,
-      request.headers.get(AM_BYPASS_HEADER),
+    // Stage 7 + Sprint 2 / #4: PIN gate, AM-bypass-aware. Uses decideAccess
+    // with the (possibly test-shimmed) checkSessionGuard so the same
+    // lock-always / PIN-skippable rule applies without bypassing the
+    // submit route's in-memory test guard. Submission writes real data;
+    // only the session_submitted audit below is suppressed under bypass.
+    const access = decideAccess(
+      await checkSessionGuard(session),
+      isAmBypassRequest(session.id, request),
     );
-
-    // Stage 7: PIN gate — same protection as save-step.
-    if (!isAmBypass) {
-      const guard = await checkSessionGuard(session);
-      if (guard.kind === 'locked') {
-        return NextResponse.json(
-          { error: 'Session is locked. Contact your Clixsy account manager.' },
-          { status: guard.lock === 'permanent' ? 423 : 429 }
-        );
-      }
-      if (guard.kind === 'needs_pin') {
-        return NextResponse.json({ error: 'PIN verification required' }, { status: 401 });
-      }
+    if (access.kind === 'locked') {
+      return NextResponse.json(
+        { error: 'Session is locked. Contact your Clixsy account manager.' },
+        { status: access.lock === 'permanent' ? 423 : 429 }
+      );
     }
+    if (access.kind === 'needs_pin') {
+      return NextResponse.json({ error: 'PIN verification required' }, { status: 401 });
+    }
+    const isAmBypass = access.isAmBypass;
 
     // Check if already submitted
     if (session.status === 'submitted') {
