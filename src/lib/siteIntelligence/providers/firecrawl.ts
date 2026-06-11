@@ -8,6 +8,8 @@ import {
   sanitiseLocations,
   sanitiseBusinessSummary,
   passesSummaryHygiene,
+  passesProseShape,
+  passesServiceHygiene,
 } from '../extraction-sanitisers';
 import { parse as parseHtml } from 'node-html-parser';
 
@@ -204,23 +206,38 @@ function parseMarkdownForInsights(
   // the "WHAT WE FOUND" panel as e.g. `![](https://static.wixstatic.com/…)`.
   // Reject paragraphs that are essentially URL/image salads, and strip any
   // remaining markdown image / raw URL noise from what's left.
-  const paragraphs = allContent.split('\n\n').filter((p) =>
-    p.length > 50 && p.length < 500 &&
-    !p.startsWith('#') && !p.startsWith('[') && !p.startsWith('|') &&
-    !p.startsWith('!') &&                    // raw markdown image
-    !p.match(/^\s*[-*]/) &&
-    !/^(?:!?\[[^\]]*\]\([^)]+\)\s*)+$/.test(p.trim()) // image+link salad
-  );
-  if (paragraphs.length > 0) {
-    businessSummary = cleanProseForDisplay(paragraphs[0]);
-    if (businessSummary.length > 300) {
-      businessSummary = businessSummary.slice(0, 297) + '...';
+  //
+  // p4-1b: two further fixes from the the4x4store.co.za scan, where a
+  // Shopify product-grid badge strip ("\- \| / Save up to % Save % …
+  // Sold out In stock") shipped as the business description:
+  //   1. The badge strip arrives as ESCAPED markdown — the leading
+  //      backslash defeated every startsWith() check below. Unescape
+  //      before the structural checks.
+  //   2. Taking paragraphs[0] meant one junk paragraph ended the search.
+  //      Iterate until a candidate passes prose shape; a page whose
+  //      first paragraph is page furniture still yields its real intro.
+  const paragraphs = allContent.split('\n\n');
+  for (const raw of paragraphs) {
+    const unescaped = raw.replace(/\\([\\`*_{}[\]()#+\-.!|])/g, '$1').trim();
+    if (unescaped.length < 50 || unescaped.length > 500) continue;
+    if (
+      unescaped.startsWith('#') || unescaped.startsWith('[') ||
+      unescaped.startsWith('|') || unescaped.startsWith('!') ||
+      /^\s*[-*]/.test(unescaped) ||
+      /^(?:!?\[[^\]]*\]\([^)]+\)\s*)+$/.test(unescaped) // image+link salad
+    ) {
+      continue;
     }
-    // If after cleaning we're left with too little real prose, drop the
-    // summary entirely rather than ship a stub.
-    if (businessSummary.replace(/\s/g, '').length < 30) {
-      businessSummary = undefined;
+    let candidate = cleanProseForDisplay(unescaped);
+    if (candidate.length > 300) {
+      candidate = candidate.slice(0, 297) + '...';
     }
+    // Too little real prose after cleaning, or badge/nav shape — try
+    // the next paragraph rather than ship a stub.
+    if (candidate.replace(/\s/g, '').length < 30) continue;
+    if (!passesProseShape(candidate)) continue;
+    businessSummary = candidate;
+    break;
   }
 
   return { services, locations, phone, email, address, businessSummary };
@@ -423,22 +440,83 @@ business-license boilerplate. Each location is 1-4 words. If the only
 candidates are fragments, return an empty array — better empty than
 junk.
 
-Also include: primary_services, secondary_services, phone, email,
-address, brand_colors, fonts, and cms_platform per the schema.`,
+For primary_services / secondary_services (p4-1b): list what the
+business DOES or SELLS as 1-5 word noun phrases. If the site is an
+online store, these are its main product categories. NEVER include
+promotional text, sale badges, discount percentages, prices, or stock
+labels ("Save up to", "Sale", "Sold out", "In stock") — those are page
+furniture, not services. The same applies to business_summary:
+promotional sale badges and product-card labels are NOT a business
+summary.
+
+Also include: phone, email, address, brand_colors, fonts, and
+cms_platform per the schema.`,
+        // p4-1b: per-field guidance lives on the schema properties too
+        // (Firecrawl feeds property descriptions to its extraction LLM).
+        // Belt + braces with the prompt above: the prompt carries the
+        // worked examples, the descriptions carry the per-field rules —
+        // what the field MEANS, WHERE to look, and what's PLAUSIBLE.
         schema: {
           type: 'object',
           properties: {
-            business_name: { type: 'string' },
-            business_summary: { type: 'string' },
-            primary_services: { type: 'array', items: { type: 'string' } },
-            secondary_services: { type: 'array', items: { type: 'string' } },
-            locations_cities: { type: 'array', items: { type: 'string' } },
-            phone: { type: 'string' },
-            email: { type: 'string' },
-            address: { type: 'string' },
-            brand_colors: { type: 'array', items: { type: 'string' } },
-            fonts: { type: 'array', items: { type: 'string' } },
-            cms_platform: { type: 'string' },
+            business_name: {
+              type: 'string',
+              description:
+                'The short brand name (1-4 words) exactly as it appears in the site logo, footer copyright, or About page header. NEVER the page title, meta title, or H1 — those are SEO copy.',
+            },
+            business_summary: {
+              type: 'string',
+              description:
+                'A 1-2 sentence factual prose summary of what this business does, sourced from the homepage hero, About page, or services page. NEVER from promo/sale badges, discount or stock labels ("Save up to", "Sold out", "In stock"), prices, footer text, terms of service, or consent text. Empty string if no clean summary exists.',
+            },
+            primary_services: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'The 3-8 main services the business offers — or, for an online store, its main product categories. Each entry a 1-5 word noun phrase (e.g. "Personal Injury Law", "4x4 Suspension Kits"). Never prices, percentages, promo text, or stock labels.',
+            },
+            secondary_services: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Additional or less prominent services/product categories, same rules as primary_services.',
+            },
+            locations_cities: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Geographic places the business serves: city, region, county, state, or country names only, 1-4 words each. Never sentence fragments or license/compliance boilerplate.',
+            },
+            phone: {
+              type: 'string',
+              description:
+                "The business's main public phone number, from the site header, contact page, or footer.",
+            },
+            email: {
+              type: 'string',
+              description:
+                "The business's public contact email, from the contact page or footer.",
+            },
+            address: {
+              type: 'string',
+              description:
+                "The business's physical street address, from the contact page, footer, or schema markup.",
+            },
+            brand_colors: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Primary brand colors as hex codes.',
+            },
+            fonts: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Font family names the site uses.',
+            },
+            cms_platform: {
+              type: 'string',
+              description:
+                'The CMS or platform the site runs on (e.g. WordPress, Shopify), if detectable.',
+            },
           },
           required: ['business_name'],
         },
@@ -462,16 +540,20 @@ address, brand_colors, fonts, and cms_platform per the schema.`,
         }
         if (d.cms_platform && typeof d.cms_platform === 'string') cmsDetected = d.cms_platform;
 
+        // p4-1b: per-ITEM hygiene — junk entries (badge text, prices,
+        // percentages) are dropped individually; the rest of the scan
+        // is untouched, so a sparse-but-real site can't flip to failed
+        // because of this filter.
         if (Array.isArray(d.primary_services)) {
           for (const svc of d.primary_services) {
-            if (typeof svc === 'string' && svc.trim()) {
+            if (typeof svc === 'string' && svc.trim() && passesServiceHygiene(svc)) {
               services.push({ name: svc.trim(), confidence: 0.85, evidence: [{ source_url: websiteUrl, excerpt: 'Primary service from website' }] });
             }
           }
         }
         if (Array.isArray(d.secondary_services)) {
           for (const svc of d.secondary_services) {
-            if (typeof svc === 'string' && svc.trim()) {
+            if (typeof svc === 'string' && svc.trim() && passesServiceHygiene(svc)) {
               services.push({ name: svc.trim(), confidence: 0.60, evidence: [{ source_url: websiteUrl, excerpt: 'Secondary service from website' }] });
             }
           }
@@ -534,8 +616,11 @@ address, brand_colors, fonts, and cms_platform per the schema.`,
         const parsed = parseMarkdownForInsights(allContent, pageTitle, websiteUrl);
 
         if (services.length === 0 && parsed.services.length > 0) {
-          services = parsed.services;
-          console.log(`[Firecrawl] Parsed ${services.length} services from markdown`);
+          // p4-1b: same per-item hygiene as the LLM path — the markdown
+          // parser's own checks are structural (length, lead words) and
+          // let promo/badge text through.
+          services = parsed.services.filter((s) => passesServiceHygiene(s.name));
+          console.log(`[Firecrawl] Parsed ${parsed.services.length} services from markdown (${services.length} after hygiene)`);
         }
         if (locations.length === 0 && parsed.locations.length > 0) {
           // Stage 11 / Fix 3: same hygiene filter for the markdown

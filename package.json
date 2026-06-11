@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:submit": "npx tsx src/app/api/public/onboarding/submit/route.test.ts"
+    "test:submit": "npx tsx src/app/api/public/onboarding/submit/route.test.ts",
+    "test:sanitisers": "npx tsx src/lib/siteIntelligence/extraction-sanitisers.test.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.8.0",
