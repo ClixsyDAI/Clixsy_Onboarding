@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServiceRoleClient } from '@/lib/supabase/server';
 import { verifySessionCookie, PIN_COOKIE_NAME } from '@/lib/onboarding/pin-cookie';
+import { verifyAmBypass, AM_BYPASS_HEADER } from '@/lib/onboarding/am-bypass';
 
 /**
  * POST /api/public/onboarding/mark-welcome-seen
@@ -37,6 +38,15 @@ export async function POST(request: NextRequest) {
     .single();
   if (sessionErr || !session) {
     return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+  }
+
+  // Sprint 2 / #4: second layer of the double-gate. Under AM bypass the
+  // wizard never renders, so this endpoint should never be called — but
+  // if it is (manual call, future regression), NO-OP with 200 instead of
+  // flipping the flag. An AM preview must never consume the client's
+  // first-time welcome experience.
+  if (verifyAmBypass(session.id, request.headers.get(AM_BYPASS_HEADER))) {
+    return NextResponse.json({ success: true, skipped: 'am_bypass' });
   }
 
   // Authorise: legacy rows (no PIN) bypass; otherwise require cookie.

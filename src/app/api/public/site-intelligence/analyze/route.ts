@@ -38,13 +38,16 @@ import {
   runSiteAnalysis,
   linkSiteIntelligenceToSession,
   getSiteIntelligence,
+  findReusableScan,
+  attachPendingScanToSession,
 } from '@/lib/siteIntelligence/analyze';
 import {
   getSessionByToken,
   createServiceRoleClient,
   createAuditEvent,
 } from '@/lib/supabase/server';
-import { checkSessionGuard } from '@/lib/onboarding/session-guard';
+import { resolveSessionAccess } from '@/lib/onboarding/session-guard';
+import { isLikelyUrl } from '@/lib/onboarding/url-shape';
 
 // Same Vercel platform max as the admin route — see the comment in
 // src/app/api/admin/site-intelligence/analyze/route.ts for the
@@ -83,46 +86,56 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    // URL-shape guard: reject junk before spending a scan. A real
+    // website always has a dotted host; "N/A"/"tbd"/bare words don't.
+    if (!isLikelyUrl(websiteUrl)) {
+      return NextResponse.json(
+        { error: 'Please enter a valid website URL (e.g. example.com).' },
+        { status: 400 }
+      );
+    }
 
-    // Auth: session lookup + PIN guard.
+    // Auth: session lookup + PIN guard. Sprint 2 / #4: a valid AM-bypass
+    // signature skips the PIN gate — running the scan to pre-fill the
+    // form is the core reason the AM link exists. The analyze-requested
+    // audit below is suppressed under bypass so the AM's prep doesn't
+    // register as client activity (zero-tracking invariant).
     const session = await getSessionByToken(token);
     if (!session) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 });
     }
-    const guard = await checkSessionGuard(session);
-    if (guard.kind === 'locked') {
+    const access = await resolveSessionAccess(session, request);
+    if (access.kind === 'locked') {
       return NextResponse.json(
         { error: 'Session is locked. Contact your Clixsy account manager.' },
-        { status: guard.lock === 'permanent' ? 423 : 429 }
+        { status: access.lock === 'permanent' ? 423 : 429 }
       );
     }
-    if (guard.kind === 'needs_pin') {
+    if (access.kind === 'needs_pin') {
       return NextResponse.json(
         { error: 'PIN verification required' },
         { status: 401 }
       );
     }
+    const isAmBypass = access.isAmBypass;
 
     const normalizedUrl = normalizeUrl(websiteUrl);
 
-    // Idempotency: if the session is already linked to a completed
-    // analysis for the same URL, return that record without
-    // re-running. Prevents wasted Firecrawl / PageSpeed cost when
-    // the client clicks "Analyze my site" twice for the same URL.
-    if (session.site_intelligence_id) {
-      const existing = await getSiteIntelligence(session.site_intelligence_id);
-      if (
-        existing &&
-        existing.status === 'completed' &&
-        normalizeUrl(existing.website_url) === normalizedUrl
-      ) {
-        return NextResponse.json({
-          success: true,
-          recordId: existing.id,
-          status: existing.status,
-          reused: true,
-        });
-      }
+    // Idempotency / dedup: if the session already has a scan for the
+    // same URL that's reusable — completed (return it) OR still in-flight
+    // (queued/running, attach/resume) — don't pay for a second one. This
+    // is what stops a GHL-webhook auto-scan and a later AM "Analyze my
+    // site" click from double-charging: the AM's click finds the
+    // in-flight auto-scan and the wizard just resumes polling it.
+    const priorLinkedId = session.site_intelligence_id ?? null;
+    const reuse = await findReusableScan(priorLinkedId, websiteUrl);
+    if (reuse) {
+      return NextResponse.json({
+        success: true,
+        recordId: reuse.recordId,
+        status: reuse.status,
+        reused: true,
+      });
     }
 
     // Rate limit: count prior analyze-requested audit events for
@@ -152,20 +165,34 @@ export async function POST(request: NextRequest) {
     // limit even if the analyzer later fails. Audit payload notes
     // the via-channel so a future analytics query can distinguish
     // admin /new triggers from public wizard triggers.
-    await createAuditEvent(
-      session.id,
-      'site_intelligence_analyze_requested',
-      {
-        website_url: normalizedUrl,
-        via: 'public_wizard_step_1',
-      }
-    );
+    // Sprint 2 / #4: suppressed under AM bypass — this is a tracking
+    // write (and the rate-limit counter), so an AM-run scan neither
+    // logs as client activity nor counts against the client's hourly
+    // limit. The rate-limit CHECK above still runs (protects against a
+    // real-client flood); AM runs simply aren't recorded.
+    if (!isAmBypass) {
+      await createAuditEvent(
+        session.id,
+        'site_intelligence_analyze_requested',
+        {
+          website_url: normalizedUrl,
+          via: 'public_wizard_step_1',
+        }
+      );
+    }
 
     // Create the record (status='queued'), kick the analyzer off
     // via after(), return immediately. The wizard polls
     // /api/public/site-intelligence/status to know when the work
     // is done.
     const recordId = await createSiteIntelligenceRecord(websiteUrl);
+
+    // Make the in-flight scan discoverable so a reload (or an AM clicking
+    // Analyze while it runs) resumes/dedups it instead of starting a
+    // duplicate. Sets the FK only; snapshots are written on completion by
+    // linkSiteIntelligenceToSession. Skips when a still-good completed
+    // record is already linked (bug-#2 invariant — see the helper).
+    await attachPendingScanToSession(session.id, recordId, priorLinkedId);
 
     after(async () => {
       try {

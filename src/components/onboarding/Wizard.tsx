@@ -8,6 +8,7 @@ import StepTransition from './StepTransition';
 import AccessChecklistStep from './AccessChecklistStep';
 import WebsiteSnapshot from './WebsiteSnapshot';
 import WelcomeModal from './WelcomeModal';
+import WelcomeAccessWizard from './WelcomeAccessWizard';
 import AnalyzePanel, { type AnalyzeState } from './AnalyzePanel';
 import { clampInitialStep } from '@/lib/onboarding/wizard-state';
 import ThankYou from './ThankYou';
@@ -78,6 +79,30 @@ interface WizardProps {
    */
   vertical?: VerticalId;
   siteIntelligence?: SiteIntelligenceData | null;
+  /**
+   * Sprint 2 / #4: true when the session was opened through a verified
+   * AM-bypass link. Suppresses the welcome modal/wizard (an AM preparing
+   * the form must not consume the client's first-time UX) and causes
+   * mutating calls to attach the bypass header. Server routes re-verify
+   * the signature on every request — this prop is presentation-only.
+   */
+  isAmBypass?: boolean;
+  /** The raw bypass signature from the URL, sent as the x-am-bypass header. */
+  amToken?: string | null;
+  /**
+   * Auto-prefill resume: a site-intelligence scan linked to this session
+   * that was still in-flight (queued/running) or had failed at load time.
+   * Set when the GHL webhook kicked off the scan and the client/AM opened
+   * the form before it finished. The wizard resumes polling it (so the
+   * prefill lands without a manual click) or shows the retry affordance
+   * (failed). Null when there's no scan, or a completed one (whose data
+   * arrives via `siteIntelligence`).
+   */
+  pendingSiteIntelligence?: {
+    recordId: string;
+    status: string;
+    error: string | null;
+  } | null;
 }
 
 export default function Wizard({
@@ -92,6 +117,9 @@ export default function Wizard({
   accountManager = null,
   vertical = 'law_firm',
   siteIntelligence: initialSiteIntelligence = null,
+  isAmBypass = false,
+  amToken = null,
+  pendingSiteIntelligence = null,
 }: WizardProps) {
   // Phase 3 followup: siteIntelligence is now a state value, not just a
   // prop. Initial value comes from the server-side load (admin-flow
@@ -272,7 +300,12 @@ export default function Wizard({
       try {
         const res = await fetch('/api/public/site-intelligence/status', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            // Sprint 2 / #4: bypass signature so the AM's poll isn't
+            // PIN-gated (server re-verifies).
+            ...(isAmBypass && amToken ? { 'x-am-bypass': amToken } : {}),
+          },
           // Pass recordId on every tick so the endpoint reads the
           // analysis we triggered, not whatever's currently linked
           // to the session (which may be a stale prior record).
@@ -308,7 +341,7 @@ export default function Wizard({
       }
     };
     tick();
-  }, [token]);
+  }, [token, isAmBypass, amToken]);
 
   const triggerAnalyze = useCallback(async () => {
     const url = ((answers['primary_contact']?.website_url as string | undefined) ?? '').trim();
@@ -326,7 +359,12 @@ export default function Wizard({
     try {
       const res = await fetch('/api/public/site-intelligence/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // Sprint 2 / #4: bypass signature so an AM can run the scan
+          // that pre-fills the form (server re-verifies; audit suppressed).
+          ...(isAmBypass && amToken ? { 'x-am-bypass': amToken } : {}),
+        },
         body: JSON.stringify({ token, websiteUrl: url }),
       });
       const body = await res.json();
@@ -354,7 +392,7 @@ export default function Wizard({
       setAnalyzeState('failed');
       setAnalyzeError(err instanceof Error ? err.message : 'Network error');
     }
-  }, [answers, token, pollAnalyzeStatus]);
+  }, [answers, token, pollAnalyzeStatus, isAmBypass, amToken]);
 
   const skipAnalyze = useCallback(() => {
     if (analyzePollTimerRef.current) {
@@ -389,6 +427,41 @@ export default function Wizard({
     }
   }, [answers, analyzeState]);
 
+  // Auto-prefill resume (#1, automatic path): if a scan linked to this
+  // session was still in-flight when the page loaded — e.g. the GHL
+  // webhook kicked it off and the client/AM opened the form before it
+  // finished — resume polling so the prefill applies the moment it lands,
+  // instead of showing the idle "Analyze my site" button. A linked-but-
+  // FAILED scan surfaces the retry affordance with its error.
+  //
+  // Runs once: the ref guard makes React's dev double-invoke (and the
+  // analyzeState dep below) idempotent so we never start two poll loops.
+  // Only acts from the 'idle' initial state — a session that loaded with
+  // a completed analysis starts in 'completed' and is left untouched.
+  const resumeAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (resumeAttemptedRef.current) return;
+    if (!pendingSiteIntelligence) return;
+    if (analyzeState !== 'idle') return;
+    resumeAttemptedRef.current = true;
+
+    const { recordId, status, error } = pendingSiteIntelligence;
+    if (status === 'queued' || status === 'running') {
+      setAnalyzeState('analyzing');
+      setAnalyzeError(null);
+      // Reset the client-side timeout window to "now" — the 90s budget is
+      // for how long WE poll, not how long the scan has already run. If a
+      // deep site outlives it, the panel's timed_out → Retry re-enters
+      // analyze, which dedups onto this same in-flight record (no new
+      // scan) and resumes polling.
+      analyzeStartedAtRef.current = Date.now();
+      pollAnalyzeStatus(recordId);
+    } else if (status === 'failed') {
+      setAnalyzeState('failed');
+      setAnalyzeError(error ?? 'We could not analyze your website.');
+    }
+  }, [pendingSiteIntelligence, analyzeState, pollAnalyzeStatus]);
+
   // P4 (Stage 7): once the P3 modal has been dismissed, every subsequent
   // visit is a "returning" visit by definition. The previous heuristic
   // (initialStep > 0 || initialAnswers.length > 0) failed for users who
@@ -405,13 +478,79 @@ export default function Wizard({
   // truly only ever fires once per session — surviving cleared cookies.
   // Local `welcomeModalOpen` lets the user dismiss within this render
   // before the server flag round-trip completes.
-  const [welcomeModalOpen, setWelcomeModalOpen] = useState(!welcomeWizardSeen && sessionStatus !== 'submitted');
+  // Sprint 2 / #4: !isAmBypass — the welcome experience belongs to the
+  // client; an AM opening via bypass link must neither see it nor (via
+  // the dismiss round-trip) consume it. Second layer: the
+  // mark-welcome-seen endpoint independently no-ops on a bypass header.
+  const [welcomeModalOpen, setWelcomeModalOpen] = useState(
+    !welcomeWizardSeen && sessionStatus !== 'submitted' && !isAmBypass,
+  );
   const showP3Modal = welcomeModalOpen;
+
+  // Sprint 2 / #3: finish handler for the v2 WelcomeAccessWizard. The
+  // wizard's two status selections are REAL form data — merged into the
+  // access_checklist step (local state + persisted via save-step,
+  // completed=false so the step still needs a real visit) — then the
+  // welcome flag flips server-side and the wizard closes. Persistence
+  // failures are logged but never trap the user in the modal: the next
+  // load re-fires the wizard (flag unset), which is the right recovery.
+  const handleWelcomeWizardFinish = async (statuses: {
+    wordpress_access_status: string;
+    gsc_access_status: string;
+  }) => {
+    const stepKey = 'access_checklist';
+    const stepIndex = steps.findIndex((s) => s.key === stepKey);
+    // Use the functional updater's prev, not the closure's `answers`, so
+    // any access_checklist write between this render and the click (e.g.
+    // a late site-intelligence prefill) isn't clobbered.
+    setAnswers((prev) => ({ ...prev, [stepKey]: { ...(prev[stepKey] ?? {}), ...statuses } }));
+    const merged = { ...(answers[stepKey] ?? {}), ...statuses };
+    try {
+      // The two urgent-access statuses are the whole point of the wizard.
+      // Only flip the one-shot welcome flag once they're durably saved —
+      // otherwise a transient save failure would silently drop the
+      // answers AND suppress the wizard on the next load. On save failure
+      // we close the wizard for this visit but leave the flag unset, so
+      // the next load re-fires it (the intended recovery).
+      let saved = true;
+      if (stepIndex >= 0) {
+        const resp = await fetch('/api/public/onboarding/save-step', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, stepKey, stepIndex, answers: merged, completed: false }),
+        });
+        if (!resp.ok) {
+          saved = false;
+          console.error('welcome wizard save-step failed', await resp.text().catch(() => ''));
+        }
+      }
+      if (saved) {
+        const seen = await fetch('/api/public/onboarding/mark-welcome-seen', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        });
+        if (!seen.ok) {
+          console.error('mark-welcome-seen failed', await seen.text().catch(() => ''));
+        }
+      }
+    } catch (err) {
+      console.error('welcome wizard finish error', err);
+    } finally {
+      setWelcomeModalOpen(false);
+    }
+  };
 
   useEffect(() => {
     // If we're going to show the P3 modal, skip the legacy green
     // interstitial entirely (it would just play behind the modal).
-    if (showP3Modal) {
+    if (showP3Modal || isAmBypass) {
+      // Sprint 2 / #4: under AM bypass, suppress BOTH the welcome wizard
+      // (gated above via showP3Modal) AND this legacy first-load greeting
+      // interstitial. Without this, a bypass open with the wizard
+      // suppressed falls through to getWelcomeMessage() and plays a
+      // full-screen "Hey {client}!" overlay at the AM — exactly the
+      // popup the matrix says must never render under bypass.
       setContentVisible(true);
       setShowWelcome(false);
       return;
@@ -488,7 +627,11 @@ export default function Wizard({
     try {
       const response = await fetch('/api/public/onboarding/save-step', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // Sprint 2 / #4: bypass signature, server-verified per request.
+          ...(isAmBypass && amToken ? { 'x-am-bypass': amToken } : {}),
+        },
         body: JSON.stringify({
           token,
           stepKey: currentStep.key,
@@ -654,7 +797,11 @@ export default function Wizard({
     try {
       const response = await fetch('/api/public/onboarding/submit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // Sprint 2 / #4: bypass signature, server-verified per request.
+          ...(isAmBypass && amToken ? { 'x-am-bypass': amToken } : {}),
+        },
         body: JSON.stringify({ token }),
       });
 
@@ -795,7 +942,7 @@ export default function Wizard({
   if (isSubmitted) {
     const companyName = businessName || clientName || '';
     const amName = accountManager?.trim() || '';
-    return <ThankYou companyName={companyName} accountManagerName={amName} token={token} />;
+    return <ThankYou companyName={companyName} accountManagerName={amName} token={token} isAmBypass={isAmBypass} amToken={amToken} />;
   }
 
   // Render "Almost There" review step
@@ -876,15 +1023,27 @@ export default function Wizard({
 
   return (
     <>
-      {/* P3 (Stage 7): first-login welcome modal. Mounted before the
-          step interstitial so it sits on top of any in-flight transition
-          and the user always sees the welcome FIRST on a fresh session. */}
+      {/* P3 (Stage 7) / Sprint 2 (#3): first-login welcome experience.
+          Mounted before the step interstitial so it sits on top of any
+          in-flight transition and the user always sees the welcome FIRST
+          on a fresh session. v2 sessions get the three-step
+          WelcomeAccessWizard (welcome → urgent access → confirmation);
+          v1 sessions keep the legacy two-step WelcomeModal because the
+          wizard's status fields write to the v2 access_checklist step,
+          which doesn't exist in the v1 flow. */}
       {showP3Modal && (
-        <WelcomeModal
-          companyName={clientName}
-          token={token}
-          onDismiss={() => setWelcomeModalOpen(false)}
-        />
+        flowVersion === 'v2' ? (
+          <WelcomeAccessWizard
+            companyName={clientName}
+            onFinish={handleWelcomeWizardFinish}
+          />
+        ) : (
+          <WelcomeModal
+            companyName={clientName}
+            token={token}
+            onDismiss={() => setWelcomeModalOpen(false)}
+          />
+        )
       )}
 
       {/* Step Transition Interstitial */}

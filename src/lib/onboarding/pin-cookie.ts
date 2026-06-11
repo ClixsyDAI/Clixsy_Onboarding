@@ -32,7 +32,7 @@ const COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 days
  * set PIN_COOKIE_SECRET explicitly to allow future rotation independent
  * of the Supabase key.
  */
-function getCookieSecret(): string {
+export function getCookieSecret(): string {
   const explicit = process.env.PIN_COOKIE_SECRET;
   if (explicit && explicit.length >= 32) return explicit;
   const fallback = process.env.SUPABASE_SERVICE_ROLE_KEY;

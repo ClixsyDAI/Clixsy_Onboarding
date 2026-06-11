@@ -21,6 +21,98 @@ function normalizeUrl(url: string): string {
   return url;
 }
 
+/**
+ * Canonical form for idempotency comparison: scheme-prefixed, trailing
+ * slashes stripped, lowercased. This is the key both analyze routes use
+ * to decide whether an existing scan covers the same URL — it must match
+ * on both sides regardless of how the caller cased or slash-terminated
+ * the input. (The stored `website_url` keeps its original case via
+ * normalizeUrl; this is only for comparison, never for storage.)
+ */
+export function canonicalUrl(url: string): string {
+  return normalizeUrl(url.trim()).replace(/\/+$/, '').toLowerCase();
+}
+
+const REUSABLE_STATUSES: ReadonlySet<string> = new Set([
+  'completed',
+  'queued',
+  'running',
+]);
+
+/**
+ * Dedup helper shared by the public + admin analyze routes. Given the
+ * record currently linked to a session (its `site_intelligence_id`) and
+ * the URL the caller wants to analyze, decide whether that linked record
+ * can be REUSED instead of paying for a fresh scan.
+ *
+ * Reusable when the linked record covers the same canonical URL AND is
+ * either completed (return it) or still in-flight — queued/running —
+ * (attach/resume rather than start a duplicate). A terminal `failed`
+ * record is NOT reusable: it should be retried with a new record.
+ *
+ * Returns null when there's nothing safe to reuse (no link, different
+ * URL, missing record, or failed) so the caller starts a new scan.
+ */
+export async function findReusableScan(
+  linkedRecordId: string | null | undefined,
+  websiteUrl: string,
+): Promise<{ recordId: string; status: SiteIntelligenceRecord['status'] } | null> {
+  if (!linkedRecordId) return null;
+  const existing = await getSiteIntelligence(linkedRecordId);
+  if (!existing) return null;
+  if (!REUSABLE_STATUSES.has(existing.status)) return null;
+  if (canonicalUrl(existing.website_url) !== canonicalUrl(websiteUrl)) return null;
+  return { recordId: existing.id, status: existing.status };
+}
+
+/** Resolve a session's currently-linked site-intelligence record id. */
+export async function getSessionScanLink(
+  sessionId: string,
+): Promise<string | null> {
+  const supabase = createServiceRoleClient();
+  const { data } = await supabase
+    .from('onboarding_sessions')
+    .select('site_intelligence_id')
+    .eq('id', sessionId)
+    .single();
+  return data?.site_intelligence_id ?? null;
+}
+
+/**
+ * Eagerly point a session at an in-flight scan record so a reload (or a
+ * second analyze click) can DISCOVER it and resume/dedup instead of
+ * starting a duplicate. Unlike linkSiteIntelligenceToSession, this sets
+ * ONLY the FK — no snapshots — because the record isn't completed yet.
+ *
+ * The bug-#2 invariant is preserved: we never clobber a still-good
+ * COMPLETED link. We attach only when the prior link is empty or points
+ * at a non-completed (queued/running/failed) record — i.e. there is no
+ * good prefill data to lose. When the prior link is completed, we skip
+ * (the new scan runs unlinked and link-on-completion swaps it in only if
+ * it succeeds, exactly as the re-analyze path did before).
+ */
+export async function attachPendingScanToSession(
+  sessionId: string,
+  recordId: string,
+  priorLinkedId: string | null | undefined,
+): Promise<void> {
+  if (priorLinkedId) {
+    const prior = await getSiteIntelligence(priorLinkedId);
+    if (prior && prior.status === 'completed') return; // preserve good data
+  }
+  const supabase = createServiceRoleClient();
+  const { error } = await supabase
+    .from('onboarding_sessions')
+    .update({ site_intelligence_id: recordId })
+    .eq('id', sessionId);
+  if (error) {
+    // Non-fatal: dedup/resume degrades to the prior behaviour (the
+    // wizard polls by the recordId returned to the caller, and a reload
+    // mid-scan falls back to the manual button). Don't fail the analyze.
+    console.warn('[attachPendingScanToSession] failed to attach FK:', error.message);
+  }
+}
+
 function mergeProviderResults(results: ProviderResult[]): {
   branding: Branding;
   insights: SiteInsights;

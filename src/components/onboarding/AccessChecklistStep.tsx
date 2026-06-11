@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { ACCESS_ITEMS } from '@/lib/onboarding/accessChecklist';
+import { youTubeEmbedUrl } from '@/lib/onboarding/youtube';
 
 interface AccessChecklistStepProps {
   values: Record<string, unknown>;
@@ -9,7 +10,9 @@ interface AccessChecklistStepProps {
   onChange: (name: string, value: unknown) => void;
 }
 
-const ACCESS_STATUS_OPTIONS = [
+// Exported (Sprint 2 / #3): the WelcomeAccessWizard's status dropdowns
+// must mirror these values exactly — same const, no drift possible.
+export const ACCESS_STATUS_OPTIONS = [
   { value: 'done', label: 'Done — access granted' },
   { value: 'later', label: "I'll do this later" },
   { value: 'need_help', label: 'I need help' },
@@ -23,7 +26,9 @@ const YOUTUBE_STATUS_OPTIONS = [
 ];
 
 // Tutorial videos for each access service (from v1 steps 20-25)
-const TUTORIAL_VIDEOS: Record<string, { url: string; title: string }> = {
+// Exported (Sprint 2 / #3): reused by the WelcomeAccessWizard so the
+// urgent-access rows embed the same production tutorials as this step.
+export const TUTORIAL_VIDEOS: Record<string, { url: string; title: string }> = {
   ga: {
     url: 'https://youtu.be/8nWZRo_l8bs',
     title: 'Tutorial - How to add admin user to Google Analytics',
@@ -50,15 +55,6 @@ const TUTORIAL_VIDEOS: Record<string, { url: string; title: string }> = {
   },
 };
 
-// Helper function to convert YouTube URL to embed URL
-function getYouTubeEmbedUrl(url: string): string | null {
-  const shortMatch = url.match(/youtu\.be\/([a-zA-Z0-9_-]+)/);
-  if (shortMatch) return `https://www.youtube.com/embed/${shortMatch[1]}`;
-  const longMatch = url.match(/youtube\.com\/watch\?v=([a-zA-Z0-9_-]+)/);
-  if (longMatch) return `https://www.youtube.com/embed/${longMatch[1]}`;
-  if (url.includes('youtube.com/embed/')) return url.split('?')[0];
-  return null;
-}
 
 // Map access keys to v2 field keys and display config
 const CHECKLIST_ROWS: {
@@ -178,7 +174,7 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
 
             const tutorial = TUTORIAL_VIDEOS[row.accessKey];
             const isVideoExpanded = expandedVideo === row.accessKey;
-            const embedUrl = tutorial ? getYouTubeEmbedUrl(tutorial.url) : null;
+            const embedUrl = tutorial ? youTubeEmbedUrl(tutorial.url) : null;
 
             return (
               <div key={row.accessKey}>

@@ -14,6 +14,14 @@ interface ThankYouProps {
   companyName: string;
   accountManagerName: string;
   token: string;
+  /**
+   * Sprint 2 / #4: bypass header for the feedback POST. Under AM bypass
+   * the route no-ops (an AM must not write client sentiment), but the
+   * header is still needed so the call returns 200 rather than 401 on a
+   * PIN-set session — keeps the star UI from logging an error.
+   */
+  amToken?: string | null;
+  isAmBypass?: boolean;
 }
 
 /**
@@ -41,7 +49,7 @@ interface ThankYouProps {
  * we avoid an external redirect because there's no guaranteed
  * brand-home URL for every deployment.
  */
-export default function ThankYou({ companyName, accountManagerName, token }: ThankYouProps) {
+export default function ThankYou({ companyName, accountManagerName, token, amToken = null, isAmBypass = false }: ThankYouProps) {
   const [hoveredStar, setHoveredStar] = useState(0);
   const [selectedRating, setSelectedRating] = useState<number>(0);
   const [submittingRating, setSubmittingRating] = useState(false);
@@ -87,7 +95,10 @@ export default function ThankYou({ companyName, accountManagerName, token }: Tha
       try {
         const resp = await fetch('/api/public/onboarding/submit-feedback', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(isAmBypass && amToken ? { 'x-am-bypass': amToken } : {}),
+          },
           body: JSON.stringify({ token, rating }),
         });
         if (resp.ok) {
@@ -101,7 +112,7 @@ export default function ThankYou({ companyName, accountManagerName, token }: Tha
         setSubmittingRating(false);
       }
     },
-    [token]
+    [token, isAmBypass, amToken]
   );
 
   const handleStarClick = (n: number) => {

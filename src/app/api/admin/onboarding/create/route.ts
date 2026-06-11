@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createServiceRoleClient } from '@/lib/supabase/server';
+import { createServiceRoleClient, upsertAnswer } from '@/lib/supabase/server';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import { generatePin, hashPin } from '@/lib/onboarding/pin';
+import { isLikelyUrl } from '@/lib/onboarding/url-shape';
 
 type Vertical = 'law_firm' | 'home_services';
 
@@ -184,6 +185,31 @@ export async function POST(request: NextRequest) {
         { error: 'Failed to create session: ' + sessionError.message },
         { status: 500 }
       );
+    }
+
+    // --- Auto-prefill seed (website field) ------------------------
+    // The v2 wizard renders the website field from
+    // onboarding_answers.primary_contact.website_url — NOT from
+    // clients.website_url (that column, written above, feeds other
+    // dashboards). So to make the field show pre-filled when a session
+    // is created from the GHL webhook (which now forwards website_url),
+    // seed the answer here. Gated on a URL-shape check so a junk value
+    // never seeds the field. completed:false — primary_contact has
+    // other required fields, so seeding the URL does not complete the
+    // step. Non-fatal: a failed seed just means the URL is typed
+    // manually; the session is already created.
+    if (websiteUrl && isLikelyUrl(websiteUrl)) {
+      const seeded = await upsertAnswer(
+        sessionId,
+        'primary_contact',
+        { website_url: websiteUrl },
+        false
+      );
+      if (!seeded) {
+        console.warn(
+          `[create] website seed failed (non-fatal) for session ${sessionId}`
+        );
+      }
     }
 
     // Plaintext PIN is returned in the response — this is the ONLY
