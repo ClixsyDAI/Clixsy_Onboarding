@@ -50,6 +50,14 @@ interface SessionPayload {
   client: { name: string; contactName: string };
   answers: Record<string, { answers: Record<string, unknown>; completed: boolean }>;
   siteIntelligence: SiteIntelligence | null;
+  /** Auto-prefill resume: a linked scan that's in-flight or failed at
+   *  load time. Lets the wizard resume polling / show retry instead of
+   *  the idle trigger. Null when no scan or a completed one. */
+  siteIntelligencePending?: {
+    recordId: string;
+    status: string;
+    error: string | null;
+  } | null;
 }
 
 interface GateResponse {
@@ -268,6 +276,7 @@ export default function OnboardingShell({
         amToken={amToken}
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         siteIntelligence={payload.siteIntelligence as any}
+        pendingSiteIntelligence={payload.siteIntelligencePending ?? null}
       />
     );
   }
