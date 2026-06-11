@@ -25,6 +25,9 @@ const RequestBodySchema = z.object({
   }),
   contactName: optionalTrimmedString,
   contactEmail: optionalTrimmedString,
+  // Contact-seeding follow-up: phone has no clients column — it exists
+  // only to seed the step-1 answer below. The GHL webhook forwards it.
+  contactPhone: optionalTrimmedString,
   websiteUrl: optionalTrimmedString,
   siteIntelligenceId: z.string().optional(),
   // workbook_id is set by the workbook-side automation. Format
@@ -62,6 +65,7 @@ export async function POST(request: NextRequest) {
       clientName,
       contactName,
       contactEmail,
+      contactPhone,
       websiteUrl,
       siteIntelligenceId,
       accountManager,
@@ -192,22 +196,41 @@ export async function POST(request: NextRequest) {
     // onboarding_answers.primary_contact.website_url — NOT from
     // clients.website_url (that column, written above, feeds other
     // dashboards). So to make the field show pre-filled when a session
-    // is created from the GHL webhook (which now forwards website_url),
-    // seed the answer here. Gated on a URL-shape check so a junk value
-    // never seeds the field. completed:false — primary_contact has
-    // other required fields, so seeding the URL does not complete the
-    // step. Non-fatal: a failed seed just means the URL is typed
-    // manually; the session is already created.
+    // is created from the GHL webhook (which now forwards website_url
+    // plus the contact's name/email/phone), seed the answers here.
+    // Guards per field: website is gated on a URL-shape check; email is
+    // seeded only when it would pass the form's own zod validation
+    // (z.string().email()) — a seeded invalid email would otherwise
+    // surface as a validation error the client has to clear on their
+    // first save of step 1. Name/phone are free-text in the form
+    // (min-1 validation), so presence is the only guard.
+    // completed:false — primary_contact still has unanswered required
+    // fields (main_contact_title at minimum), so seeding never
+    // completes the step. Non-fatal: a failed seed just means the
+    // fields are typed manually; the session is already created.
+    const seedAnswers: Record<string, unknown> = {};
     if (websiteUrl && isLikelyUrl(websiteUrl)) {
+      seedAnswers.website_url = websiteUrl;
+    }
+    if (contactName) {
+      seedAnswers.main_contact_name = contactName;
+    }
+    if (contactEmail && z.string().email().safeParse(contactEmail).success) {
+      seedAnswers.main_contact_email = contactEmail;
+    }
+    if (contactPhone) {
+      seedAnswers.main_contact_phone = contactPhone;
+    }
+    if (Object.keys(seedAnswers).length > 0) {
       const seeded = await upsertAnswer(
         sessionId,
         'primary_contact',
-        { website_url: websiteUrl },
+        seedAnswers,
         false
       );
       if (!seeded) {
         console.warn(
-          `[create] website seed failed (non-fatal) for session ${sessionId}`
+          `[create] answer seed failed (non-fatal) for session ${sessionId}: ${Object.keys(seedAnswers).join(', ')}`
         );
       }
     }
