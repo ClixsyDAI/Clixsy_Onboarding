@@ -209,15 +209,67 @@ const SUMMARY_REJECT_PHRASES = [
   'restrictions apply',
   'void where prohibited',
   'additional terms',
+  // p4-1b — e-commerce product-card badge text. Real-world failure on
+  // the4x4store.co.za (Shopify): the homepage product grid rendered to
+  // markdown as "\- \| / Save up to % Save % Save up to Save Sale Sold
+  // out In stock" and shipped as the business description. 'sale' alone
+  // is too collision-prone as a substring ("wholesale", legitimate
+  // "short sale negotiation" services) — the multi-word badge phrases
+  // below are the safe discriminators; structural junk is additionally
+  // caught by passesProseShape.
+  'save up to',
+  'sold out',
+  'in stock',
+  'add to cart',
+  'free shipping',
+  'shop now',
+  'view cart',
 ];
 
 const MIN_SUMMARY_LENGTH = 30;
 const MAX_SUMMARY_LENGTH = 400;
 
 /**
+ * p4-1b: structural prose check, phrase-list-independent. Badge strips,
+ * nav soup, and spec tables fail on SHAPE no matter what words they
+ * use, so this catches the junk the (necessarily incomplete)
+ * SUMMARY_REJECT_PHRASES list misses. A real 1-2 sentence business
+ * description passes all three rules comfortably:
+ *
+ *   1. Letterless-token density: prose almost never exceeds ~1 symbol
+ *      token ("&", "—") per sentence; badge strips are full of "-",
+ *      "|", "/", "%" tokens (the the4x4store fixture is 28%).
+ *   2. Minimum 5 real words — below that it's a label, not a summary
+ *      (and the 30-char floor already rejects most of these).
+ *   3. Word repetition: badge strips repeat short tokens ("Save" ×4);
+ *      prose has high unique-word ratios. Only applied at 8+ words so
+ *      short legitimate summaries can't trip it.
+ */
+export function passesProseShape(candidate: string): boolean {
+  const tokens = candidate.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return false;
+
+  const letterless = tokens.filter((t) => !/\p{L}/u.test(t)).length;
+  if (letterless / tokens.length > 0.15) return false;
+
+  const words = tokens
+    .filter((t) => /\p{L}/u.test(t))
+    .map((t) => t.toLowerCase());
+  if (words.length < 5) return false;
+
+  if (words.length >= 8) {
+    const unique = new Set(words);
+    if (unique.size / words.length < 0.6) return false;
+  }
+
+  return true;
+}
+
+/**
  * Hygiene check on a candidate business_summary. Returns true if the
  * text reads like a description of what the business does and false if
- * it looks like consent boilerplate or another flavour of legal copy.
+ * it looks like consent boilerplate, promo-badge noise, or another
+ * flavour of non-prose copy.
  */
 export function passesSummaryHygiene(candidate: string | undefined | null): boolean {
   if (!candidate) return false;
@@ -238,6 +290,9 @@ export function passesSummaryHygiene(candidate: string | undefined | null): bool
   if (/\band\s+and\b/i.test(trimmed)) return false;
   const andCount = (trimmed.match(/\band\b/gi) ?? []).length;
   if (trimmed.length < 200 && andCount >= 4) return false;
+
+  // p4-1b: structural backstop — see passesProseShape.
+  if (!passesProseShape(trimmed)) return false;
 
   return true;
 }
@@ -274,4 +329,42 @@ export function sanitiseBusinessSummary(
     return (candidate as string).trim();
   }
   return genericSummaryFallback(brandName, vertical);
+}
+
+// ---------------------------------------------------------------
+// Service-name sanitiser (p4-1b)
+// ---------------------------------------------------------------
+
+// Multi-word commerce-badge phrases that are page furniture, never a
+// service or product-category name. Word-bounded so legitimate service
+// names containing the words individually survive ("Short Sale
+// Negotiation" passes; bare 'sale'/'save' are deliberately NOT here).
+const SERVICE_REJECT_PATTERN =
+  /\b(sold\s+out|in\s+stock|add\s+to\s+cart|free\s+shipping|shop\s+now|view\s+cart|checkout|learn\s+more|read\s+more)\b/i;
+
+/**
+ * Hygiene check on a single extracted service / product-category name.
+ * A real one is a short noun phrase ("Personal Injury Law", "4x4
+ * Suspension Kits") — never a price, a discount, or a stock label.
+ * Applied PER ITEM: junk entries are dropped individually and the rest
+ * of the scan is untouched (a sparse-but-real site must never flip to
+ * failed because its service list got filtered — hasUsableContent has
+ * four other signals).
+ */
+export function passesServiceHygiene(candidate: string | undefined | null): boolean {
+  if (!candidate) return false;
+  const trimmed = candidate.trim();
+  if (trimmed.length < 3 || trimmed.length > 60) return false;
+  if (!/\p{L}/u.test(trimmed)) return false;
+  // Percentages and currency-amounts are promo text, not services.
+  // (R = South African rand — Clixsy onboards ZA clients.)
+  if (trimmed.includes('%')) return false;
+  if (/[$€£]\s?\d|\bR\s?\d/.test(trimmed)) return false;
+  if (SERVICE_REJECT_PATTERN.test(trimmed)) return false;
+  return true;
+}
+
+/** Filter extracted service names down to the ones that pass hygiene. */
+export function sanitiseServices(candidates: readonly string[]): string[] {
+  return candidates.filter((c) => passesServiceHygiene(c));
 }
