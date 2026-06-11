@@ -58,8 +58,22 @@ check(
   !passesProseShape('Save now Save now Save now Save now Save now Save now'),
 );
 
+// The 2026-06-11 E2E run's junk, verbatim (Shopify cart drawer). This
+// one is prose-SHAPED — it must be caught by the phrase layer alone.
+const CART_DRAWER =
+  'R 0.00Subtotal - Tax included. Shipping calculated at checkout.';
+
 console.log('--- summary hygiene ---');
 check('badge strip fails summary hygiene', !passesSummaryHygiene(BADGE_STRIP));
+check('cart drawer fails summary hygiene (E2E F1 fixture)', !passesSummaryHygiene(CART_DRAWER));
+check(
+  'cart drawer IS prose-shaped (documents why the phrase layer is load-bearing here)',
+  passesProseShape(CART_DRAWER),
+);
+check(
+  'sanitiseBusinessSummary falls back to generic on cart drawer',
+  sanitiseBusinessSummary(CART_DRAWER, 'The 4x4 Store') === 'The 4x4 Store is a local business.',
+);
 check(
   'badge phrases caught even in prose shape ("save up to")',
   !passesSummaryHygiene('This week you can save up to fifty percent on all suspension kits available.'),
