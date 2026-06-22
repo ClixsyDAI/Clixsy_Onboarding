@@ -3,7 +3,7 @@ import type { Evidence } from '../schemas';
 import { getFirecrawlKey } from '../config';
 import { extractColorsFromHtml, extractFontsFromHtml } from '../branding-extractor';
 import { extractPhoneFromHtml } from '../phone-extractor';
-import { sanitiseBrandName } from '../brand-name-sanitiser';
+import { sanitiseBrandName, extractJsonLdName } from '../brand-name-sanitiser';
 import {
   sanitiseLocations,
   sanitiseBusinessSummary,
@@ -743,8 +743,14 @@ cms_platform per the schema.`,
     // meta-title-shaped values get replaced with cleaner fallbacks
     // (og:site_name → title segments → H1 → domain). Logs what was
     // chosen so we can spot-check on real onboardings.
+    // Stage 12 / Fix A: highest-trust structured source — the homepage's
+    // JSON-LD Organization/LocalBusiness/*Business/*Clinic name. Preferred
+    // over the raw LLM candidate, which produced one-word junk like "Walk"
+    // (from "Walk-In" copy) on Midwest Express Clinic.
+    const jsonLdName = extractJsonLdName(homepageHtml);
     const brandBeforeSanitise = brandName;
     brandName = sanitiseBrandName({
+      jsonLdName,
       rawCandidate: brandName,
       ogSiteName,
       pageTitle: pageTitle || undefined,

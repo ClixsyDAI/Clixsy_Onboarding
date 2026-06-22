@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSessionByToken, upsertAnswer, updateSessionStep, createAuditEvent } from '@/lib/supabase/server';
 import { validateStepDataForVersion } from '@/lib/onboarding/flow-version';
 import { resolveSessionAccess } from '@/lib/onboarding/session-guard';
+import { normaliseSeoTargetingAnswers } from '@/lib/onboarding/gbp-normalise';
 
 export async function POST(request: NextRequest) {
   try {
@@ -51,9 +52,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Phase 2 / Fix C: normalise the seo_targeting GBP repeater before
+    // validating or persisting — Zod-validate rows, drop blanks, dedupe URLs
+    // (collapses utm/?entry noise; opaque goo.gl shortlinks dedupe on the
+    // full string), and gate on has_gbp (anything but "yes" → []). Other
+    // steps are untouched.
+    const effectiveAnswers =
+      stepKey === 'seo_targeting' && answers && typeof answers === 'object'
+        ? normaliseSeoTargetingAnswers(answers as Record<string, unknown>)
+        : answers;
+
     // Validate step data if marking as completed
     if (completed) {
-      const validation = validateStepDataForVersion(session.flow_version || 'v1', stepKey, answers);
+      const validation = validateStepDataForVersion(session.flow_version || 'v1', stepKey, effectiveAnswers);
       if (!validation.success) {
         return NextResponse.json(
           { error: 'Validation failed', validationErrors: validation.errors },
@@ -63,7 +74,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Upsert the answer
-    const savedAnswer = await upsertAnswer(session.id, stepKey, answers, completed || false);
+    const savedAnswer = await upsertAnswer(session.id, stepKey, effectiveAnswers, completed || false);
 
     if (!savedAnswer) {
       return NextResponse.json(
@@ -88,7 +99,7 @@ export async function POST(request: NextRequest) {
         stepKey,
         stepIndex,
         completed,
-        answersCount: Object.keys(answers).length,
+        answersCount: Object.keys(effectiveAnswers).length,
       });
     }
 
