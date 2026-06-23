@@ -69,11 +69,10 @@ export default function RepeatingRows({
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3">
         {rows.map((row, rowIdx) => (
           <div key={rowIdx} className="flex gap-2 items-start">
-            <div className="flex-1 flex gap-2 items-center">
-              {rowFields.map((sub) => {
+            {rowFields.map((sub) => {
                 const cellValue = (row[sub.name] as string) || '';
                 const canOpen = sub.linkAction
                   ? isValidHttpUrl(cellValue)
@@ -139,7 +138,6 @@ export default function RepeatingRows({
                   </div>
                 );
               })}
-            </div>
             {rows.length > 1 && (
               <button
                 type="button"
