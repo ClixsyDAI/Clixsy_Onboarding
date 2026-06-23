@@ -22,6 +22,11 @@
 // contains 2+ service-category keywords, embeds a US state name, etc.).
 
 export interface SanitiseInputs {
+  /** Highest-trust structured source: the "name" of the first
+   *  Organization / LocalBusiness / MedicalBusiness / *Business / *Clinic
+   *  node found in the homepage's JSON-LD. Populated by the Firecrawl
+   *  provider via extractJsonLdName(homepageHtml). */
+  jsonLdName?: string;
   /** Whatever the LLM or markdown extractor produced as a brand_name. */
   rawCandidate?: string;
   /** og:site_name tag content if present in the page metadata. */
@@ -74,6 +79,21 @@ const MAX_BRAND_LENGTH = 40;
 const MAX_GENERIC_HITS_BEFORE_REJECT = 1;
 const MAX_COMMA_CLAUSES_BEFORE_REJECT = 2;
 
+// Single-word LLM junk. When the extractor returns ONE token and that token
+// is a common UI / CTA / nav / section word, it is never a brand — this is
+// the "Walk" bug (LLM grabbed "Walk" from "Walk-In" homepage copy for
+// Midwest Express Clinic). Lowercase, exact single-token match only, so
+// real multi-word brands containing these words ("Walk Family Dental") are
+// unaffected.
+const SINGLE_WORD_STOPWORDS = new Set([
+  'walk', 'call', 'click', 'home', 'about', 'contact', 'services', 'service',
+  'menu', 'search', 'login', 'book', 'open', 'now', 'here', 'more', 'learn',
+  'get', 'view', 'see', 'read', 'welcome', 'hours', 'location', 'locations',
+  'directions', 'reviews', 'careers', 'blog', 'news',
+]);
+// A one-word brand shorter than this is almost certainly noise.
+const MIN_SINGLE_WORD_LENGTH = 3;
+
 /**
  * Hygiene check: returns true if `name` looks like a brand label and
  * false if it looks like a meta-title / service-description sentence.
@@ -87,6 +107,19 @@ export function passesBrandHygiene(name: string | undefined | null): boolean {
   // signature. Two clauses ("Smith, Jones & Associates") can still be a
   // valid brand, so the threshold is > MAX_COMMA_CLAUSES.
   if (trimmed.split(',').length > MAX_COMMA_CLAUSES_BEFORE_REJECT) return false;
+
+  // Single-token guards (the "Walk" bug). A one-word candidate must clear a
+  // higher bar: not a UI/CTA stopword, >= 3 chars, and capitalised — real
+  // one-word brands render capitalised ("BelRed", "ARCO", "Acme"); an
+  // all-lowercase single word is almost always scraped body copy.
+  const tokens = trimmed.split(/\s+/);
+  if (tokens.length === 1) {
+    const token = tokens[0];
+    const tokenLc = token.toLowerCase();
+    if (SINGLE_WORD_STOPWORDS.has(tokenLc)) return false;
+    if (token.length < MIN_SINGLE_WORD_LENGTH) return false;
+    if (token === tokenLc) return false; // all-lowercase single word
+  }
 
   const lc = trimmed.toLowerCase();
 
@@ -197,20 +230,26 @@ function titleSegmentCandidates(pageTitle: string): string[] {
  * Top-level: choose the best brand-label candidate from the available
  * signals, falling back through them in order of trust.
  *
- *   1. The original LLM / markdown extractor result, if it passes.
+ *   1. JSON-LD Organization/LocalBusiness/*Business/*Clinic "name".
  *   2. og:site_name from the page metadata, if it passes.
- *   3. Each segment of the page title, if any pass.
- *   4. The H1, if it passes.
- *   5. Domain-derived name (always returns SOMETHING).
+ *   3. The original LLM / markdown extractor result, if it passes.
+ *   4. Each segment of the page title, if any pass.
+ *   5. The H1, if it passes.
+ *   6. Domain-derived name (always returns SOMETHING).
  */
 export function sanitiseBrandName(inputs: SanitiseInputs): string {
   const candidates: { source: string; value: string }[] = [];
 
-  if (inputs.rawCandidate) {
-    candidates.push({ source: 'raw', value: inputs.rawCandidate });
+  // Trust order: structured JSON-LD name → operator-set og:site_name → raw
+  // LLM candidate → title segments → H1 → (domain fallback below).
+  if (inputs.jsonLdName) {
+    candidates.push({ source: 'json-ld', value: inputs.jsonLdName });
   }
   if (inputs.ogSiteName) {
     candidates.push({ source: 'og:site_name', value: inputs.ogSiteName });
+  }
+  if (inputs.rawCandidate) {
+    candidates.push({ source: 'raw', value: inputs.rawCandidate });
   }
   if (inputs.pageTitle) {
     for (const seg of titleSegmentCandidates(inputs.pageTitle)) {
@@ -227,4 +266,66 @@ export function sanitiseBrandName(inputs: SanitiseInputs): string {
     }
   }
   return domainBrandName(inputs.websiteUrl);
+}
+
+// =============================================================
+// JSON-LD organization-name extractor
+// =============================================================
+//
+// Highest-trust brand source: structured data the site operator (or their
+// CMS / SEO plugin) published. Scans every <script type="application/ld+json">
+// block, JSON.parse-with-try/catch, walks single objects, arrays, and @graph
+// containers, and returns the `name` of the first node whose @type is an
+// Organization / LocalBusiness / MedicalBusiness / any *Business or *Clinic
+// subtype. Pure + dependency-free so it unit-tests cleanly; the Firecrawl
+// provider calls it with the homepage rawHtml and threads the result into
+// SanitiseInputs.jsonLdName.
+
+function isOrganizationType(rawType: unknown): boolean {
+  const types = Array.isArray(rawType) ? rawType : [rawType];
+  return types.some((t) => {
+    if (typeof t !== 'string') return false;
+    const lc = t.toLowerCase();
+    return (
+      lc === 'organization' ||
+      lc.endsWith('business') || // LocalBusiness, MedicalBusiness, HomeAndConstructionBusiness…
+      lc.endsWith('clinic') || // MedicalClinic, Clinic…
+      lc === 'hospital' ||
+      lc === 'physician' ||
+      lc === 'dentist' ||
+      lc === 'medicalorganization'
+    );
+  });
+}
+
+export function extractJsonLdName(html: string | undefined | null): string | undefined {
+  if (!html) return undefined;
+  const blockRe =
+    /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let block: RegExpExecArray | null;
+  while ((block = blockRe.exec(html)) !== null) {
+    let data: unknown;
+    try {
+      data = JSON.parse(block[1].trim());
+    } catch {
+      continue; // malformed JSON-LD — skip, never throw
+    }
+    const nodes: Record<string, unknown>[] = [];
+    const collect = (d: unknown) => {
+      if (Array.isArray(d)) {
+        d.forEach(collect);
+      } else if (d && typeof d === 'object') {
+        const obj = d as Record<string, unknown>;
+        nodes.push(obj);
+        if (Array.isArray(obj['@graph'])) (obj['@graph'] as unknown[]).forEach(collect);
+      }
+    };
+    collect(data);
+    for (const node of nodes) {
+      if (isOrganizationType(node['@type']) && typeof node.name === 'string' && node.name.trim()) {
+        return node.name.trim();
+      }
+    }
+  }
+  return undefined;
 }

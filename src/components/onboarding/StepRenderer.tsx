@@ -952,6 +952,31 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
 // Confirmation Field Component
 // =============================================
 
+/**
+ * Fix B: render any confirmation-field value as readable read-only text so
+ * the client can SEE what they are confirming. Handles plain strings,
+ * multiline addresses, {url}-object arrays (GBP), and plain arrays.
+ */
+function formatConfirmationValue(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) {
+    return value
+      .map((el) =>
+        el && typeof el === 'object' && 'url' in el
+          ? String((el as { url: unknown }).url ?? '')
+          : typeof el === 'string'
+            ? el
+            : JSON.stringify(el),
+      )
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
 function ConfirmationField({
   field,
   override,
@@ -975,6 +1000,12 @@ function ConfirmationField({
   const hasValue = value !== undefined && value !== null && value !== '' &&
     !(Array.isArray(value) && value.length === 0);
 
+  // Fix B: human-readable form of the detected value. Shown read-only during
+  // the confirm phase for EVERY confirmation card (previously only phone/name
+  // embedded it in the label; address did not, so the client confirmed a
+  // value they could not see). Does NOT change what gets saved.
+  const detectedValueText = formatConfirmationValue(value);
+
   return (
     <div className="bg-[#25DC7F]/5 border border-[#25DC7F]/20 rounded-lg p-4">
       <label className="block text-sm font-semibold text-[#0B0B0B] mb-3">
@@ -983,25 +1014,33 @@ function ConfirmationField({
       </label>
 
       {confirmed === null && hasValue && (
-        <div className="flex gap-2 mb-3">
-          <button
-            type="button"
-            onClick={() => setConfirmed(true)}
-            className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors"
-          >
-            Yes, that&apos;s correct
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setConfirmed(false);
-              onDismiss();
-            }}
-            className="px-4 py-2 border border-[#E6E8EA] text-[#0B0B0B] rounded-lg text-sm font-semibold hover:bg-[#F4F5F6] transition-colors"
-          >
-            No, let me edit
-          </button>
-        </div>
+        <>
+          {/* Fix B: always show the detected value being confirmed, so the
+              client can see address/phone/name (not just the ones whose
+              value is baked into label_override). */}
+          <div className="mb-3 rounded-md border border-[#E6E8EA] bg-white px-3 py-2 text-sm text-[#0B0B0B] whitespace-pre-line break-words">
+            {detectedValueText}
+          </div>
+          <div className="flex gap-2 mb-3">
+            <button
+              type="button"
+              onClick={() => setConfirmed(true)}
+              className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors"
+            >
+              Yes, that&apos;s correct
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmed(false);
+                onDismiss();
+              }}
+              className="px-4 py-2 border border-[#E6E8EA] text-[#0B0B0B] rounded-lg text-sm font-semibold hover:bg-[#F4F5F6] transition-colors"
+            >
+              No, let me edit
+            </button>
+          </div>
+        </>
       )}
 
       {/* S6.2: show the underlying field only when:
