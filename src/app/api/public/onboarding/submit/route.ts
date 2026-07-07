@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { fireDashboardClientBridge } from '@/lib/onboarding/dashboard-bridge';
+import { exportSubmissionToSheet } from '@/lib/onboarding/sheet-export';
 import {
   getSessionByToken as realGetSessionByToken,
   getSessionAnswers as realGetSessionAnswers,
@@ -217,6 +218,10 @@ export async function POST(request: NextRequest) {
     // Skipped under the in-memory test-mode shim (no real network).
     if (!TEST_MODE) {
       after(() => fireDashboardClientBridge(session));
+      // Google Sheet roster export — same fire-and-forget contract as the
+      // bridge: all failures are handled inside, nothing throws into the
+      // submit path, and the two side effects stay independent.
+      after(() => exportSubmissionToSheet(session));
     }
 
     return NextResponse.json({
