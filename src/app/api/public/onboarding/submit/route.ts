@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
+import { fireDashboardClientBridge } from '@/lib/onboarding/dashboard-bridge';
 import {
   getSessionByToken as realGetSessionByToken,
   getSessionAnswers as realGetSessionAnswers,
@@ -206,6 +207,16 @@ export async function POST(request: NextRequest) {
         totalStepsCompleted: answeredSteps.size,
         totalSteps: steps.length,
       });
+    }
+
+    // Onboarding→dashboard bridge: reconcile this client into the
+    // dashboard's projects.json. Runs via after() AFTER the response is
+    // sent, so it never blocks the client submit and never alters the
+    // response shape below. Failures are logged + audited and safely
+    // retryable (the dashboard endpoint is idempotent on workbook_id).
+    // Skipped under the in-memory test-mode shim (no real network).
+    if (!TEST_MODE) {
+      after(() => fireDashboardClientBridge(session));
     }
 
     return NextResponse.json({
