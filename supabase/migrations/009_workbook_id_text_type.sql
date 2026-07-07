@@ -1,6 +1,6 @@
 -- =============================================================
 -- Migration: 009_workbook_id_text_type.sql
--- Target:    Supabase project lawwsutjxopiekjzupef
+-- Target:    Supabase project gmvdmgcueveuedhkucsh
 -- Branch:    fix/workbook-id-string-type
 -- Purpose:   Widen public.clients.workbook_id from bigint to text
 --            so it can hold GHL opportunity ids (20-char

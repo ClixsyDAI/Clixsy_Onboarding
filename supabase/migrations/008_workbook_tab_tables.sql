@@ -1,6 +1,6 @@
 -- =============================================================
 -- Migration: 008_workbook_tab_tables.sql
--- Target:    Supabase project lawwsutjxopiekjzupef
+-- Target:    Supabase project gmvdmgcueveuedhkucsh
 -- Branch:    feat/workbook-tab-schema-2026-05
 -- Purpose:   Phase 1 of the Client Workbook "Onboarding" tab.
 --            Adds the schema additions the workbook needs to

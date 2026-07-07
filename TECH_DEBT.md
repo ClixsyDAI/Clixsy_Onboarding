@@ -290,7 +290,7 @@ Surfaced during the Phase 1 (pre-feedback-doc) infrastructure work
 and not addressed by the Stage 1–8 PR. Listed here so they don't get
 forgotten now that the feedback-doc punch list is closed.
 
-- **Supabase PITR add-on.** Production project `lawwsutjxopiekjzupef`
+- **Supabase PITR add-on.** Production project `gmvdmgcueveuedhkucsh`
   is on the default 7-day backup window. Enabling the PITR add-on
   extends point-in-time recovery to 28 days. Cost trade-off; decide
   before the first paying customer ships through onboarding.

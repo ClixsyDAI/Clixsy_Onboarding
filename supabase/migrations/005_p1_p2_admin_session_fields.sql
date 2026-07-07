@@ -1,6 +1,6 @@
 -- =============================================================
 -- Migration: 005_p1_p2_admin_session_fields.sql
--- Target:    Supabase project lawwsutjxopiekjzupef
+-- Target:    Supabase project gmvdmgcueveuedhkucsh
 -- Branch:    feat/ui-feedback-2026-05
 -- Purpose:   Stage 1 of the onboarding-form-feedback overhaul.
 --            P1 — Account Manager + Vertical on session creation.
