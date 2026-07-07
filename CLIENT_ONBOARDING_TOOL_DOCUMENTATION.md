@@ -35,7 +35,7 @@ The Client Onboarding Tool is a multi-step wizard application designed for digit
 |----------|-----|
 | **Production App** | https://client-onboarding-tool.vercel.app |
 | **GitHub Repository** | https://github.com/JLcilliers/client-onboarding-tool |
-| **Supabase Dashboard** | https://supabase.com/dashboard/project/lawwsutjxopiekjzupef |
+| **Supabase Dashboard** | https://supabase.com/dashboard/project/gmvdmgcueveuedhkucsh |
 | **Vercel Dashboard** | https://vercel.com/johan-cilliers-projects/client-onboarding-tool |
 
 ### Key Application Routes
@@ -549,7 +549,7 @@ Display expandable sections with answers
 ### Local Development (.env.local)
 ```env
 # Supabase Configuration
-NEXT_PUBLIC_SUPABASE_URL=https://lawwsutjxopiekjzupef.supabase.co
+NEXT_PUBLIC_SUPABASE_URL=https://gmvdmgcueveuedhkucsh.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
@@ -651,7 +651,7 @@ The Client Onboarding Tool is a production-ready application that:
 
 For any questions or issues, refer to:
 - GitHub Issues: https://github.com/JLcilliers/client-onboarding-tool/issues
-- Supabase Logs: https://supabase.com/dashboard/project/lawwsutjxopiekjzupef/logs
+- Supabase Logs: https://supabase.com/dashboard/project/gmvdmgcueveuedhkucsh/logs
 - Vercel Logs: https://vercel.com/johan-cilliers-projects/client-onboarding-tool
 
 ---
