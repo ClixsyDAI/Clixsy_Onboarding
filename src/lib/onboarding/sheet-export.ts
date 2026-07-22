@@ -14,15 +14,16 @@
 // One row per client, keyed on the workbook id (clients.workbook_id —
 // the GHL opportunity id, the same stable key the dashboard bridge
 // reconciles on), written to column O. Existing row with this workbook
-// id → update in place and KEEP its Client Code; none → append with the
-// next J-code. Submissions with no workbook_id (the bridge's deferred
-// case) fall back to append-only with an empty column O and a
-// `[sheet-export] warn no-workbook-id` log line.
+// id → update in place; none → append. Submissions with no workbook_id
+// (the bridge's deferred case) fall back to append-only with an empty
+// column O and a `[sheet-export] warn no-workbook-id` log line.
 //
-// J-code rule (sheet-max + 1): parse column B of the data rows for
-// "J<integer>", take max+1; an empty sheet starts at J450. The header
-// row is never parsed. Small race on simultaneous submits is accepted
-// by design (no external counter).
+// NO J-number is minted here anymore. Per the approve-and-push design
+// (R8) the J is minted at dashboard approval, so column B (Client Code)
+// is written BLANK — the roster is now purely a continuity/append log.
+// This function ALSO seeds public.pm_tracker_pushes (keyed on
+// workbook_id, status='pending', j_number=null) with the onboarding-
+// derived fields the dashboard approval UI needs.
 //
 // Values are written RAW (never formulas). Enumerated answers
 // (radio/select/multiselect with static options) are written as their
@@ -39,7 +40,6 @@ import {
 import { onboardingStepsV2 } from './steps-v2';
 
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
-const FIRST_JCODE = 450;
 
 const HEADER = [
   'Status',
@@ -227,28 +227,95 @@ export async function exportSubmissionToSheet(
       display(answers, 'seo_targeting', 'primary_case_types_keywords') ||
       display(answers, 'seo_targeting', 'service_categories');
 
-    // Columns A–O. B (Client Code) is filled below once the sheet has
-    // been consulted. J is the service-area SCOPE (Local/Regional/
-    // Statewide/National), not the target-cities free text.
+    // Contact + address + meta, computed once and reused by BOTH the
+    // roster row and the pm_tracker_pushes seed below.
+    const mainContactName = display(answers, 'primary_contact', 'main_contact_name');
+    const mainContactTitle = display(answers, 'primary_contact', 'main_contact_title');
+    const mainContactEmail = display(answers, 'primary_contact', 'main_contact_email');
+    const mainContactPhone = display(answers, 'primary_contact', 'main_contact_phone');
+    const physicalAddress = display(answers, 'business_overview', 'physical_address');
+    const serviceAreaType = display(answers, 'seo_targeting', 'service_area_type');
+    const primaryGoal = display(answers, 'goals_strategy', 'primary_goal');
+    const websitePlatform = display(answers, 'technical_setup', 'website_platform');
+    // Bare registrable host from the website URL, for the pending record.
+    const domain = websiteUrl
+      ? websiteUrl.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').trim()
+      : '';
+    const rawVertical = (session as { vertical?: string }).vertical;
+    const vertical =
+      rawVertical === 'law_firm' || rawVertical === 'home_services'
+        ? rawVertical
+        : 'other';
+
+    // ── Seed the approve-and-push pending record (Supabase) ─────
+    // One row per client keyed on workbook_id. NO J-number is minted here
+    // (R8: minted at dashboard approval). We upsert ONLY the onboarding-
+    // derived columns; on insert status defaults 'pending' and j_number is
+    // null, and because the AM-entered fields / j_number / push bookkeeping
+    // are NOT in the payload, a re-submit never clobbers them or a
+    // completed push. Fire-and-forget: a seed failure is logged, never
+    // thrown (same contract as the roster write below).
+    if (workbookId) {
+      try {
+        const seedClient = createServiceRoleClient();
+        const { error: seedError } = await seedClient
+          .from('pm_tracker_pushes')
+          .upsert(
+            {
+              workbook_id: workbookId,
+              vertical,
+              company_name: businessName || null,
+              domain: domain || null,
+              website_url: websiteUrl || null,
+              contact_name: mainContactName || null,
+              contact_title: mainContactTitle || null,
+              contact_phone: mainContactPhone || null,
+              contact_email: mainContactEmail || null,
+              physical_address: physicalAddress || null,
+            },
+            { onConflict: 'workbook_id' },
+          );
+        if (seedError) {
+          console.error(
+            `[sheet-export] pm_tracker_pushes seed failed session=${session.id}: ${seedError.message}`,
+          );
+        } else {
+          console.log(
+            `[sheet-export] pending seeded workbook_id=${workbookId} vertical=${vertical} session=${session.id}`,
+          );
+        }
+      } catch (seedErr) {
+        console.error(
+          `[sheet-export] pm_tracker_pushes seed threw session=${session.id}: ${
+            seedErr instanceof Error ? seedErr.message : String(seedErr)
+          }`,
+        );
+      }
+    }
+
+    // Columns A–O for the continuity roster. Column B (Client Code) is now
+    // ALWAYS blank — J minting moved to the dashboard approve-push (R8).
+    // Column J is the service-area SCOPE (Local/Regional/Statewide/National),
+    // not the target-cities free text.
     const row: string[] = [
       'Active',
-      '',
+      '', // B (Client Code) — intentionally blank; J is minted at approval push
       businessName,
-      display(answers, 'primary_contact', 'main_contact_name'),
-      display(answers, 'primary_contact', 'main_contact_title'),
-      display(answers, 'primary_contact', 'main_contact_email'),
-      display(answers, 'primary_contact', 'main_contact_phone'),
+      mainContactName,
+      mainContactTitle,
+      mainContactEmail,
+      mainContactPhone,
       websiteUrl,
-      display(answers, 'business_overview', 'physical_address'),
-      display(answers, 'seo_targeting', 'service_area_type'),
+      physicalAddress,
+      serviceAreaType,
       primaryServices,
-      display(answers, 'goals_strategy', 'primary_goal'),
-      display(answers, 'technical_setup', 'website_platform'),
+      primaryGoal,
+      websitePlatform,
       submittedDate,
       workbookId,
     ];
 
-    // ── Sheet state: header, existing rows, J-code max ──────────
+    // ── Sheet state: header + existing rows (for idempotency) ───
     const jwt = makeJwt();
 
     const headerRow = await valuesGet(jwt, sheetId, 'A1:O1');
@@ -260,13 +327,6 @@ export async function exportSubmissionToSheet(
     }
 
     const dataRows = await valuesGet(jwt, sheetId, 'A2:O');
-
-    let maxJ = 0;
-    for (const r of dataRows) {
-      const m = /^J(\d+)$/.exec(String(r[1] ?? '').trim());
-      if (m) maxJ = Math.max(maxJ, parseInt(m[1], 10));
-    }
-    const nextCode = maxJ > 0 ? `J${maxJ + 1}` : `J${FIRST_JCODE}`;
 
     // One row per client, keyed on Workbook ID (column O, index 14).
     let matchIdx = -1;
@@ -281,18 +341,15 @@ export async function exportSubmissionToSheet(
     }
 
     if (matchIdx >= 0) {
-      const existingCode = String(dataRows[matchIdx][1] ?? '').trim();
-      row[1] = existingCode || nextCode;
       const rowNum = matchIdx + 2; // +1 header, +1 one-based
       await valuesUpdate(jwt, sheetId, `A${rowNum}:O${rowNum}`, [row]);
       console.log(
-        `[sheet-export] ok code=${row[1]} action=updated row=${rowNum} session=${session.id}`,
+        `[sheet-export] ok action=updated row=${rowNum} session=${session.id}`,
       );
     } else {
-      row[1] = nextCode;
       await valuesAppend(jwt, sheetId, [row]);
       console.log(
-        `[sheet-export] ok code=${row[1]} action=created session=${session.id}`,
+        `[sheet-export] ok action=created session=${session.id}`,
       );
     }
   } catch (err) {
