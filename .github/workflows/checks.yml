@@ -36,3 +36,10 @@ jobs:
       # Mutation-tested 4/4. This repo is public and these routes touch
       # onboarding sessions and answers.
       - run: npm run lint:public-route-auth
+      # The palette held to WCAG AA from source: 43 token pairings against the
+      # dark surfaces, with headroom above 4.5 because a value tuned to land
+      # exactly on the requirement fails as soon as it lands on a tinted pill.
+      # See dashboard decision 58. This matters more here than in the dashboard:
+      # the form is public and client-facing, and before the retheme its primary
+      # call to action shipped as white on the brand green at 1.81.
+      - run: npm run lint:token-contrast
