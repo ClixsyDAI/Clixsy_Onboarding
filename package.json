@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "lint:public-route-auth": "node scripts/check-public-route-auth.mjs",
     "test": "node test/run-all.mjs",
     "test:submit": "npx tsx src/app/api/public/onboarding/submit/route.test.ts",
     "test:sanitisers": "npx tsx src/lib/siteIntelligence/extraction-sanitisers.test.ts"
