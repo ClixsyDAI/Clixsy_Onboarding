@@ -979,15 +979,15 @@ export default function Wizard({
         {hasMissingFields ? (
           <>
             <div className="text-center mb-8">
-              <div className="w-16 h-16 mx-auto mb-4 bg-[#F5A524]/10 rounded-full flex items-center justify-center">
-                <svg className="w-8 h-8 text-[#F5A524]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="w-16 h-16 mx-auto mb-4 bg-[var(--amber)]/10 rounded-full flex items-center justify-center">
+                <svg className="w-8 h-8 text-[var(--amber)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
               </div>
-              <h2 className="text-xl font-bold text-[#0B0B0B] mb-2">
+              <h2 className="text-xl font-bold text-[var(--text)] mb-2">
                 A few things need your attention
               </h2>
-              <p className="text-[#6B6B6B]">
+              <p className="text-[var(--muted)]">
                 Please complete the following required fields before submitting.
               </p>
             </div>
@@ -996,22 +996,22 @@ export default function Wizard({
               {Object.entries(missingFieldsByStep).map(([stepKey, { stepTitle, stepIndex, fields }]) => (
                 <div
                   key={stepKey}
-                  className="bg-[#FEF3C7] border border-[#F5A524]/30 rounded-lg p-4 cursor-pointer hover:bg-[#FDE68A] transition-colors"
+                  className="bg-[var(--amber-soft)] border border-[var(--amber)]/30 rounded-lg p-4 cursor-pointer hover:bg-[var(--amber-soft)] transition-colors"
                   onClick={() => navigateToStep(stepIndex)}
                 >
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="font-semibold text-[#92400E] mb-1">{stepTitle}</h3>
-                      <ul className="text-sm text-[#B45309]">
+                      <h3 className="font-semibold text-[var(--amber)] mb-1">{stepTitle}</h3>
+                      <ul className="text-sm text-[var(--amber)]">
                         {fields.map((field) => (
                           <li key={field.fieldName} className="flex items-center gap-2">
-                            <span className="w-1.5 h-1.5 bg-[#F5A524] rounded-full"></span>
+                            <span className="w-1.5 h-1.5 bg-[var(--amber)] rounded-full"></span>
                             {field.fieldLabel}
                           </li>
                         ))}
                       </ul>
                     </div>
-                    <svg className="w-5 h-5 text-[#92400E]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="w-5 h-5 text-[var(--amber)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                     </svg>
                   </div>
@@ -1022,21 +1022,21 @@ export default function Wizard({
         ) : (
           <>
             <div className="text-center mb-8">
-              <div className="w-16 h-16 mx-auto mb-4 bg-[#25DC7F]/10 rounded-full flex items-center justify-center">
-                <svg className="w-8 h-8 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="w-16 h-16 mx-auto mb-4 bg-[var(--green-fill)]/10 rounded-full flex items-center justify-center">
+                <svg className="w-8 h-8 text-[var(--green)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-              <h2 className="text-xl font-bold text-[#0B0B0B] mb-2">
+              <h2 className="text-xl font-bold text-[var(--text)] mb-2">
                 All required fields are complete!
               </h2>
-              <p className="text-[#6B6B6B]">
+              <p className="text-[var(--muted)]">
                 You&apos;re ready to proceed to the final step.
               </p>
             </div>
 
-            <div className="bg-[#ECFDF5] border border-[#25DC7F]/30 rounded-lg p-6 text-center">
-              <p className="text-[#065F46] font-medium">
+            <div className="bg-[var(--green-soft)] border border-[var(--green)]/30 rounded-lg p-6 text-center">
+              <p className="text-[var(--green)] font-medium">
                 Click &quot;Next&quot; to review and submit your onboarding information.
               </p>
             </div>
@@ -1079,12 +1079,12 @@ export default function Wizard({
         onDone={handleTransitionDone}
       />
 
-      <div className="min-h-screen bg-[#F4F5F6] flex flex-col">
+      <div className="min-h-screen bg-[var(--bg)] flex flex-col">
         {/* Header */}
-        <header className="bg-[#0F1A14]">
+        <header className="bg-[var(--side)]">
           <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
             <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
-            <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
+            <div className="px-4 py-2 bg-[var(--card2)] text-[var(--text)] text-sm font-semibold rounded-lg">
               Clixsy Onboarding Portal
             </div>
           </div>
@@ -1093,13 +1093,13 @@ export default function Wizard({
           <div className="max-w-6xl mx-auto px-4 sm:px-6 pb-4">
             {/* Progress Bar */}
             <div className="mb-4">
-              <div className="flex items-center justify-between text-sm text-[#A0A0A0] mb-2">
+              <div className="flex items-center justify-between text-sm text-[var(--faint)] mb-2">
                 <span>Step {currentStepIndex + 1} of {steps.length}</span>
                 <span>{Math.round(completedPercentage)}% complete</span>
               </div>
-              <div className="h-2 bg-[#1A2A1F] rounded-full overflow-hidden">
+              <div className="h-2 bg-[var(--card2)] rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-[#25DC7F] transition-all duration-300"
+                  className="h-full bg-[var(--green-fill)] transition-all duration-300"
                   style={{ width: `${progressPercentage}%` }}
                 />
               </div>
@@ -1110,18 +1110,18 @@ export default function Wizard({
               {/* Left scroll button */}
               <button
                 onClick={() => scrollNav('left')}
-                className={`absolute left-0 z-10 flex items-center justify-center w-8 h-10 bg-gradient-to-r from-[#0F1A14] via-[#0F1A14] to-transparent transition-opacity ${
+                className={`absolute left-0 z-10 flex items-center justify-center w-8 h-10 bg-gradient-to-r from-[var(--side)] via-[var(--side)] to-transparent transition-opacity ${
                   canScrollLeft ? 'opacity-100' : 'opacity-0 pointer-events-none'
                 }`}
                 aria-label="Scroll left"
               >
-                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5 text-[var(--text)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                 </svg>
               </button>
 
               {/* Left fade indicator */}
-              <div className={`absolute left-8 top-0 bottom-0 w-8 bg-gradient-to-r from-[#0F1A14] to-transparent z-[5] pointer-events-none transition-opacity ${
+              <div className={`absolute left-8 top-0 bottom-0 w-8 bg-gradient-to-r from-[var(--side)] to-transparent z-[5] pointer-events-none transition-opacity ${
                 canScrollLeft ? 'opacity-100' : 'opacity-0'
               }`} />
 
@@ -1153,10 +1153,10 @@ export default function Wizard({
                       aria-current={isCurrent ? 'step' : undefined}
                       className={`group relative flex-shrink-0 snap-center w-10 h-10 rounded-lg transition-all cursor-pointer flex items-center justify-center ${
                         isCompleted
-                          ? 'bg-[#25DC7F] text-white'
+                          ? 'bg-[var(--green-fill)] text-[var(--on-green)]'
                           : isCurrent
-                          ? 'bg-white text-[#0F1A14] ring-2 ring-[#25DC7F]'
-                          : 'bg-[#1A2A1F] text-[#569077] hover:bg-[#25DC7F]/20 hover:text-[#25DC7F]'
+                          ? 'bg-[var(--card)] text-[var(--text)] ring-2 ring-[var(--green)]'
+                          : 'bg-[var(--card2)] text-[var(--muted)] hover:bg-[var(--green-fill)]/20 hover:text-[var(--green)]'
                       } ${isNavigating ? 'opacity-90 cursor-wait' : ''}`}
                       title={step.title}
                     >
@@ -1168,11 +1168,11 @@ export default function Wizard({
                       <span
                         aria-hidden
                         className={`pointer-events-none absolute -bottom-1.5 left-1/2 -translate-x-1/2 h-1 rounded-full transition-all duration-200 ${
-                          isCurrent ? 'w-6 bg-[#25DC7F]' : 'w-0 bg-transparent'
+                          isCurrent ? 'w-6 bg-[var(--green-fill)]' : 'w-0 bg-transparent'
                         }`}
                       />
                       {/* Tooltip */}
-                      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-[#0B0B0B] text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
+                      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-[var(--card)] text-[var(--text)] text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
                         {step.title}
                       </span>
                     </button>
@@ -1181,19 +1181,19 @@ export default function Wizard({
               </div>
 
               {/* Right fade indicator */}
-              <div className={`absolute right-8 top-0 bottom-0 w-8 bg-gradient-to-l from-[#0F1A14] to-transparent z-[5] pointer-events-none transition-opacity ${
+              <div className={`absolute right-8 top-0 bottom-0 w-8 bg-gradient-to-l from-[var(--side)] to-transparent z-[5] pointer-events-none transition-opacity ${
                 canScrollRight ? 'opacity-100' : 'opacity-0'
               }`} />
 
               {/* Right scroll button */}
               <button
                 onClick={() => scrollNav('right')}
-                className={`absolute right-0 z-10 flex items-center justify-center w-8 h-10 bg-gradient-to-l from-[#0F1A14] via-[#0F1A14] to-transparent transition-opacity ${
+                className={`absolute right-0 z-10 flex items-center justify-center w-8 h-10 bg-gradient-to-l from-[var(--side)] via-[var(--side)] to-transparent transition-opacity ${
                   canScrollRight ? 'opacity-100' : 'opacity-0 pointer-events-none'
                 }`}
                 aria-label="Scroll right"
               >
-                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5 text-[var(--text)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
               </button>
@@ -1221,10 +1221,10 @@ export default function Wizard({
 
           {/* Step Title */}
           <div className="text-center mb-4">
-            <h1 className="text-2xl font-extrabold text-[#0B0B0B] mb-1">
+            <h1 className="text-2xl font-extrabold text-[var(--text)] mb-1">
               {currentStep.title}
             </h1>
-            <p className="text-[#6B6B6B] text-sm">
+            <p className="text-[var(--muted)] text-sm">
               {currentStep.description}
             </p>
           </div>
@@ -1246,19 +1246,19 @@ export default function Wizard({
           )}
 
           {/* Content Card */}
-          <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-6">
+          <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-6">
             {/* Error Banner */}
             {saveError && (
-              <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+              <div className="mb-6 p-4 bg-[var(--red-soft)] border border-[var(--red)] rounded-lg">
                 <div className="flex items-center gap-2">
-                  <svg className="w-5 h-5 text-[#E5484D]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-5 h-5 text-[var(--red)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
-                  <span className="text-[#E5484D]">{saveError}</span>
+                  <span className="text-[var(--red)]">{saveError}</span>
                 </div>
                 <button
                   onClick={() => setSaveError(null)}
-                  className="mt-2 text-sm text-[#E5484D] hover:underline"
+                  className="mt-2 text-sm text-[var(--red)] hover:underline"
                 >
                   Dismiss
                 </button>
@@ -1271,12 +1271,12 @@ export default function Wizard({
                 an empty white card). */}
             {isNavigating ? (
               <div className="space-y-5" aria-busy="true" aria-live="polite">
-                <div className="h-5 w-1/3 rounded bg-[#E6E8EA] animate-pulse" />
-                <div className="h-10 w-full rounded bg-[#E6E8EA] animate-pulse" />
-                <div className="h-5 w-1/2 rounded bg-[#E6E8EA] animate-pulse" />
-                <div className="h-10 w-full rounded bg-[#E6E8EA] animate-pulse" />
-                <div className="h-5 w-1/4 rounded bg-[#E6E8EA] animate-pulse" />
-                <div className="h-24 w-full rounded bg-[#E6E8EA] animate-pulse" />
+                <div className="h-5 w-1/3 rounded bg-[var(--border)] animate-pulse" />
+                <div className="h-10 w-full rounded bg-[var(--border)] animate-pulse" />
+                <div className="h-5 w-1/2 rounded bg-[var(--border)] animate-pulse" />
+                <div className="h-10 w-full rounded bg-[var(--border)] animate-pulse" />
+                <div className="h-5 w-1/4 rounded bg-[var(--border)] animate-pulse" />
+                <div className="h-24 w-full rounded bg-[var(--border)] animate-pulse" />
                 <span className="sr-only">Loading step content…</span>
               </div>
             ) : currentStep.key === 'access_checklist' ? (
@@ -1302,7 +1302,7 @@ export default function Wizard({
         </main>
 
         {/* Footer Navigation */}
-        <footer className="sticky bottom-0 bg-white border-t border-[#E6E8EA] py-4 px-4">
+        <footer className="sticky bottom-0 bg-[var(--card)] border-t border-[var(--border2)] py-4 px-4">
           <div className="max-w-4xl mx-auto flex items-center justify-between">
             {/* Back Button */}
             <button
@@ -1310,8 +1310,8 @@ export default function Wizard({
               disabled={currentStepIndex === 0 || transitioning}
               className={`flex items-center gap-2 px-6 py-3 rounded-lg font-semibold transition-all ${
                 currentStepIndex === 0 || transitioning
-                  ? 'text-[#A0A0A0] cursor-not-allowed'
-                  : 'text-[#0B0B0B] border border-[#E6E8EA] hover:bg-[#F4F5F6]'
+                  ? 'text-[var(--faint)] cursor-not-allowed'
+                  : 'text-[var(--text)] border border-[var(--border2)] hover:bg-[var(--bg)]'
               }`}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1323,7 +1323,7 @@ export default function Wizard({
             {/* Save Status Indicator */}
             <div className="flex items-center gap-3">
               {isSaving ? (
-                <span className="flex items-center gap-2 text-sm text-[#6B6B6B]">
+                <span className="flex items-center gap-2 text-sm text-[var(--muted)]">
                   <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
@@ -1331,7 +1331,7 @@ export default function Wizard({
                   Saving...
                 </span>
               ) : lastSaved ? (
-                <span className="flex items-center gap-2 text-sm text-[#25DC7F]">
+                <span className="flex items-center gap-2 text-sm text-[var(--green)]">
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
@@ -1353,8 +1353,8 @@ export default function Wizard({
                 disabled={isSaving || !canSubmit || transitioning}
                 className={`flex items-center gap-2 px-5 sm:px-8 py-3 rounded-lg font-semibold transition-all whitespace-nowrap ${
                   canSubmit
-                    ? 'bg-[#25DC7F] text-white hover:bg-[#1DB96A]'
-                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                    ? 'bg-[var(--green-fill)] text-[var(--on-green)] hover:bg-[var(--green-dim)]'
+                    : 'bg-[var(--border2)] text-[var(--faint)] cursor-not-allowed'
                 } disabled:opacity-50`}
               >
                 {isSaving ? (
@@ -1375,7 +1375,7 @@ export default function Wizard({
               <button
                 onClick={handleNext}
                 disabled={isSaving || transitioning}
-                className="flex items-center gap-2 px-5 sm:px-8 py-3 bg-[#25DC7F] text-white rounded-lg font-semibold hover:bg-[#1DB96A] transition-all disabled:opacity-50 whitespace-nowrap"
+                className="flex items-center gap-2 px-5 sm:px-8 py-3 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg font-semibold hover:bg-[var(--green-dim)] transition-all disabled:opacity-50 whitespace-nowrap"
               >
                 Next
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

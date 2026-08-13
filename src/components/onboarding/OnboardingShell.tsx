@@ -159,18 +159,18 @@ export default function OnboardingShell({
 
   if (loading && !payload && !gate) {
     return (
-      <div className="min-h-screen bg-[#F4F5F6] flex items-center justify-center">
-        <div className="text-[#6B6B6B] text-sm">Loading…</div>
+      <div className="min-h-screen bg-[var(--bg)] flex items-center justify-center">
+        <div className="text-[var(--muted)] text-sm">Loading…</div>
       </div>
     );
   }
 
   if (notFound) {
     return (
-      <div className="min-h-screen bg-[#F4F5F6] flex items-center justify-center px-4">
+      <div className="min-h-screen bg-[var(--bg)] flex items-center justify-center px-4">
         <div className="max-w-md text-center">
-          <h1 className="text-xl font-bold text-[#0B0B0B] mb-2">Onboarding link not found</h1>
-          <p className="text-sm text-[#6B6B6B]">
+          <h1 className="text-xl font-bold text-[var(--text)] mb-2">Onboarding link not found</h1>
+          <p className="text-sm text-[var(--muted)]">
             Please double-check the URL or contact your Clixsy account manager.
           </p>
         </div>
@@ -184,33 +184,33 @@ export default function OnboardingShell({
   // error to the user (and a Retry button) without unmounting React.
   if (loadError) {
     return (
-      <div className="min-h-screen bg-[#F4F5F6] flex flex-col">
-        <header className="bg-[#0F1A14]">
+      <div className="min-h-screen bg-[var(--bg)] flex flex-col">
+        <header className="bg-[var(--side)]">
           <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
             <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
-            <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
+            <div className="px-4 py-2 bg-[var(--card2)] text-[var(--text)] text-sm font-semibold rounded-lg">
               Clixsy Onboarding Portal
             </div>
           </div>
         </header>
         <main className="flex-1 flex items-center justify-center px-4 py-12">
-          <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-8 border border-[#E6E8EA] text-center">
-            <div className="w-12 h-12 mx-auto mb-4 bg-red-50 rounded-full flex items-center justify-center">
-              <svg className="w-6 h-6 text-[#E5484D]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-full max-w-md bg-[var(--card)] rounded-2xl shadow-lg p-8 border border-[var(--border2)] text-center">
+            <div className="w-12 h-12 mx-auto mb-4 bg-[var(--red-soft)] rounded-full flex items-center justify-center">
+              <svg className="w-6 h-6 text-[var(--red)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
-            <h1 className="text-xl font-bold text-[#0B0B0B] mb-2">{loadError.message}</h1>
-            <p className="text-sm text-[#6B6B6B] mb-2">
+            <h1 className="text-xl font-bold text-[var(--text)] mb-2">{loadError.message}</h1>
+            <p className="text-sm text-[var(--muted)] mb-2">
               We hit a temporary issue loading your session. Please try again in a moment, or contact your Clixsy account manager if this keeps happening.
             </p>
             {loadError.detail && (
-              <p className="text-xs text-[#A0A0A0] mb-4 font-mono break-all">{loadError.detail}</p>
+              <p className="text-xs text-[var(--faint)] mb-4 font-mono break-all">{loadError.detail}</p>
             )}
             <button
               type="button"
               onClick={() => void fetchSession()}
-              className="inline-flex items-center justify-center px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors"
+              className="inline-flex items-center justify-center px-4 py-2 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg text-sm font-semibold hover:bg-[var(--green-dim)] transition-colors"
             >
               Try again
             </button>
@@ -222,24 +222,24 @@ export default function OnboardingShell({
 
   if (gate?.locked === 'permanent') {
     return (
-      <div className="min-h-screen bg-[#F4F5F6] flex flex-col">
-        <header className="bg-[#0F1A14]">
+      <div className="min-h-screen bg-[var(--bg)] flex flex-col">
+        <header className="bg-[var(--side)]">
           <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
             <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
-            <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
+            <div className="px-4 py-2 bg-[var(--card2)] text-[var(--text)] text-sm font-semibold rounded-lg">
               Clixsy Onboarding Portal
             </div>
           </div>
         </header>
         <main className="flex-1 flex items-center justify-center px-4 py-12">
-          <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-8 border border-[#E6E8EA] text-center">
-            <div className="w-12 h-12 mx-auto mb-4 bg-red-50 rounded-full flex items-center justify-center">
-              <svg className="w-6 h-6 text-[#E5484D]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-full max-w-md bg-[var(--card)] rounded-2xl shadow-lg p-8 border border-[var(--border2)] text-center">
+            <div className="w-12 h-12 mx-auto mb-4 bg-[var(--red-soft)] rounded-full flex items-center justify-center">
+              <svg className="w-6 h-6 text-[var(--red)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 18c-.77 1.333.192 3 1.732 3zM12 9v4" />
               </svg>
             </div>
-            <h1 className="text-xl font-bold text-[#0B0B0B] mb-2">This link is locked</h1>
-            <p className="text-sm text-[#6B6B6B]">
+            <h1 className="text-xl font-bold text-[var(--text)] mb-2">This link is locked</h1>
+            <p className="text-sm text-[var(--muted)]">
               Too many incorrect PIN attempts. Please contact your Clixsy account manager to reissue access.
             </p>
           </div>

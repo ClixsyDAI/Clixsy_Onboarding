@@ -84,16 +84,16 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
   return (
     <div className="space-y-6">
       {/* Checklist table / cards */}
-      <div className="border border-[#E6E8EA] rounded-xl overflow-hidden">
+      <div className="border border-[var(--border2)] rounded-xl overflow-hidden">
         {/* Desktop table header */}
-        <div className="hidden md:grid grid-cols-[1fr_1.5fr_200px] bg-[#F4F5F6] px-4 py-3 text-sm font-semibold text-[#6B6B6B]">
+        <div className="hidden md:grid grid-cols-[1fr_1.5fr_200px] bg-[var(--bg)] px-4 py-3 text-sm font-semibold text-[var(--muted)]">
           <span>Service</span>
           <span>What We Need</span>
           <span>Status</span>
         </div>
 
         {/* Rows */}
-        <div className="divide-y divide-[#E6E8EA]">
+        <div className="divide-y divide-[var(--border2)]">
           {CHECKLIST_ROWS.map(row => {
             const currentStatus = (values[row.statusField] as string) || '';
 
@@ -106,14 +106,14 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
                 {/* Desktop row */}
                 <div className="hidden md:grid grid-cols-[1fr_1.5fr_200px] items-center px-4 py-3 gap-4">
                   <div>
-                    <div className="font-medium text-[#0B0B0B] text-sm">
+                    <div className="font-medium text-[var(--text)] text-sm">
                       {row.label}
                     </div>
                     {tutorial && (
                       <button
                         type="button"
                         onClick={() => setExpandedVideo(isVideoExpanded ? null : row.accessKey)}
-                        className="inline-flex items-center gap-1.5 mt-1 text-xs text-[#25DC7F] hover:text-[#1eb86a] font-medium transition-colors"
+                        className="inline-flex items-center gap-1.5 mt-1 text-xs text-[var(--green)] hover:text-[var(--green)] font-medium transition-colors"
                       >
                         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                           <path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/>
@@ -122,7 +122,7 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
                       </button>
                     )}
                   </div>
-                  <div className="text-sm text-[#6B6B6B]">
+                  <div className="text-sm text-[var(--muted)]">
                     {row.whatWeNeed}
                   </div>
                   <div>
@@ -131,10 +131,10 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
                       onChange={e => onChange(row.statusField, e.target.value)}
                       className={`w-full px-3 py-2 rounded-lg border text-sm transition-colors ${
                         currentStatus === 'done'
-                          ? 'border-[#25DC7F] bg-[#25DC7F]/5 text-[#0B0B0B]'
+                          ? 'border-[var(--green)] bg-[var(--green-fill)]/5 text-[var(--text)]'
                           : currentStatus === 'need_help'
-                          ? 'border-[#F5A524] bg-[#F5A524]/5 text-[#0B0B0B]'
-                          : 'border-[#E6E8EA] bg-white text-[#0B0B0B]'
+                          ? 'border-[var(--amber)] bg-[var(--amber)]/5 text-[var(--text)]'
+                          : 'border-[var(--border2)] bg-[var(--card)] text-[var(--text)]'
                       }`}
                     >
                       <option value="">Select status...</option>
@@ -151,12 +151,12 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
                 {isVideoExpanded && embedUrl && (
                   <div className="hidden md:block px-4 pb-4">
                     <div className="flex items-center gap-2 mb-2">
-                      <svg className="w-5 h-5 text-[#E5484D]" fill="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-5 h-5 text-[var(--red)]" fill="currentColor" viewBox="0 0 24 24">
                         <path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/>
                       </svg>
-                      <span className="text-sm font-semibold text-[#0B0B0B]">{tutorial.title}</span>
+                      <span className="text-sm font-semibold text-[var(--text)]">{tutorial.title}</span>
                     </div>
-                    <div className="relative w-full aspect-video rounded-lg overflow-hidden border border-[#E6E8EA] bg-black max-w-2xl">
+                    <div className="relative w-full aspect-video rounded-lg overflow-hidden border border-[var(--border2)] bg-black max-w-2xl">
                       <iframe
                         src={embedUrl}
                         title={tutorial.title}
@@ -170,17 +170,17 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
 
                 {/* Mobile card */}
                 <div className="md:hidden p-4 space-y-2">
-                  <div className="font-medium text-[#0B0B0B] text-sm">
+                  <div className="font-medium text-[var(--text)] text-sm">
                     {row.label}
                   </div>
-                  <div className="text-xs text-[#6B6B6B]">
+                  <div className="text-xs text-[var(--muted)]">
                     {row.whatWeNeed}
                   </div>
                   {tutorial && (
                     <button
                       type="button"
                       onClick={() => setExpandedVideo(isVideoExpanded ? null : row.accessKey)}
-                      className="inline-flex items-center gap-1.5 text-xs text-[#25DC7F] hover:text-[#1eb86a] font-medium transition-colors"
+                      className="inline-flex items-center gap-1.5 text-xs text-[var(--green)] hover:text-[var(--green)] font-medium transition-colors"
                     >
                       <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                         <path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/>
@@ -191,7 +191,7 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
                   {/* Expanded video (mobile) */}
                   {isVideoExpanded && embedUrl && (
                     <div className="pt-1">
-                      <div className="relative w-full aspect-video rounded-lg overflow-hidden border border-[#E6E8EA] bg-black">
+                      <div className="relative w-full aspect-video rounded-lg overflow-hidden border border-[var(--border2)] bg-black">
                         <iframe
                           src={embedUrl}
                           title={tutorial.title}
@@ -207,10 +207,10 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
                     onChange={e => onChange(row.statusField, e.target.value)}
                     className={`w-full px-3 py-2 rounded-lg border text-sm transition-colors ${
                       currentStatus === 'done'
-                        ? 'border-[#25DC7F] bg-[#25DC7F]/5 text-[#0B0B0B]'
+                        ? 'border-[var(--green)] bg-[var(--green-fill)]/5 text-[var(--text)]'
                         : currentStatus === 'need_help'
-                        ? 'border-[#F5A524] bg-[#F5A524]/5 text-[#0B0B0B]'
-                        : 'border-[#E6E8EA] bg-white text-[#0B0B0B]'
+                        ? 'border-[var(--amber)] bg-[var(--amber)]/5 text-[var(--text)]'
+                        : 'border-[var(--border2)] bg-[var(--card)] text-[var(--text)]'
                     }`}
                   >
                     <option value="">Select status...</option>
@@ -221,7 +221,7 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
                     ))}
                   </select>
                   {errors[row.statusField] && (
-                    <p className="text-xs text-[#E5484D]">{errors[row.statusField]}</p>
+                    <p className="text-xs text-[var(--red)]">{errors[row.statusField]}</p>
                   )}
                 </div>
               </div>
@@ -230,7 +230,7 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
         </div>
       </div>
 
-      <p className="text-xs text-[#A0A0A0] text-center">
+      <p className="text-xs text-[var(--faint)] text-center">
         You can come back and update these statuses at any time before submitting.
       </p>
     </div>

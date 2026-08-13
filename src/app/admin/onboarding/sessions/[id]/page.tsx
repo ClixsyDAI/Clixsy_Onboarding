@@ -290,22 +290,22 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'draft':
-        return <span className="px-3 py-1 text-xs font-semibold bg-[#F4F5F6] text-[#6B6B6B] rounded-full">Draft</span>;
+        return <span className="px-3 py-1 text-xs font-semibold bg-[var(--bg)] text-[var(--muted)] rounded-full">Draft</span>;
       case 'in_progress':
-        return <span className="px-3 py-1 text-xs font-semibold bg-[#F5A524]/10 text-[#F5A524] rounded-full">In Progress</span>;
+        return <span className="px-3 py-1 text-xs font-semibold bg-[var(--amber)]/10 text-[var(--amber)] rounded-full">In Progress</span>;
       case 'submitted':
-        return <span className="px-3 py-1 text-xs font-semibold bg-[#25DC7F]/10 text-[#25DC7F] rounded-full">Submitted</span>;
+        return <span className="px-3 py-1 text-xs font-semibold bg-[var(--green-fill)]/10 text-[var(--green)] rounded-full">Submitted</span>;
       default:
         return null;
     }
   };
 
   const getProgressColor = (percent: number) => {
-    if (percent === 100) return 'bg-[#25DC7F]';
-    if (percent >= 75) return 'bg-[#569077]';
-    if (percent >= 50) return 'bg-[#F5A524]';
-    if (percent >= 25) return 'bg-[#F5A524]';
-    return 'bg-[#A0A0A0]';
+    if (percent === 100) return 'bg-[var(--green-fill)]';
+    if (percent >= 75) return 'bg-[var(--green-dim)]';
+    if (percent >= 50) return 'bg-[var(--amber)]';
+    if (percent >= 25) return 'bg-[var(--amber)]';
+    return 'bg-[var(--faint)]';
   };
 
   const scrollToSection = (stepKey: string) => {
@@ -428,19 +428,19 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#F4F5F6]">
-        <header className="bg-[#0F1A14]">
+      <div className="min-h-screen bg-[var(--bg)]">
+        <header className="bg-[var(--side)]">
           <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
             <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
-            <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
+            <div className="px-4 py-2 bg-[var(--card2)] text-[var(--text)] text-sm font-semibold rounded-lg">
               Clixsy Onboarding Portal
             </div>
           </div>
         </header>
         <div className="max-w-5xl mx-auto p-8">
           <div className="animate-pulse space-y-4">
-            <div className="h-8 w-64 bg-white rounded" />
-            <div className="h-64 bg-white rounded-xl" />
+            <div className="h-8 w-64 bg-[var(--card)] rounded" />
+            <div className="h-64 bg-[var(--card)] rounded-xl" />
           </div>
         </div>
       </div>
@@ -449,28 +449,28 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
 
   if (error || !session) {
     return (
-      <div className="min-h-screen bg-[#F4F5F6]">
-        <header className="bg-[#0F1A14]">
+      <div className="min-h-screen bg-[var(--bg)]">
+        <header className="bg-[var(--side)]">
           <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
             <Link href="/">
               <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
             </Link>
-            <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
+            <div className="px-4 py-2 bg-[var(--card2)] text-[var(--text)] text-sm font-semibold rounded-lg">
               Clixsy Onboarding Portal
             </div>
           </div>
         </header>
         <div className="max-w-5xl mx-auto p-8">
-          <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-8 text-center">
-            <h1 className="text-xl font-bold text-[#0B0B0B] mb-4">
+          <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-8 text-center">
+            <h1 className="text-xl font-bold text-[var(--text)] mb-4">
               Session Not Found
             </h1>
-            <p className="text-[#6B6B6B] mb-6">
+            <p className="text-[var(--muted)] mb-6">
               {error || 'The requested session could not be found.'}
             </p>
             <Link
               href="/admin/onboarding/sessions"
-              className="inline-block px-6 py-3 bg-[#25DC7F] text-white rounded-lg font-semibold hover:bg-[#1DB96A] transition-colors"
+              className="inline-block px-6 py-3 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg font-semibold hover:bg-[var(--green-dim)] transition-colors"
             >
               Back to Sessions
             </Link>
@@ -481,41 +481,41 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   }
 
   return (
-    <div className="min-h-screen bg-[#F4F5F6]">
+    <div className="min-h-screen bg-[var(--bg)]">
       {/* Header */}
-      <header className="bg-[#0F1A14]">
+      <header className="bg-[var(--side)]">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
           <Link href="/">
             <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
           </Link>
-          <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
+          <div className="px-4 py-2 bg-[var(--card2)] text-[var(--text)] text-sm font-semibold rounded-lg">
             Clixsy Onboarding Portal
           </div>
         </div>
       </header>
 
       {/* Sticky Sub-Header */}
-      <div className="sticky top-0 z-50 bg-white/95 backdrop-blur-sm shadow-sm border-b border-[#E6E8EA]">
+      <div className="sticky top-0 z-50 bg-[var(--card)]/95 backdrop-blur-sm shadow-sm border-b border-[var(--border2)]">
         <div className="max-w-5xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <Link
                 href="/admin/onboarding/sessions"
-                className="p-2 hover:bg-[#F4F5F6] rounded-lg transition-colors"
+                className="p-2 hover:bg-[var(--bg)] rounded-lg transition-colors"
                 title="Back to Sessions"
               >
-                <svg className="w-5 h-5 text-[#6B6B6B]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5 text-[var(--muted)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                 </svg>
               </Link>
               <div>
-                <h1 className="text-xl font-bold text-[#0B0B0B]">
+                <h1 className="text-xl font-bold text-[var(--text)]">
                   {session.clients?.client_name || 'Session Details'}
                 </h1>
                 <div className="flex items-center gap-3 mt-1">
                   {getStatusBadge(session.status)}
                   {session.submitted_at && (
-                    <span className="text-sm text-[#6B6B6B]">
+                    <span className="text-sm text-[var(--muted)]">
                       Submitted {formatDate(session.submitted_at)}
                     </span>
                   )}
@@ -527,17 +527,17 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
             <div className="flex items-center gap-4">
               <div className="text-right hidden sm:block">
                 <div className="flex items-center gap-2">
-                  <div className="w-24 h-2 bg-[#E6E8EA] rounded-full overflow-hidden">
+                  <div className="w-24 h-2 bg-[var(--border)] rounded-full overflow-hidden">
                     <div
                       className={`h-full rounded-full ${getProgressColor(progressStats.progressPercent)}`}
                       style={{ width: `${progressStats.progressPercent}%` }}
                     />
                   </div>
-                  <span className="text-sm font-semibold text-[#0B0B0B]">
+                  <span className="text-sm font-semibold text-[var(--text)]">
                     {progressStats.completedSteps}/{progressStats.totalSteps}
                   </span>
                 </div>
-                <span className="text-xs text-[#6B6B6B]">
+                <span className="text-xs text-[var(--muted)]">
                   {progressStats.progressPercent}% complete
                 </span>
               </div>
@@ -546,12 +546,12 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleCopySummary}
-                  className="px-3 py-2 text-sm font-medium text-[#6B6B6B] hover:bg-[#F4F5F6] rounded-lg transition-colors flex items-center gap-1.5"
+                  className="px-3 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--bg)] rounded-lg transition-colors flex items-center gap-1.5"
                   title="Copy text summary to clipboard"
                 >
                   {copiedSummary ? (
                     <>
-                      <svg className="w-4 h-4 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-4 h-4 text-[var(--green)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                       </svg>
                       Copied!
@@ -567,12 +567,12 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                 </button>
                 <button
                   onClick={handleExportJSON}
-                  className="px-3 py-2 text-sm font-medium text-[#6B6B6B] hover:bg-[#F4F5F6] rounded-lg transition-colors flex items-center gap-1.5"
+                  className="px-3 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--bg)] rounded-lg transition-colors flex items-center gap-1.5"
                   title="Download as JSON file"
                 >
                   {copiedJSON ? (
                     <>
-                      <svg className="w-4 h-4 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-4 h-4 text-[var(--green)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                       </svg>
                       Downloaded!
@@ -594,45 +594,45 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
 
       <div className="max-w-5xl mx-auto px-6 py-8">
         {/* Session Info Card */}
-        <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-6 mb-6">
+        <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-6 mb-6">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
             <div>
-              <p className="text-sm text-[#6B6B6B]">Contact Name</p>
-              <p className="font-medium text-[#0B0B0B]">
+              <p className="text-sm text-[var(--muted)]">Contact Name</p>
+              <p className="font-medium text-[var(--text)]">
                 {session.clients?.primary_contact_name || '-'}
               </p>
             </div>
             <div>
-              <p className="text-sm text-[#6B6B6B]">Contact Email</p>
-              <p className="font-medium text-[#0B0B0B]">
+              <p className="text-sm text-[var(--muted)]">Contact Email</p>
+              <p className="font-medium text-[var(--text)]">
                 {session.clients?.primary_contact_email || '-'}
               </p>
             </div>
             <div>
-              <p className="text-sm text-[#6B6B6B]">Created</p>
-              <p className="font-medium text-[#0B0B0B]">
+              <p className="text-sm text-[var(--muted)]">Created</p>
+              <p className="font-medium text-[var(--text)]">
                 {formatDate(session.created_at)}
               </p>
             </div>
             <div>
-              <p className="text-sm text-[#6B6B6B]">Last Saved</p>
-              <p className="font-medium text-[#0B0B0B]">
+              <p className="text-sm text-[var(--muted)]">Last Saved</p>
+              <p className="font-medium text-[var(--text)]">
                 {formatDate(session.last_saved_at)}
               </p>
             </div>
           </div>
 
           {/* Account Manager + Vertical (P1, read-only) */}
-          <div className="mt-6 pt-6 border-t border-[#E6E8EA] grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="mt-6 pt-6 border-t border-[var(--border2)] grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <p className="text-sm text-[#6B6B6B]">Account Manager</p>
-              <p className="font-medium text-[#0B0B0B]">
+              <p className="text-sm text-[var(--muted)]">Account Manager</p>
+              <p className="font-medium text-[var(--text)]">
                 {session.account_manager || '—'}
               </p>
             </div>
             <div>
-              <p className="text-sm text-[#6B6B6B]">Vertical</p>
-              <p className="font-medium text-[#0B0B0B]">
+              <p className="text-sm text-[var(--muted)]">Vertical</p>
+              <p className="font-medium text-[var(--text)]">
                 {session.vertical === 'law_firm'
                   ? 'Law Firm'
                   : session.vertical === 'home_services'
@@ -642,52 +642,52 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
             </div>
           </div>
 
-          <div className="mt-6 pt-6 border-t border-[#E6E8EA]">
-            <p className="text-sm text-[#6B6B6B] mb-2">Onboarding Link</p>
+          <div className="mt-6 pt-6 border-t border-[var(--border2)]">
+            <p className="text-sm text-[var(--muted)] mb-2">Onboarding Link</p>
             <div className="flex items-center gap-2">
-              <code className="flex-1 px-3 py-2 bg-[#F4F5F6] rounded text-sm text-[#0B0B0B] overflow-x-auto">
+              <code className="flex-1 px-3 py-2 bg-[var(--bg)] rounded text-sm text-[var(--text)] overflow-x-auto">
                 {typeof window !== 'undefined' ? `${window.location.origin}/onboarding/${session.token}` : `/onboarding/${session.token}`}
               </code>
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(`${window.location.origin}/onboarding/${session.token}`);
                 }}
-                className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors whitespace-nowrap"
+                className="px-4 py-2 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg text-sm font-semibold hover:bg-[var(--green-dim)] transition-colors whitespace-nowrap"
               >
                 Copy Link
               </button>
               <button
                 onClick={handleCopyAmLink}
                 title="Open-as-AM link: skips the PIN, fires no tracking, suppresses the welcome wizard. Form entries save as real client data."
-                className="px-4 py-2 border border-[#25DC7F] text-[#25DC7F] rounded-lg text-sm font-semibold hover:bg-[#25DC7F]/10 transition-colors whitespace-nowrap"
+                className="px-4 py-2 border border-[var(--green)] text-[var(--green)] rounded-lg text-sm font-semibold hover:bg-[var(--green-fill)]/10 transition-colors whitespace-nowrap"
               >
                 {copiedAmLink ? 'Copied!' : 'Copy AM Link'}
               </button>
             </div>
             {amLinkError && (
-              <p className="mt-1 text-sm text-[#E5484D]">{amLinkError}</p>
+              <p className="mt-1 text-sm text-[var(--red)]">{amLinkError}</p>
             )}
-            <p className="mt-1 text-xs text-[#6B6B6B]">
+            <p className="mt-1 text-xs text-[var(--muted)]">
               AM Link opens the form without a PIN and with tracking off — for filling
               the form on the client&apos;s behalf. Don&apos;t send it to clients.
             </p>
           </div>
 
           {/* PIN Access (P2) */}
-          <div className="mt-6 pt-6 border-t border-[#E6E8EA]">
+          <div className="mt-6 pt-6 border-t border-[var(--border2)]">
             <div className="flex items-center justify-between mb-3">
-              <p className="text-sm font-semibold text-[#0B0B0B]">PIN Access</p>
+              <p className="text-sm font-semibold text-[var(--text)]">PIN Access</p>
               {(() => {
                 if (!session.pin_set) {
                   return (
-                    <span className="text-xs font-medium text-[#6B6B6B] bg-[#F4F5F6] px-2 py-1 rounded">
+                    <span className="text-xs font-medium text-[var(--muted)] bg-[var(--bg)] px-2 py-1 rounded">
                       Legacy — no PIN required
                     </span>
                   );
                 }
                 if (session.pin_locked_at) {
                   return (
-                    <span className="text-xs font-medium text-[#E5484D] bg-[#E5484D]/10 px-2 py-1 rounded">
+                    <span className="text-xs font-medium text-[var(--red)] bg-[var(--red)]/10 px-2 py-1 rounded">
                       Locked — admin action required
                     </span>
                   );
@@ -697,13 +697,13 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                   new Date(session.pin_lockout_until).getTime() > Date.now()
                 ) {
                   return (
-                    <span className="text-xs font-medium text-[#F5A524] bg-[#F5A524]/10 px-2 py-1 rounded">
+                    <span className="text-xs font-medium text-[var(--amber)] bg-[var(--amber)]/10 px-2 py-1 rounded">
                       Rate-limited until {formatDate(session.pin_lockout_until)}
                     </span>
                   );
                 }
                 return (
-                  <span className="text-xs font-medium text-[#25DC7F] bg-[#25DC7F]/10 px-2 py-1 rounded">
+                  <span className="text-xs font-medium text-[var(--green)] bg-[var(--green-fill)]/10 px-2 py-1 rounded">
                     Active
                   </span>
                 );
@@ -712,42 +712,42 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4 text-sm">
               <div>
-                <p className="text-xs text-[#6B6B6B]">Failed attempts</p>
-                <p className="font-medium text-[#0B0B0B]">
+                <p className="text-xs text-[var(--muted)]">Failed attempts</p>
+                <p className="font-medium text-[var(--text)]">
                   {session.pin_attempts}
                 </p>
               </div>
               <div>
-                <p className="text-xs text-[#6B6B6B]">Rate-limit until</p>
-                <p className="font-medium text-[#0B0B0B]">
+                <p className="text-xs text-[var(--muted)]">Rate-limit until</p>
+                <p className="font-medium text-[var(--text)]">
                   {session.pin_lockout_until
                     ? formatDate(session.pin_lockout_until)
                     : '—'}
                 </p>
               </div>
               <div>
-                <p className="text-xs text-[#6B6B6B]">Permanently locked</p>
-                <p className="font-medium text-[#0B0B0B]">
+                <p className="text-xs text-[var(--muted)]">Permanently locked</p>
+                <p className="font-medium text-[var(--text)]">
                   {session.pin_locked_at ? formatDate(session.pin_locked_at) : '—'}
                 </p>
               </div>
               <div>
-                <p className="text-xs text-[#6B6B6B]">PIN configured</p>
-                <p className="font-medium text-[#0B0B0B]">
+                <p className="text-xs text-[var(--muted)]">PIN configured</p>
+                <p className="font-medium text-[var(--text)]">
                   {session.pin_set ? 'Yes' : 'No'}
                 </p>
               </div>
             </div>
 
             {pinActionError && (
-              <div className="mb-3 p-3 bg-red-50 border border-red-200 rounded text-sm text-[#E5484D]">
+              <div className="mb-3 p-3 bg-[var(--red-soft)] border border-[var(--red)] rounded text-sm text-[var(--red)]">
                 {pinActionError}
               </div>
             )}
 
             {revealedPin && (
-              <div className="mb-3 p-4 bg-[#FFF8E1] border border-[#F5A524]/30 rounded-lg">
-                <p className="text-sm font-semibold text-[#0B0B0B] mb-2">
+              <div className="mb-3 p-4 bg-[var(--amber-soft)] border border-[var(--amber)]/30 rounded-lg">
+                <p className="text-sm font-semibold text-[var(--text)] mb-2">
                   New PIN
                 </p>
                 <div className="flex items-center gap-2 mb-2">
@@ -756,16 +756,16 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                     value={revealedPin}
                     readOnly
                     aria-label="New 6-digit PIN"
-                    className="flex-1 bg-transparent text-[#0B0B0B] text-2xl font-mono tracking-[0.5em] text-center focus:outline-none"
+                    className="flex-1 bg-transparent text-[var(--text)] text-2xl font-mono tracking-[0.5em] text-center focus:outline-none"
                   />
                   <button
                     onClick={handleCopyRevealedPin}
-                    className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors"
+                    className="px-4 py-2 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg text-sm font-semibold hover:bg-[var(--green-dim)] transition-colors"
                   >
                     {copiedPin ? 'Copied!' : 'Copy'}
                   </button>
                 </div>
-                <p className="text-xs text-[#E5484D]">
+                <p className="text-xs text-[var(--red)]">
                   <strong>This PIN won&apos;t be shown again.</strong> Copy it
                   now and send it to the client.
                 </p>
@@ -776,7 +776,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               <button
                 onClick={handleRegeneratePin}
                 disabled={pinActionLoading !== null}
-                className="px-4 py-2 bg-[#0F1A14] text-white rounded-lg text-sm font-semibold hover:bg-[#1A2A1F] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-4 py-2 bg-[var(--side)] text-[var(--text)] rounded-lg text-sm font-semibold hover:bg-[var(--card2)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {pinActionLoading === 'regenerate'
                   ? 'Rotating…'
@@ -790,7 +790,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                 <button
                   onClick={handleUnlockSession}
                   disabled={pinActionLoading !== null}
-                  className="px-4 py-2 border border-[#E6E8EA] text-[#0B0B0B] rounded-lg text-sm font-semibold hover:bg-[#F4F5F6] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-4 py-2 border border-[var(--border2)] text-[var(--text)] rounded-lg text-sm font-semibold hover:bg-[var(--bg)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {pinActionLoading === 'unlock'
                     ? 'Unlocking…'
@@ -803,13 +803,13 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
 
         {/* Access Checklist Card */}
         {accessChecklist && (
-          <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-6 mb-6">
+          <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-6 mb-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-[#0B0B0B]">Access Checklist</h2>
+              <h2 className="text-lg font-bold text-[var(--text)]">Access Checklist</h2>
               {accessChecklist.missingCount > 0 && (
                 <button
                   onClick={handleCopyMissingAccess}
-                  className="px-3 py-1.5 text-sm font-semibold text-[#F5A524] bg-[#F5A524]/10 hover:bg-[#F5A524]/20 rounded-lg transition-colors flex items-center gap-1.5"
+                  className="px-3 py-1.5 text-sm font-semibold text-[var(--amber)] bg-[var(--amber)]/10 hover:bg-[var(--amber)]/20 rounded-lg transition-colors flex items-center gap-1.5"
                   title="Copy missing access request text"
                 >
                   {copiedMissingAccess ? (
@@ -837,25 +837,25 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                   key={item.key}
                   className={`p-3 rounded-lg border ${
                     !item.relevant
-                      ? 'bg-[#F4F5F6] border-[#E6E8EA]'
+                      ? 'bg-[var(--bg)] border-[var(--border2)]'
                       : item.provided
-                      ? 'bg-[#25DC7F]/5 border-[#25DC7F]/30'
-                      : 'bg-[#F5A524]/5 border-[#F5A524]/30'
+                      ? 'bg-[var(--green-fill)]/5 border-[var(--green)]/30'
+                      : 'bg-[var(--amber)]/5 border-[var(--amber)]/30'
                   }`}
                 >
                   <div className="flex items-center gap-2 mb-1">
                     {!item.relevant ? (
-                      <span className="w-5 h-5 flex items-center justify-center text-[#A0A0A0]">
+                      <span className="w-5 h-5 flex items-center justify-center text-[var(--faint)]">
                         <span className="text-sm">-</span>
                       </span>
                     ) : item.provided ? (
-                      <span className="w-5 h-5 flex items-center justify-center text-[#25DC7F]">
+                      <span className="w-5 h-5 flex items-center justify-center text-[var(--green)]">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                         </svg>
                       </span>
                     ) : (
-                      <span className="w-5 h-5 flex items-center justify-center text-[#F5A524]">
+                      <span className="w-5 h-5 flex items-center justify-center text-[var(--amber)]">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                         </svg>
@@ -863,20 +863,20 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                     )}
                     <span className={`text-sm font-medium ${
                       !item.relevant
-                        ? 'text-[#6B6B6B]'
+                        ? 'text-[var(--muted)]'
                         : item.provided
-                        ? 'text-[#25DC7F]'
-                        : 'text-[#F5A524]'
+                        ? 'text-[var(--green)]'
+                        : 'text-[var(--amber)]'
                     }`}>
                       {item.shortLabel}
                     </span>
                   </div>
                   <p className={`text-xs ${
                     !item.relevant
-                      ? 'text-[#A0A0A0]'
+                      ? 'text-[var(--faint)]'
                       : item.provided
-                      ? 'text-[#569077]'
-                      : 'text-[#F5A524]'
+                      ? 'text-[var(--muted)]'
+                      : 'text-[var(--amber)]'
                   }`}>
                     {!item.relevant ? 'N/A' : item.provided ? 'Provided' : 'Missing'}
                   </p>
@@ -885,15 +885,15 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
             </div>
 
             {/* Summary */}
-            <div className="mt-4 pt-4 border-t border-[#E6E8EA] flex items-center gap-4 text-sm">
-              <span className="text-[#25DC7F]">
+            <div className="mt-4 pt-4 border-t border-[var(--border2)] flex items-center gap-4 text-sm">
+              <span className="text-[var(--green)]">
                 {accessChecklist.presentCount} provided
               </span>
-              <span className="text-[#F5A524]">
+              <span className="text-[var(--amber)]">
                 {accessChecklist.missingCount} missing
               </span>
               {accessChecklist.notApplicableCount > 0 && (
-                <span className="text-[#6B6B6B]">
+                <span className="text-[var(--muted)]">
                   {accessChecklist.notApplicableCount} N/A
                 </span>
               )}
@@ -910,8 +910,8 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
         />
 
         {/* Jump to Section Navigation */}
-        <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-6 mb-6">
-          <h2 className="text-lg font-bold text-[#0B0B0B] mb-4">Jump to Section</h2>
+        <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-6 mb-6">
+          <h2 className="text-lg font-bold text-[var(--text)] mb-4">Jump to Section</h2>
           <div className="flex flex-wrap gap-2">
             {onboardingSteps.map((step, index) => {
               const answer = answers.find(a => a.step_key === step.key);
@@ -923,8 +923,8 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                   onClick={() => scrollToSection(step.key)}
                   className={`px-3 py-1.5 text-sm rounded-lg border transition-colors flex items-center gap-1.5 ${
                     isCompleted
-                      ? 'bg-[#25DC7F]/5 border-[#25DC7F]/30 text-[#25DC7F] hover:bg-[#25DC7F]/10'
-                      : 'bg-[#F4F5F6] border-[#E6E8EA] text-[#6B6B6B] hover:bg-[#E6E8EA]'
+                      ? 'bg-[var(--green-fill)]/5 border-[var(--green)]/30 text-[var(--green)] hover:bg-[var(--green-fill)]/10'
+                      : 'bg-[var(--bg)] border-[var(--border2)] text-[var(--muted)] hover:bg-[var(--border)]'
                   }`}
                 >
                   {isCompleted && (
@@ -940,20 +940,20 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
         </div>
 
         {/* Answers by Step */}
-        <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-6">
+        <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-[#0B0B0B]">Responses by Section</h2>
+            <h2 className="text-lg font-bold text-[var(--text)]">Responses by Section</h2>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setExpandedSteps(new Set(onboardingSteps.map(s => s.key)))}
-                className="text-sm text-[#25DC7F] hover:text-[#1DB96A]"
+                className="text-sm text-[var(--green)] hover:text-[var(--green)]"
               >
                 Expand All
               </button>
-              <span className="text-[#E6E8EA]">|</span>
+              <span className="text-[var(--muted)]">|</span>
               <button
                 onClick={() => setExpandedSteps(new Set())}
-                className="text-sm text-[#25DC7F] hover:text-[#1DB96A]"
+                className="text-sm text-[var(--green)] hover:text-[var(--green)]"
               >
                 Collapse All
               </button>
@@ -961,7 +961,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
           </div>
 
           {answers.length === 0 ? (
-            <p className="text-[#6B6B6B] text-center py-8">
+            <p className="text-[var(--muted)] text-center py-8">
               No responses have been submitted yet.
             </p>
           ) : (
@@ -975,35 +975,35 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                     key={step.key}
                     ref={el => { sectionRefs.current[step.key] = el; }}
                     id={`section-${step.key}`}
-                    className="border border-[#E6E8EA] rounded-lg overflow-hidden scroll-mt-24"
+                    className="border border-[var(--border2)] rounded-lg overflow-hidden scroll-mt-24"
                   >
                     <button
                       onClick={() => toggleStep(step.key)}
-                      className="w-full px-4 py-3 flex items-center justify-between bg-[#F4F5F6] hover:bg-[#E6E8EA] transition-colors"
+                      className="w-full px-4 py-3 flex items-center justify-between bg-[var(--bg)] hover:bg-[var(--border)] transition-colors"
                     >
                       <div className="flex items-center gap-3">
                         {answer?.completed ? (
-                          <span className="w-6 h-6 bg-[#25DC7F]/10 text-[#25DC7F] rounded-full flex items-center justify-center">
+                          <span className="w-6 h-6 bg-[var(--green-fill)]/10 text-[var(--green)] rounded-full flex items-center justify-center">
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                             </svg>
                           </span>
                         ) : (
-                          <span className="w-6 h-6 bg-[#E6E8EA] text-[#6B6B6B] rounded-full flex items-center justify-center text-xs font-medium">
+                          <span className="w-6 h-6 bg-[var(--border)] text-[var(--muted)] rounded-full flex items-center justify-center text-xs font-medium">
                             {index + 1}
                           </span>
                         )}
-                        <span className="font-semibold text-[#0B0B0B]">
+                        <span className="font-semibold text-[var(--text)]">
                           {step.title}
                         </span>
                         {answer?.completed && (
-                          <span className="text-xs text-[#6B6B6B]">
+                          <span className="text-xs text-[var(--muted)]">
                             Updated {formatDate(answer.updated_at)}
                           </span>
                         )}
                       </div>
                       <svg
-                        className={`w-5 h-5 text-[#6B6B6B] transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                        className={`w-5 h-5 text-[var(--muted)] transition-transform ${isExpanded ? 'rotate-180' : ''}`}
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
@@ -1013,17 +1013,17 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                     </button>
 
                     {isExpanded && (
-                      <div className="px-4 py-4 border-t border-[#E6E8EA]">
+                      <div className="px-4 py-4 border-t border-[var(--border2)]">
                         {answer ? (
                           <div className="grid gap-4">
                             {Object.entries(answer.answers).map(([key, value]) => {
                               const field = step.fields.find(f => f.name === key);
                               return (
                                 <div key={key} className="flex flex-col sm:flex-row sm:gap-4">
-                                  <dt className="text-sm font-medium text-[#6B6B6B] sm:w-1/3">
+                                  <dt className="text-sm font-medium text-[var(--muted)] sm:w-1/3">
                                     {field?.label || key}
                                   </dt>
-                                  <dd className="text-sm text-[#0B0B0B] sm:w-2/3 whitespace-pre-wrap">
+                                  <dd className="text-sm text-[var(--text)] sm:w-2/3 whitespace-pre-wrap">
                                     {formatValue(value)}
                                   </dd>
                                 </div>
@@ -1031,7 +1031,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                             })}
                           </div>
                         ) : (
-                          <p className="text-sm text-[#6B6B6B] italic">
+                          <p className="text-sm text-[var(--muted)] italic">
                             This section has not been completed yet.
                           </p>
                         )}

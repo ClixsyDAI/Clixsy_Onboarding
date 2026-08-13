@@ -117,13 +117,13 @@ export default function NewOnboardingPage() {
 
   if (generatedUrl) {
     return (
-      <div className="min-h-screen bg-[#F4F5F6]">
-        <header className="bg-[#0F1A14]">
+      <div className="min-h-screen bg-[var(--bg)]">
+        <header className="bg-[var(--side)]">
           <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
             <Link href="/">
               <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
             </Link>
-            <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
+            <div className="px-4 py-2 bg-[var(--card2)] text-[var(--text)] text-sm font-semibold rounded-lg">
               Clixsy Onboarding Portal
             </div>
           </div>
@@ -131,27 +131,27 @@ export default function NewOnboardingPage() {
 
         <div className="flex items-center justify-center py-16 px-4">
           <div className="max-w-2xl w-full mx-auto">
-            <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-8">
-              <div className="w-16 h-16 mx-auto mb-6 bg-[#25DC7F]/10 rounded-full flex items-center justify-center">
-                <svg className="w-8 h-8 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-8">
+              <div className="w-16 h-16 mx-auto mb-6 bg-[var(--green-fill)]/10 rounded-full flex items-center justify-center">
+                <svg className="w-8 h-8 text-[var(--green)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-              <h1 className="text-2xl font-extrabold text-center text-[#0B0B0B] mb-4">
+              <h1 className="text-2xl font-extrabold text-center text-[var(--text)] mb-4">
                 Onboarding Link Created!
               </h1>
 
               {/* Onboarding URL */}
-              <p className="text-center text-[#6B6B6B] mb-2">
+              <p className="text-center text-[var(--muted)] mb-2">
                 Share this link with your client to begin their onboarding:
               </p>
               {siComplete && (
-                <p className="text-center text-[#25DC7F] text-sm mb-4 font-medium">
+                <p className="text-center text-[var(--green)] text-sm mb-4 font-medium">
                   Website intelligence is attached — the client will see personalized questions.
                 </p>
               )}
 
-              <div className="bg-[#F4F5F6] rounded-lg p-4 mb-6">
+              <div className="bg-[var(--bg)] rounded-lg p-4 mb-6">
                 {/* Stage 10 / Fix 5: "Go to link" button alongside Copy so
                     the AM can preview/fill the form themselves before sending
                     to the client. Buttons stack under the URL on mobile so
@@ -163,20 +163,20 @@ export default function NewOnboardingPage() {
                     value={generatedUrl}
                     readOnly
                     aria-label="Onboarding URL"
-                    className="flex-1 min-w-0 bg-transparent text-[#0B0B0B] text-sm focus:outline-none"
+                    className="flex-1 min-w-0 bg-transparent text-[var(--text)] text-sm focus:outline-none"
                   />
                   <div className="flex gap-2">
                     <a
                       href={generatedUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex-1 sm:flex-none px-4 py-2 border border-[#E6E8EA] bg-white text-[#0B0B0B] rounded-lg text-sm font-semibold hover:bg-[#E6E8EA] transition-colors text-center whitespace-nowrap"
+                      className="flex-1 sm:flex-none px-4 py-2 border border-[var(--border2)] bg-[var(--card)] text-[var(--text)] rounded-lg text-sm font-semibold hover:bg-[var(--border)] transition-colors text-center whitespace-nowrap"
                     >
                       Go to link
                     </a>
                     <button
                       onClick={() => copyToClipboard(generatedUrl, 'url')}
-                      className="flex-1 sm:flex-none px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors whitespace-nowrap"
+                      className="flex-1 sm:flex-none px-4 py-2 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg text-sm font-semibold hover:bg-[var(--green-dim)] transition-colors whitespace-nowrap"
                     >
                       {copiedField === 'url' ? 'Copied!' : 'Copy'}
                     </button>
@@ -186,11 +186,11 @@ export default function NewOnboardingPage() {
 
               {/* PIN */}
               {generatedPin && (
-                <div className="border-t border-[#E6E8EA] pt-6 mb-6">
-                  <p className="text-center text-[#0B0B0B] font-semibold mb-2">
+                <div className="border-t border-[var(--border2)] pt-6 mb-6">
+                  <p className="text-center text-[var(--text)] font-semibold mb-2">
                     Access PIN
                   </p>
-                  <p className="text-center text-[#6B6B6B] text-sm mb-4">
+                  <p className="text-center text-[var(--muted)] text-sm mb-4">
                     Send this 6-digit PIN to your client along with the link.
                     They&apos;ll enter it once to unlock the form.
                   </p>
@@ -205,24 +205,24 @@ export default function NewOnboardingPage() {
                       so flex shrink kicks in, plus smaller text +
                       tighter tracking on mobile so the digits stay
                       readable inside the visible column. */}
-                  <div className="bg-[#FFF8E1] border border-[#F5A524]/30 rounded-lg p-4 mb-4">
+                  <div className="bg-[var(--amber-soft)] border border-[var(--amber)]/30 rounded-lg p-4 mb-4">
                     <div className="flex items-center gap-2">
                       <input
                         type="text"
                         value={generatedPin}
                         readOnly
                         aria-label="6-digit PIN"
-                        className="flex-1 min-w-0 bg-transparent text-[#0B0B0B] text-xl sm:text-2xl font-mono tracking-[0.2em] sm:tracking-[0.5em] text-center focus:outline-none"
+                        className="flex-1 min-w-0 bg-transparent text-[var(--text)] text-xl sm:text-2xl font-mono tracking-[0.2em] sm:tracking-[0.5em] text-center focus:outline-none"
                       />
                       <button
                         onClick={() => copyToClipboard(generatedPin, 'pin')}
-                        className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors whitespace-nowrap"
+                        className="px-4 py-2 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg text-sm font-semibold hover:bg-[var(--green-dim)] transition-colors whitespace-nowrap"
                       >
                         {copiedField === 'pin' ? 'Copied!' : 'Copy'}
                       </button>
                     </div>
                   </div>
-                  <p className="text-center text-[#E5484D] text-xs">
+                  <p className="text-center text-[var(--red)] text-xs">
                     <strong>This PIN won&apos;t be shown again.</strong> Copy it now.
                     If lost, you can regenerate it from the session detail page.
                   </p>
@@ -232,13 +232,13 @@ export default function NewOnboardingPage() {
               <div className="flex gap-4">
                 <button
                   onClick={resetForm}
-                  className="flex-1 px-6 py-3 border border-[#E6E8EA] text-[#0B0B0B] rounded-lg font-semibold hover:bg-[#F4F5F6] transition-colors"
+                  className="flex-1 px-6 py-3 border border-[var(--border2)] text-[var(--text)] rounded-lg font-semibold hover:bg-[var(--bg)] transition-colors"
                 >
                   Create Another
                 </button>
                 <Link
                   href="/admin/onboarding/sessions"
-                  className="flex-1 px-6 py-3 bg-[#0F1A14] text-white rounded-lg font-semibold text-center hover:bg-[#1A2A1F] transition-colors"
+                  className="flex-1 px-6 py-3 bg-[var(--side)] text-[var(--text)] rounded-lg font-semibold text-center hover:bg-[var(--card2)] transition-colors"
                 >
                   View All Sessions
                 </Link>
@@ -256,13 +256,13 @@ export default function NewOnboardingPage() {
     (siComplete || skipAnalysis || !websiteUrl);
 
   return (
-    <div className="min-h-screen bg-[#F4F5F6]">
-      <header className="bg-[#0F1A14]">
+    <div className="min-h-screen bg-[var(--bg)]">
+      <header className="bg-[var(--side)]">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <Link href="/">
             <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
           </Link>
-          <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
+          <div className="px-4 py-2 bg-[var(--card2)] text-[var(--text)] text-sm font-semibold rounded-lg">
             Clixsy Onboarding Portal
           </div>
         </div>
@@ -270,16 +270,16 @@ export default function NewOnboardingPage() {
 
       <div className="flex items-center justify-center py-16 px-4">
         <div className="max-w-2xl w-full mx-auto space-y-6">
-          <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-8">
-            <h1 className="text-2xl font-extrabold text-[#0B0B0B] mb-2">
+          <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-8">
+            <h1 className="text-2xl font-extrabold text-[var(--text)] mb-2">
               Create New Onboarding Session
             </h1>
-            <p className="text-[#6B6B6B] mb-8">
+            <p className="text-[var(--muted)] mb-8">
               Set up a new client onboarding by providing their details below.
             </p>
 
             {error && (
-              <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-[#E5484D]">
+              <div className="mb-6 p-4 bg-[var(--red-soft)] border border-[var(--red)] rounded-lg text-[var(--red)]">
                 {error}
               </div>
             )}
@@ -287,8 +287,8 @@ export default function NewOnboardingPage() {
             <form onSubmit={handleSubmit} className="space-y-6">
               {/* Client Name */}
               <div>
-                <label htmlFor="clientName" className="block text-sm font-semibold text-[#0B0B0B] mb-2">
-                  Client Name <span className="text-[#E5484D]">*</span>
+                <label htmlFor="clientName" className="block text-sm font-semibold text-[var(--text)] mb-2">
+                  Client Name <span className="text-[var(--red)]">*</span>
                 </label>
                 <input
                   type="text"
@@ -297,13 +297,13 @@ export default function NewOnboardingPage() {
                   onChange={(e) => setClientName(e.target.value)}
                   required
                   placeholder="Acme Corporation"
-                  className="w-full px-4 py-3 border border-[#E6E8EA] rounded-lg focus:ring-2 focus:ring-[#25DC7F]/20 focus:border-[#25DC7F] transition-all"
+                  className="w-full px-4 py-3 border border-[var(--border2)] rounded-lg focus:ring-2 focus:ring-[var(--green)]/20 focus:border-[var(--green)] transition-all"
                 />
               </div>
 
               {/* Contact Name */}
               <div>
-                <label htmlFor="contactName" className="block text-sm font-semibold text-[#0B0B0B] mb-2">
+                <label htmlFor="contactName" className="block text-sm font-semibold text-[var(--text)] mb-2">
                   Primary Contact Name
                 </label>
                 <input
@@ -312,13 +312,13 @@ export default function NewOnboardingPage() {
                   value={contactName}
                   onChange={(e) => setContactName(e.target.value)}
                   placeholder="John Smith"
-                  className="w-full px-4 py-3 border border-[#E6E8EA] rounded-lg focus:ring-2 focus:ring-[#25DC7F]/20 focus:border-[#25DC7F] transition-all"
+                  className="w-full px-4 py-3 border border-[var(--border2)] rounded-lg focus:ring-2 focus:ring-[var(--green)]/20 focus:border-[var(--green)] transition-all"
                 />
               </div>
 
               {/* Contact Email */}
               <div>
-                <label htmlFor="contactEmail" className="block text-sm font-semibold text-[#0B0B0B] mb-2">
+                <label htmlFor="contactEmail" className="block text-sm font-semibold text-[var(--text)] mb-2">
                   Primary Contact Email
                 </label>
                 <input
@@ -327,13 +327,13 @@ export default function NewOnboardingPage() {
                   value={contactEmail}
                   onChange={(e) => setContactEmail(e.target.value)}
                   placeholder="john@acme.com"
-                  className="w-full px-4 py-3 border border-[#E6E8EA] rounded-lg focus:ring-2 focus:ring-[#25DC7F]/20 focus:border-[#25DC7F] transition-all"
+                  className="w-full px-4 py-3 border border-[var(--border2)] rounded-lg focus:ring-2 focus:ring-[var(--green)]/20 focus:border-[var(--green)] transition-all"
                 />
               </div>
 
               {/* Website URL */}
               <div>
-                <label htmlFor="websiteUrl" className="block text-sm font-semibold text-[#0B0B0B] mb-2">
+                <label htmlFor="websiteUrl" className="block text-sm font-semibold text-[var(--text)] mb-2">
                   Client Website URL
                 </label>
                 <input
@@ -347,17 +347,17 @@ export default function NewOnboardingPage() {
                     setSkipAnalysis(false);
                   }}
                   placeholder="https://acme.com"
-                  className="w-full px-4 py-3 border border-[#E6E8EA] rounded-lg focus:ring-2 focus:ring-[#25DC7F]/20 focus:border-[#25DC7F] transition-all"
+                  className="w-full px-4 py-3 border border-[var(--border2)] rounded-lg focus:ring-2 focus:ring-[var(--green)]/20 focus:border-[var(--green)] transition-all"
                 />
-                <p className="mt-1 text-xs text-[#6B6B6B]">
+                <p className="mt-1 text-xs text-[var(--muted)]">
                   Providing a URL enables website analysis to pre-fill onboarding fields.
                 </p>
               </div>
 
               {/* Account Manager (P1) */}
               <div>
-                <label htmlFor="accountManager" className="block text-sm font-semibold text-[#0B0B0B] mb-2">
-                  Account Manager <span className="text-[#E5484D]">*</span>
+                <label htmlFor="accountManager" className="block text-sm font-semibold text-[var(--text)] mb-2">
+                  Account Manager <span className="text-[var(--red)]">*</span>
                 </label>
                 <input
                   type="text"
@@ -366,9 +366,9 @@ export default function NewOnboardingPage() {
                   onChange={(e) => setAccountManager(e.target.value)}
                   required
                   placeholder="Your name"
-                  className="w-full px-4 py-3 border border-[#E6E8EA] rounded-lg focus:ring-2 focus:ring-[#25DC7F]/20 focus:border-[#25DC7F] transition-all"
+                  className="w-full px-4 py-3 border border-[var(--border2)] rounded-lg focus:ring-2 focus:ring-[var(--green)]/20 focus:border-[var(--green)] transition-all"
                 />
-                <p className="mt-1 text-xs text-[#6B6B6B]">
+                <p className="mt-1 text-xs text-[var(--muted)]">
                   The Clixsy person who&apos;ll be this client&apos;s main contact.
                   Surfaces in the thank-you screen.
                 </p>
@@ -376,13 +376,13 @@ export default function NewOnboardingPage() {
 
               {/* Vertical (P1) */}
               <div>
-                <span className="block text-sm font-semibold text-[#0B0B0B] mb-2">
-                  Vertical <span className="text-[#E5484D]">*</span>
+                <span className="block text-sm font-semibold text-[var(--text)] mb-2">
+                  Vertical <span className="text-[var(--red)]">*</span>
                 </span>
                 <div
                   role="radiogroup"
                   aria-label="Vertical"
-                  className="grid grid-cols-2 gap-2 p-1 bg-[#F4F5F6] rounded-lg border border-[#E6E8EA]"
+                  className="grid grid-cols-2 gap-2 p-1 bg-[var(--bg)] rounded-lg border border-[var(--border2)]"
                 >
                   {([
                     { value: 'law_firm', label: 'Law Firm' },
@@ -399,8 +399,8 @@ export default function NewOnboardingPage() {
                         className={
                           'px-4 py-2.5 rounded-md text-sm font-semibold transition-all ' +
                           (selected
-                            ? 'bg-white text-[#0B0B0B] shadow-sm border border-[#E6E8EA]'
-                            : 'text-[#6B6B6B] hover:text-[#0B0B0B]')
+                            ? 'bg-[var(--card)] text-[var(--text)] shadow-sm border border-[var(--border2)]'
+                            : 'text-[var(--muted)] hover:text-[var(--text)]')
                         }
                       >
                         {opt.label}
@@ -408,7 +408,7 @@ export default function NewOnboardingPage() {
                     );
                   })}
                 </div>
-                <p className="mt-1 text-xs text-[#6B6B6B]">
+                <p className="mt-1 text-xs text-[var(--muted)]">
                   Used to branch form content downstream. Pick the closest match.
                 </p>
               </div>
@@ -429,9 +429,9 @@ export default function NewOnboardingPage() {
                     id="skipAnalysis"
                     checked={skipAnalysis}
                     onChange={(e) => setSkipAnalysis(e.target.checked)}
-                    className="w-4 h-4 text-[#25DC7F] rounded border-[#E6E8EA]"
+                    className="w-4 h-4 text-[var(--green)] rounded border-[var(--border2)]"
                   />
-                  <label htmlFor="skipAnalysis" className="text-sm text-[#6B6B6B]">
+                  <label htmlFor="skipAnalysis" className="text-sm text-[var(--muted)]">
                     Skip website analysis and create link without pre-filled data
                   </label>
                 </div>
@@ -440,13 +440,13 @@ export default function NewOnboardingPage() {
               <button
                 type="submit"
                 disabled={isLoading || !canCreateLink}
-                className="w-full px-6 py-3 bg-[#25DC7F] text-white rounded-lg font-semibold hover:bg-[#1DB96A] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full px-6 py-3 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg font-semibold hover:bg-[var(--green-dim)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isLoading ? 'Creating...' : 'Create Onboarding Link'}
               </button>
 
               {websiteUrl && !siComplete && !skipAnalysis && (
-                <p className="text-xs text-[#F5A524] text-center">
+                <p className="text-xs text-[var(--amber)] text-center">
                   Run the website analysis above or skip it to enable the create button.
                 </p>
               )}

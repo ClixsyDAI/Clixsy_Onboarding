@@ -169,22 +169,22 @@ export default function SessionsPage() {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'draft':
-        return <span className="px-2.5 py-1 text-xs font-semibold bg-[#F4F5F6] text-[#6B6B6B] rounded-full">Draft</span>;
+        return <span className="px-2.5 py-1 text-xs font-semibold bg-[var(--bg)] text-[var(--muted)] rounded-full">Draft</span>;
       case 'in_progress':
-        return <span className="px-2.5 py-1 text-xs font-semibold bg-[#F5A524]/10 text-[#F5A524] rounded-full">In Progress</span>;
+        return <span className="px-2.5 py-1 text-xs font-semibold bg-[var(--amber)]/10 text-[var(--amber)] rounded-full">In Progress</span>;
       case 'submitted':
-        return <span className="px-2.5 py-1 text-xs font-semibold bg-[#25DC7F]/10 text-[#25DC7F] rounded-full">Submitted</span>;
+        return <span className="px-2.5 py-1 text-xs font-semibold bg-[var(--green-fill)]/10 text-[var(--green)] rounded-full">Submitted</span>;
       default:
         return null;
     }
   };
 
   const getProgressColor = (percent: number) => {
-    if (percent === 100) return 'bg-[#25DC7F]';
-    if (percent >= 75) return 'bg-[#569077]';
-    if (percent >= 50) return 'bg-[#F5A524]';
-    if (percent >= 25) return 'bg-[#F5A524]';
-    return 'bg-[#A0A0A0]';
+    if (percent === 100) return 'bg-[var(--green-fill)]';
+    if (percent >= 75) return 'bg-[var(--green-dim)]';
+    if (percent >= 50) return 'bg-[var(--amber)]';
+    if (percent >= 25) return 'bg-[var(--amber)]';
+    return 'bg-[var(--faint)]';
   };
 
   const formatDate = (dateString: string | null) => {
@@ -219,7 +219,7 @@ export default function SessionsPage() {
     if (!item.relevant) {
       return (
         <span
-          className="w-6 h-6 flex items-center justify-center text-[#A0A0A0]"
+          className="w-6 h-6 flex items-center justify-center text-[var(--faint)]"
           title={`${item.label} - Not applicable`}
         >
           <span className="text-xs">-</span>
@@ -230,7 +230,7 @@ export default function SessionsPage() {
     if (item.provided) {
       return (
         <span
-          className="w-6 h-6 flex items-center justify-center text-[#25DC7F]"
+          className="w-6 h-6 flex items-center justify-center text-[var(--green)]"
           title={`${item.label} - Provided`}
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -242,7 +242,7 @@ export default function SessionsPage() {
 
     return (
       <span
-        className="w-6 h-6 flex items-center justify-center text-[#F5A524]"
+        className="w-6 h-6 flex items-center justify-center text-[var(--amber)]"
         title={`${item.label} - Missing`}
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -254,25 +254,25 @@ export default function SessionsPage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#F4F5F6]">
+      <div className="min-h-screen bg-[var(--bg)]">
         {/* Header */}
-        <header className="bg-[#0F1A14]">
+        <header className="bg-[var(--side)]">
           <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
             <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
-            <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
+            <div className="px-4 py-2 bg-[var(--card2)] text-[var(--text)] text-sm font-semibold rounded-lg">
               Clixsy Onboarding Portal
             </div>
           </div>
         </header>
         <div className="max-w-7xl mx-auto p-8">
           <div className="animate-pulse space-y-4">
-            <div className="h-8 w-64 bg-white rounded" />
+            <div className="h-8 w-64 bg-[var(--card)] rounded" />
             <div className="grid grid-cols-6 gap-4">
               {[1, 2, 3, 4, 5, 6].map(i => (
-                <div key={i} className="h-24 bg-white rounded-xl" />
+                <div key={i} className="h-24 bg-[var(--card)] rounded-xl" />
               ))}
             </div>
-            <div className="h-96 bg-white rounded-xl" />
+            <div className="h-96 bg-[var(--card)] rounded-xl" />
           </div>
         </div>
       </div>
@@ -280,14 +280,14 @@ export default function SessionsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F4F5F6]">
+    <div className="min-h-screen bg-[var(--bg)]">
       {/* Header */}
-      <header className="bg-[#0F1A14]">
+      <header className="bg-[var(--side)]">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <Link href="/">
             <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
           </Link>
-          <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
+          <div className="px-4 py-2 bg-[var(--card2)] text-[var(--text)] text-sm font-semibold rounded-lg">
             Clixsy Onboarding Portal
           </div>
         </div>
@@ -297,16 +297,16 @@ export default function SessionsPage() {
         {/* Page Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-3xl font-extrabold text-[#0B0B0B]">
+            <h1 className="text-3xl font-extrabold text-[var(--text)]">
               Onboarding Progress
             </h1>
-            <p className="text-[#6B6B6B] mt-1">
+            <p className="text-[var(--muted)] mt-1">
               Track and manage all client onboarding sessions
             </p>
           </div>
           <Link
             href="/admin/onboarding/new"
-            className="px-6 py-3 bg-[#25DC7F] text-white rounded-lg font-semibold hover:bg-[#1DB96A] transition-colors flex items-center gap-2"
+            className="px-6 py-3 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg font-semibold hover:bg-[var(--green-dim)] transition-colors flex items-center gap-2"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -317,45 +317,45 @@ export default function SessionsPage() {
 
         {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-8">
-          <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-5">
-            <p className="text-sm font-medium text-[#6B6B6B]">Total Sessions</p>
-            <p className="text-3xl font-bold text-[#0B0B0B] mt-1">{stats.total}</p>
+          <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-5">
+            <p className="text-sm font-medium text-[var(--muted)]">Total Sessions</p>
+            <p className="text-3xl font-bold text-[var(--text)] mt-1">{stats.total}</p>
           </div>
-          <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-5">
-            <p className="text-sm font-medium text-[#6B6B6B]">Draft</p>
-            <p className="text-3xl font-bold text-[#6B6B6B] mt-1">{stats.draft}</p>
+          <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-5">
+            <p className="text-sm font-medium text-[var(--muted)]">Draft</p>
+            <p className="text-3xl font-bold text-[var(--muted)] mt-1">{stats.draft}</p>
           </div>
-          <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-5">
-            <p className="text-sm font-medium text-[#6B6B6B]">In Progress</p>
-            <p className="text-3xl font-bold text-[#F5A524] mt-1">{stats.inProgress}</p>
+          <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-5">
+            <p className="text-sm font-medium text-[var(--muted)]">In Progress</p>
+            <p className="text-3xl font-bold text-[var(--amber)] mt-1">{stats.inProgress}</p>
           </div>
-          <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-5">
-            <p className="text-sm font-medium text-[#6B6B6B]">Submitted</p>
-            <p className="text-3xl font-bold text-[#25DC7F] mt-1">{stats.submitted}</p>
+          <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-5">
+            <p className="text-sm font-medium text-[var(--muted)]">Submitted</p>
+            <p className="text-3xl font-bold text-[var(--green)] mt-1">{stats.submitted}</p>
           </div>
-          <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-5">
-            <p className="text-sm font-medium text-[#6B6B6B]">Avg. Progress</p>
-            <p className="text-3xl font-bold text-[#569077] mt-1">{stats.avgProgress}%</p>
+          <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-5">
+            <p className="text-sm font-medium text-[var(--muted)]">Avg. Progress</p>
+            <p className="text-3xl font-bold text-[var(--muted)] mt-1">{stats.avgProgress}%</p>
           </div>
-          <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-5">
-            <p className="text-sm font-medium text-[#6B6B6B]">Missing Access</p>
-            <p className="text-3xl font-bold text-[#F5A524] mt-1">{stats.missingAccess}</p>
+          <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-5">
+            <p className="text-sm font-medium text-[var(--muted)]">Missing Access</p>
+            <p className="text-3xl font-bold text-[var(--amber)] mt-1">{stats.missingAccess}</p>
           </div>
         </div>
 
         {error && (
-          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-[#E5484D]">
+          <div className="mb-6 p-4 bg-[var(--red-soft)] border border-[var(--red)] rounded-lg text-[var(--red)]">
             {error}
           </div>
         )}
 
         {/* Filters */}
-        <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-4 mb-6">
+        <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-4 mb-6">
           <div className="flex flex-wrap items-center gap-4">
             {/* Search */}
             <div className="flex-1 min-w-[200px]">
               <div className="relative">
-                <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-[#A0A0A0]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--faint)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
                 <input
@@ -363,18 +363,18 @@ export default function SessionsPage() {
                   placeholder="Search by client name or email..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 border border-[#E6E8EA] rounded-lg focus:ring-2 focus:ring-[#25DC7F]/20 focus:border-[#25DC7F]"
+                  className="w-full pl-10 pr-4 py-2 border border-[var(--border2)] rounded-lg focus:ring-2 focus:ring-[var(--green)]/20 focus:border-[var(--green)]"
                 />
               </div>
             </div>
 
             {/* Status Filter */}
             <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-[#6B6B6B]">Status:</label>
+              <label className="text-sm font-medium text-[var(--muted)]">Status:</label>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-                className="px-3 py-2 border border-[#E6E8EA] rounded-lg focus:ring-2 focus:ring-[#25DC7F]/20 focus:border-[#25DC7F]"
+                className="px-3 py-2 border border-[var(--border2)] rounded-lg focus:ring-2 focus:ring-[var(--green)]/20 focus:border-[var(--green)]"
               >
                 <option value="all">All</option>
                 <option value="draft">Draft</option>
@@ -385,11 +385,11 @@ export default function SessionsPage() {
 
             {/* Progress Filter */}
             <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-[#6B6B6B]">Progress:</label>
+              <label className="text-sm font-medium text-[var(--muted)]">Progress:</label>
               <select
                 value={progressFilter}
                 onChange={(e) => setProgressFilter(e.target.value as ProgressFilter)}
-                className="px-3 py-2 border border-[#E6E8EA] rounded-lg focus:ring-2 focus:ring-[#25DC7F]/20 focus:border-[#25DC7F]"
+                className="px-3 py-2 border border-[var(--border2)] rounded-lg focus:ring-2 focus:ring-[var(--green)]/20 focus:border-[var(--green)]"
               >
                 <option value="all">All</option>
                 <option value="0-25">0-25%</option>
@@ -402,11 +402,11 @@ export default function SessionsPage() {
 
             {/* Access Filter */}
             <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-[#6B6B6B]">Access:</label>
+              <label className="text-sm font-medium text-[var(--muted)]">Access:</label>
               <select
                 value={accessFilter}
                 onChange={(e) => setAccessFilter(e.target.value as AccessFilter)}
-                className="px-3 py-2 border border-[#E6E8EA] rounded-lg focus:ring-2 focus:ring-[#25DC7F]/20 focus:border-[#25DC7F]"
+                className="px-3 py-2 border border-[var(--border2)] rounded-lg focus:ring-2 focus:ring-[var(--green)]/20 focus:border-[var(--green)]"
               >
                 <option value="all">All</option>
                 <option value="missing">Missing Access</option>
@@ -423,7 +423,7 @@ export default function SessionsPage() {
                   setAccessFilter('all');
                   setSearchQuery('');
                 }}
-                className="px-3 py-2 text-sm text-[#6B6B6B] hover:text-[#0B0B0B]"
+                className="px-3 py-2 text-sm text-[var(--muted)] hover:text-[var(--text)]"
               >
                 Clear filters
               </button>
@@ -432,36 +432,36 @@ export default function SessionsPage() {
         </div>
 
         {/* Sessions Table */}
-        <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] overflow-hidden">
+        <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] overflow-hidden">
           {filteredSessions.length === 0 ? (
             <div className="p-12 text-center">
               {sessions.length === 0 ? (
                 <>
-                  <svg className="w-12 h-12 mx-auto text-[#A0A0A0] mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-12 h-12 mx-auto text-[var(--faint)] mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
-                  <h3 className="text-lg font-semibold text-[#0B0B0B] mb-2">
+                  <h3 className="text-lg font-semibold text-[var(--text)] mb-2">
                     No sessions yet
                   </h3>
-                  <p className="text-[#6B6B6B] mb-4">
+                  <p className="text-[var(--muted)] mb-4">
                     Create your first onboarding session to get started.
                   </p>
                   <Link
                     href="/admin/onboarding/new"
-                    className="inline-block px-6 py-3 bg-[#25DC7F] text-white rounded-lg font-semibold hover:bg-[#1DB96A] transition-colors"
+                    className="inline-block px-6 py-3 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg font-semibold hover:bg-[var(--green-dim)] transition-colors"
                   >
                     Create First Session
                   </Link>
                 </>
               ) : (
                 <>
-                  <svg className="w-12 h-12 mx-auto text-[#A0A0A0] mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-12 h-12 mx-auto text-[var(--faint)] mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                   </svg>
-                  <h3 className="text-lg font-semibold text-[#0B0B0B] mb-2">
+                  <h3 className="text-lg font-semibold text-[var(--text)] mb-2">
                     No matching sessions
                   </h3>
-                  <p className="text-[#6B6B6B]">
+                  <p className="text-[var(--muted)]">
                     Try adjusting your filters or search query.
                   </p>
                 </>
@@ -470,38 +470,38 @@ export default function SessionsPage() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
-                <thead className="bg-[#F4F5F6]">
+                <thead className="bg-[var(--bg)]">
                   <tr>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-[#6B6B6B] uppercase tracking-wider">
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
                       Client
                     </th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-[#6B6B6B] uppercase tracking-wider">
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
                       Status
                     </th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-[#6B6B6B] uppercase tracking-wider">
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
                       Progress
                     </th>
-                    <th className="px-4 py-4 text-left text-xs font-semibold text-[#6B6B6B] uppercase tracking-wider">
+                    <th className="px-4 py-4 text-left text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
                       Access
                     </th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-[#6B6B6B] uppercase tracking-wider">
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
                       Last Activity
                     </th>
-                    <th className="px-6 py-4 text-right text-xs font-semibold text-[#6B6B6B] uppercase tracking-wider">
+                    <th className="px-6 py-4 text-right text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
                       Actions
                     </th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#E6E8EA]">
+                <tbody className="divide-y divide-[var(--border2)]">
                   {filteredSessions.map((session) => (
-                    <tr key={session.id} className="hover:bg-[#F4F5F6]/50 transition-colors">
+                    <tr key={session.id} className="hover:bg-[var(--bg)]/50 transition-colors">
                       <td className="px-6 py-4">
                         <div>
-                          <div className="font-semibold text-[#0B0B0B]">
+                          <div className="font-semibold text-[var(--text)]">
                             {session.clientName}
                           </div>
                           {session.primaryContactEmail && (
-                            <div className="text-sm text-[#6B6B6B]">
+                            <div className="text-sm text-[var(--muted)]">
                               {session.primaryContactEmail}
                             </div>
                           )}
@@ -514,14 +514,14 @@ export default function SessionsPage() {
                         <div className="flex items-center gap-3">
                           <div className="flex-1 max-w-[120px]">
                             <div className="flex items-center justify-between text-xs mb-1">
-                              <span className="font-medium text-[#0B0B0B]">
+                              <span className="font-medium text-[var(--text)]">
                                 {session.completedSteps}/{session.totalSteps}
                               </span>
-                              <span className="text-[#6B6B6B]">
+                              <span className="text-[var(--muted)]">
                                 {session.progressPercent}%
                               </span>
                             </div>
-                            <div className="w-full h-2 bg-[#E6E8EA] rounded-full overflow-hidden">
+                            <div className="w-full h-2 bg-[var(--border)] rounded-full overflow-hidden">
                               <div
                                 className={`h-full rounded-full transition-all ${getProgressColor(session.progressPercent)}`}
                                 style={{ width: `${session.progressPercent}%` }}
@@ -536,17 +536,17 @@ export default function SessionsPage() {
                             <AccessIndicator key={item.key} item={item} />
                           ))}
                           {session.accessChecklist?.missingCount > 0 && (
-                            <span className="ml-1 text-xs text-[#F5A524] font-medium">
+                            <span className="ml-1 text-xs text-[var(--amber)] font-medium">
                               {session.accessChecklist.missingCount}
                             </span>
                           )}
                         </div>
                       </td>
                       <td className="px-6 py-4">
-                        <div className="text-sm text-[#0B0B0B]">
+                        <div className="text-sm text-[var(--text)]">
                           {formatRelativeTime(session.lastSavedAt || session.createdAt)}
                         </div>
-                        <div className="text-xs text-[#6B6B6B]">
+                        <div className="text-xs text-[var(--muted)]">
                           {session.submittedAt ? `Submitted ${formatDate(session.submittedAt)}` : `Created ${formatDate(session.createdAt)}`}
                         </div>
                       </td>
@@ -554,7 +554,7 @@ export default function SessionsPage() {
                         <div className="flex items-center justify-end gap-2">
                           <Link
                             href={`/admin/onboarding/sessions/${session.id}`}
-                            className="px-3 py-1.5 text-sm text-[#25DC7F] hover:text-[#1DB96A] font-semibold hover:bg-[#25DC7F]/10 rounded-lg transition-colors"
+                            className="px-3 py-1.5 text-sm text-[var(--green)] hover:text-[var(--green)] font-semibold hover:bg-[var(--green-fill)]/10 rounded-lg transition-colors"
                           >
                             View
                           </Link>
@@ -562,14 +562,14 @@ export default function SessionsPage() {
                             onClick={() => {
                               navigator.clipboard.writeText(`${window.location.origin}/onboarding/${session.token}`);
                             }}
-                            className="px-3 py-1.5 text-sm text-[#6B6B6B] hover:text-[#0B0B0B] font-medium hover:bg-[#F4F5F6] rounded-lg transition-colors"
+                            className="px-3 py-1.5 text-sm text-[var(--muted)] hover:text-[var(--text)] font-medium hover:bg-[var(--bg)] rounded-lg transition-colors"
                             title="Copy client link"
                           >
                             Copy Link
                           </button>
                           <button
                             onClick={() => setDeleteSession(session)}
-                            className="px-3 py-1.5 text-sm text-[#E5484D] hover:text-[#E5484D] font-medium hover:bg-red-50 rounded-lg transition-colors"
+                            className="px-3 py-1.5 text-sm text-[var(--red)] hover:text-[var(--red)] font-medium hover:bg-[var(--red-soft)] rounded-lg transition-colors"
                             title="Delete session"
                           >
                             Delete
@@ -586,7 +586,7 @@ export default function SessionsPage() {
 
         {/* Results count */}
         {filteredSessions.length > 0 && (
-          <div className="mt-4 text-sm text-[#6B6B6B] text-center">
+          <div className="mt-4 text-sm text-[var(--muted)] text-center">
             Showing {filteredSessions.length} of {sessions.length} sessions
           </div>
         )}
@@ -595,24 +595,24 @@ export default function SessionsPage() {
       {/* Delete Confirmation Modal */}
       {deleteSession && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+          <div className="bg-[var(--card)] rounded-2xl shadow-2xl max-w-md w-full p-6">
             <div className="flex items-center gap-4 mb-4">
-              <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center flex-shrink-0">
-                <svg className="w-6 h-6 text-[#E5484D]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="w-12 h-12 rounded-full bg-[var(--red-soft)] flex items-center justify-center flex-shrink-0">
+                <svg className="w-6 h-6 text-[var(--red)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                 </svg>
               </div>
               <div>
-                <h3 className="text-lg font-bold text-[#0B0B0B]">
+                <h3 className="text-lg font-bold text-[var(--text)]">
                   Delete Client
                 </h3>
-                <p className="text-sm text-[#6B6B6B]">
+                <p className="text-sm text-[var(--muted)]">
                   This action cannot be undone
                 </p>
               </div>
             </div>
 
-            <p className="text-[#1A1A1A] mb-6">
+            <p className="text-[var(--text)] mb-6">
               Are you sure you want to delete <span className="font-bold">{deleteSession.clientName}</span> and all their onboarding data?
             </p>
 
@@ -620,14 +620,14 @@ export default function SessionsPage() {
               <button
                 onClick={() => setDeleteSession(null)}
                 disabled={isDeleting}
-                className="flex-1 px-4 py-2.5 border border-[#E6E8EA] text-[#0B0B0B] rounded-lg font-semibold hover:bg-[#F4F5F6] transition-colors disabled:opacity-50"
+                className="flex-1 px-4 py-2.5 border border-[var(--border2)] text-[var(--text)] rounded-lg font-semibold hover:bg-[var(--bg)] transition-colors disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 onClick={handleDelete}
                 disabled={isDeleting}
-                className="flex-1 px-4 py-2.5 bg-[#E5484D] text-white rounded-lg font-semibold hover:bg-red-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                className="flex-1 px-4 py-2.5 bg-[var(--red)] text-[var(--text)] rounded-lg font-semibold hover:bg-red-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {isDeleting ? (
                   <>

@@ -118,11 +118,11 @@ export default function PinEntry({ token, clientName, initialLock, onSuccess }: 
   const disabledByLock = lock?.kind === 'permanent';
 
   return (
-    <div className="min-h-screen bg-[#F4F5F6] flex flex-col">
-      <header className="bg-[#0F1A14]">
+    <div className="min-h-screen bg-[var(--bg)] flex flex-col">
+      <header className="bg-[var(--side)]">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <img src={CLIXSY_LOGO_URL} alt="Clixsy" className="h-8" />
-          <div className="px-4 py-2 bg-[#1A2A1F] text-white text-sm font-semibold rounded-lg">
+          <div className="px-4 py-2 bg-[var(--card2)] text-[var(--text)] text-sm font-semibold rounded-lg">
             Clixsy Onboarding Portal
           </div>
         </div>
@@ -134,41 +134,41 @@ export default function PinEntry({ token, clientName, initialLock, onSuccess }: 
             iPhone SE (375px) / standard Android (360px). Was a fixed p-8
             (32px each side = 64px lost to padding) which left 343-64=279px
             for the PIN row that needs ~288px at the old w-12 sizing. */}
-        <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-6 sm:p-8 border border-[#E6E8EA]">
+        <div className="w-full max-w-md bg-[var(--card)] rounded-2xl shadow-lg p-6 sm:p-8 border border-[var(--border2)]">
           <div className="text-center mb-6">
-            <div className="w-12 h-12 mx-auto mb-4 bg-[#25DC7F]/10 rounded-full flex items-center justify-center">
-              <svg className="w-6 h-6 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="w-12 h-12 mx-auto mb-4 bg-[var(--green-fill)]/10 rounded-full flex items-center justify-center">
+              <svg className="w-6 h-6 text-[var(--green)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m0 0v2m0-2h2m-2 0H10m9-9V6a3 3 0 00-6 0v2M5 12h14a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2z" />
               </svg>
             </div>
             <h1
-              className="text-xl font-bold text-[#0B0B0B] mb-1"
+              className="text-xl font-bold text-[var(--text)] mb-1"
               style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
             >
               {clientName ? `Welcome, ${clientName}` : 'Welcome'}
             </h1>
-            <p className="text-sm text-[#6B6B6B]">
+            <p className="text-sm text-[var(--muted)]">
               Enter the 6-digit PIN your Clixsy account manager sent you.
             </p>
           </div>
 
           {lock?.kind === 'permanent' && (
-            <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-sm text-[#E5484D] font-medium">
+            <div className="mb-4 p-4 bg-[var(--red-soft)] border border-[var(--red)] rounded-lg">
+              <p className="text-sm text-[var(--red)] font-medium">
                 This onboarding link is locked after too many incorrect attempts.
               </p>
-              <p className="text-xs text-[#6B6B6B] mt-1">
+              <p className="text-xs text-[var(--muted)] mt-1">
                 Please contact your Clixsy account manager to reissue access.
               </p>
             </div>
           )}
 
           {lock?.kind === 'rate_limited' && (
-            <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-              <p className="text-sm text-[#92400E] font-medium">
+            <div className="mb-4 p-4 bg-[var(--amber-soft)] border border-yellow-200 rounded-lg">
+              <p className="text-sm text-[var(--amber)] font-medium">
                 Too many incorrect attempts. Try again in about 15 minutes.
               </p>
-              <p className="text-xs text-[#6B6B6B] mt-1">
+              <p className="text-xs text-[var(--muted)] mt-1">
                 Or contact your Clixsy account manager if you can&apos;t wait.
               </p>
             </div>
@@ -198,15 +198,15 @@ export default function PinEntry({ token, clientName, initialLock, onSuccess }: 
                 aria-label={`PIN digit ${i + 1}`}
                 className={`w-10 h-12 sm:w-12 sm:h-14 text-center text-xl sm:text-2xl font-semibold rounded-lg border transition-colors ${
                   error
-                    ? 'border-[#E5484D] bg-red-50'
-                    : 'border-[#E6E8EA] bg-white focus:border-[#25DC7F] focus:ring-2 focus:ring-[#25DC7F]/20'
+                    ? 'border-[var(--red)] bg-[var(--red-soft)]'
+                    : 'border-[var(--border2)] bg-[var(--card)] focus:border-[var(--green)] focus:ring-2 focus:ring-[var(--green)]/20'
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
               />
             ))}
           </div>
 
           {error && (
-            <p className="mb-4 text-sm text-[#E5484D] text-center" role="alert">
+            <p className="mb-4 text-sm text-[var(--red)] text-center" role="alert">
               {error}
             </p>
           )}
@@ -215,7 +215,7 @@ export default function PinEntry({ token, clientName, initialLock, onSuccess }: 
             type="button"
             onClick={() => void tryVerify(digits.join(''))}
             disabled={disabledByLock || submitting || digits.some((d) => d === '')}
-            className="w-full py-3 bg-[#25DC7F] text-white rounded-lg font-semibold hover:bg-[#1DB96A] transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+            className="w-full py-3 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg font-semibold hover:bg-[var(--green-dim)] transition-colors disabled:bg-[var(--border2)] disabled:cursor-not-allowed"
           >
             {submitting ? 'Verifying…' : 'Verify PIN'}
           </button>

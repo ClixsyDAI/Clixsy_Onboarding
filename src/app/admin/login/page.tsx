@@ -16,10 +16,13 @@
 // add ?return= handling in a follow-up modelled on the
 // workbook's app/lib/return-url.ts.
 //
-// Styling mirrors the dark Clixsy theme used on the workbook
-// admin page and the existing onboarding admin pages — same
-// CLIXSY logo, same accent colour (#C8A882), same panel
-// treatment.
+// Styling follows the workbook design tokens in globals.css.
+// This comment used to claim the page mirrored the workbook and
+// shared its accent, naming #C8A882. Wrong twice over: the workbook
+// accent is the brand green, and #C8A882 is a TAN, which the workbook
+// bans outright (QA check 24: no stray tan, beige, sand or gold
+// anywhere). The panel was near-black with cream text, matching
+// nothing in either product. It reads from the tokens now.
 
 import { useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
@@ -63,11 +66,11 @@ export default function AdminLoginPage() {
   return (
     <div
       className="flex min-h-screen items-center justify-center"
-      style={{ backgroundColor: "#0a0a0a" }}
+      style={{ backgroundColor: "var(--bg)" }}
     >
       <div
         className="w-full max-w-sm rounded-sm border p-8"
-        style={{ backgroundColor: "#111111", borderColor: "#1a1a1a" }}
+        style={{ backgroundColor: "var(--card)", borderColor: "var(--border2)" }}
       >
         <div className="mb-6 flex items-center gap-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -78,18 +81,18 @@ export default function AdminLoginPage() {
           />
           <span
             className="text-xs tracking-wider uppercase"
-            style={{ color: "#888" }}
+            style={{ color: "var(--muted)" }}
           >
             Onboarding admin
           </span>
         </div>
         <h1
           className="mb-1 text-lg font-bold tracking-wide uppercase"
-          style={{ color: "#f0ede8" }}
+          style={{ color: "var(--text)" }}
         >
           Sign in
         </h1>
-        <p className="mb-6 text-xs" style={{ color: "#888" }}>
+        <p className="mb-6 text-xs" style={{ color: "var(--muted)" }}>
           Enter the admin password to access onboarding sessions.
         </p>
         <form onSubmit={onSubmit}>
@@ -100,15 +103,15 @@ export default function AdminLoginPage() {
             placeholder="Password"
             autoFocus
             disabled={loading}
-            className="mb-3 w-full rounded-sm border px-4 py-2.5 text-sm outline-none transition-colors focus:border-[#C8A882]"
+            className="mb-3 w-full rounded-sm border px-4 py-2.5 text-sm outline-none transition-colors focus:border-[var(--border2)]"
             style={{
-              backgroundColor: "#0a0a0a",
-              borderColor: "#333",
-              color: "#f0ede8",
+              backgroundColor: "var(--field)",
+              borderColor: "var(--border2)",
+              color: "var(--text)",
             }}
           />
           {error && (
-            <p className="mb-3 text-xs" style={{ color: "#e06666" }}>
+            <p className="mb-3 text-xs" style={{ color: "var(--red)" }}>
               {error}
             </p>
           )}
@@ -116,7 +119,7 @@ export default function AdminLoginPage() {
             type="submit"
             disabled={loading || password.length === 0}
             className="w-full rounded-sm py-2.5 text-sm font-semibold tracking-wide uppercase transition-opacity hover:opacity-90 disabled:opacity-40"
-            style={{ backgroundColor: "#C8A882", color: "#0a0a0a" }}
+            style={{ backgroundColor: "var(--green-fill)", color: "var(--on-green)" }}
           >
             {loading ? "Signing in..." : "Sign In"}
           </button>

@@ -1,34 +1,99 @@
 @import "tailwindcss";
 
-/* Clixsy Brand Tokens */
+/* ===========================================================================
+   Workbook design system, dark. Ported from the dashboard's app/globals.css,
+   which is the mockup design language already extracted and in production at
+   workbooks.clixsy.co.
+
+   WHY THIS FILE CHANGED SHAPE
+
+   The token block below existed before, and was dead. Every one of this app's
+   851 colour utilities hard-coded an arbitrary hex (text-[#6B6B6B] 133 times,
+   bg-[#25DC7F] 77 times), so nothing read the tokens and the palette could not
+   be changed from one place. There were zero var(--token) reads in any .tsx and
+   the .btn-primary / .btn-secondary classes defined here were used nowhere. The
+   port retargets the tokens at the workbook values AND points every utility at
+   them, so this file is now the single source of colour for the app.
+
+   DARK ONLY, on Johan's instruction. The workbook carries a light and dark
+   toggle; this form does not, because nobody asked for one and one theme is
+   simpler to keep correct on a client-facing surface. If a toggle is wanted
+   later, the shape to copy is the workbook's: a `body.light` block redefining
+   these same names, and nothing else.
+
+   A TRAP THIS FILE MUST NOT REPEAT
+
+   Everything below the token block is UNLAYERED, and unlayered CSS outranks
+   every Tailwind v4 layer regardless of specificity. That is fine for the
+   component classes here, which are meant to win. It is a trap for a bare
+   element or `*` selector: the dashboard pasted `*{margin:0;padding:0}` in
+   unlayered and silently disabled 638 padding and margin utilities across 20
+   components. See decision 57. There is deliberately no reset here; Tailwind's
+   own Preflight already does one, inside @layer base where it belongs.
+   =========================================================================== */
 :root {
-  /* Primary Colors */
-  --clix-green: #25DC7F;
-  --clix-green-2: #569077;
-  --clix-green-dark: #1DB96A;
+  color-scheme: dark;
 
-  /* Header/Nav Dark Green */
-  --clix-header: #0F1A14;
-  --clix-header-light: #1A2A1F;
+  /* Surfaces, darkest to lightest */
+  --bg: #070b0e;
+  --side: #04070a;
+  --card: #0d1721;
+  --card2: #101d29;
+  --cardhi: #12212e;
+  --row: #0f1c27;
 
-  /* Neutrals */
-  --ink: #0B0B0B;
-  --text: #1A1A1A;
-  --muted: #6B6B6B;
-  --border: #E6E8EA;
-  --bg: #FFFFFF;
-  --bg-soft: #F4F5F6;
+  /* Brand accent. --green is for TEXT and clears AA on the surfaces above.
+     --green-fill is the same brand green used as a FILL, and anything sitting
+     on it takes --on-green, a dark ink. The old palette paired a green fill
+     with white text, which measured 1.81 on the live landing page. */
+  --green: #16dc76;
+  --green-soft: rgba(22, 220, 118, 0.09);
+  --green-dim: #0f7a44;
+  --green-fill: #16dc76;
+  --on-green: #04140b;
 
-  /* State Colors */
-  --focus: #25DC7F;
-  --danger: #E5484D;
-  --warning: #F5A524;
-  --info: #3B82F6;
-  --success: #25DC7F;
+  /* Status */
+  --amber: #ffb35c;
+  --amber-soft: rgba(255, 179, 92, 0.1);
+  --red: #ff6363;
+  --red-soft: #2a1414;
+  --blue: #4da3ff;
 
-  /* Legacy mappings */
-  --background: #F4F5F6;
-  --foreground: #1A1A1A;
+  /* Type */
+  --text: #eef4f2;
+  --muted: #8fa3ad;
+  --faint: #7f8d95;
+
+  /* Lines */
+  --border: #16242f;
+  --border2: #1d3040;
+
+  /* Field surfaces, so a native control is never left light on a dark page */
+  --field: #0b1620;
+  --field-ro: #0e1a24;
+
+  /* ---- Legacy names, retargeted rather than deleted -------------------------
+     These were the app's own token names. Nothing in src/ reads them any more,
+     but they are pointed at the tokens above so a stray reference cannot
+     reintroduce a light surface. They are var() references rather than copied
+     literals ON PURPOSE: a second set of hex values would be a second palette
+     to keep in sync, which is exactly the drift the dashboard shipped when its
+     light --wb-* mirror was updated and the dark one was not. Defined this way
+     they cannot diverge, so no guard is needed to check that they have not. */
+  --clix-green: var(--green);
+  --clix-green-2: var(--muted);
+  --clix-green-dark: var(--green-dim);
+  --clix-header: var(--side);
+  --clix-header-light: var(--card2);
+  --ink: var(--text);
+  --bg-soft: var(--bg);
+  --focus: var(--green);
+  --danger: var(--red);
+  --warning: var(--amber);
+  --info: var(--blue);
+  --success: var(--green);
+  --background: var(--bg);
+  --foreground: var(--text);
 }
 
 @theme inline {
@@ -44,9 +109,8 @@
   --color-clix-header-light: var(--clix-header-light);
 }
 
-/* Remove dark mode - Clixsy uses light mode */
 body {
-  background: var(--bg-soft);
+  background: var(--bg);
   color: var(--text);
   font-family: 'Libre Franklin', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
 }
@@ -67,8 +131,10 @@ body {
 
 /* Clixsy Button Styles */
 .btn-primary {
-  background-color: var(--clix-green);
-  color: white;
+  background-color: var(--green-fill);
+  /* Dark ink on the brand fill. This used to be `color: white`, which is the
+     same 1.81 pairing the live landing page shipped. */
+  color: var(--on-green);
   font-weight: 700;
   border-radius: 8px;
   padding: 14px 22px;
@@ -76,7 +142,8 @@ body {
 }
 
 .btn-primary:hover {
-  background-color: var(--clix-green-dark);
+  background-color: var(--green-dim);
+  color: var(--text);
 }
 
 .btn-primary:active {
@@ -85,8 +152,8 @@ body {
 
 .btn-secondary {
   background-color: transparent;
-  border: 2px solid var(--ink);
-  color: var(--ink);
+  border: 2px solid var(--border2);
+  color: var(--text);
   font-weight: 700;
   border-radius: 8px;
   padding: 12px 20px;
@@ -94,7 +161,32 @@ body {
 }
 
 .btn-secondary:hover {
-  background-color: var(--bg-soft);
+  background-color: var(--card2);
+}
+
+/* Native controls. A dark page with default-light inputs is the most obvious
+   way a retheme looks half-finished, and on a form the controls are most of the
+   surface, so these are set explicitly rather than left to the browser. */
+input,
+select,
+textarea {
+  background-color: var(--field);
+  color: var(--text);
+  border-color: var(--border2);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--faint);
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled,
+input[readonly],
+textarea[readonly] {
+  background-color: var(--field-ro);
+  color: var(--muted);
 }
 
 /* Focus states */
@@ -102,15 +194,30 @@ input:focus,
 select:focus,
 textarea:focus {
   outline: none;
-  border-color: var(--clix-green) !important;
-  box-shadow: 0 0 0 3px rgba(37, 220, 127, 0.15);
+  border-color: var(--green) !important;
+  box-shadow: 0 0 0 3px rgba(22, 220, 118, 0.25);
+}
+
+/* Keyboard focus for everything else. :focus-visible only, so a mouse click
+   does not paint a ring. */
+a:focus-visible,
+button:focus-visible,
+[role="button"]:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
 }
 
 /* Checkbox and radio styling */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--green);
+}
+
 input[type="checkbox"]:checked,
 input[type="radio"]:checked {
-  background-color: var(--clix-green);
-  border-color: var(--clix-green);
+  background-color: var(--green);
+  border-color: var(--green);
 }
 
 /* Scrollbar styling */
@@ -120,11 +227,11 @@ input[type="radio"]:checked {
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-soft);
+  background: var(--bg);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--border2);
   border-radius: 4px;
 }
 
@@ -140,6 +247,36 @@ input[type="radio"]:checked {
 
 .hide-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* The workbook's empty-state vocabulary, ported so this app has one way to say
+   a source is missing: a dashed card, a plain-words title, and an explicit
+   "Needs:" line naming what would have to exist for real content to appear.
+   The rule is that a missing source is NAMED, never faked and never left as a
+   blank area or an invented zero. That matters more here than in the dashboard,
+   because a client reads this page. */
+.emptypanel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px dashed var(--border2);
+  border-radius: 12px;
+  padding: 22px 24px;
+  background: var(--card2);
+}
+
+.emptypanel .eptitle {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.emptypanel .epbody {
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.6;
+  max-width: 70ch;
 }
 
 /* Stage 8 / S12.1: pop-in animation for the thank-you message.

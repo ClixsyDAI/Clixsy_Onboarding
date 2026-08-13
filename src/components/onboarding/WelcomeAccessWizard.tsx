@@ -52,7 +52,7 @@ function WhatWeNeed({ text }: { text: string }) {
   return (
     <>
       {before}
-      <code className="px-1.5 py-0.5 bg-[#F4F5F6] rounded text-[13px] text-[#0B0B0B]">{email}</code>
+      <code className="px-1.5 py-0.5 bg-[var(--bg)] rounded text-[13px] text-[var(--text)]">{email}</code>
       {after}
     </>
   );
@@ -116,15 +116,15 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
       }}
     >
       <div
-        className="relative w-full max-w-[660px] bg-white rounded-2xl shadow-2xl overflow-hidden"
+        className="relative w-full max-w-[660px] bg-[var(--card)] rounded-2xl shadow-2xl overflow-hidden"
         style={{
           transform: visible ? 'scale(1)' : 'scale(0.96)',
           transition: 'transform 240ms ease',
         }}
       >
         {/* Header — dark bar matching the portal header, title + progress dots */}
-        <div className="bg-[#0F1A14] px-7 py-5 flex items-center justify-between">
-          <span className="text-white text-sm font-extrabold tracking-wide">
+        <div className="bg-[var(--side)] px-7 py-5 flex items-center justify-between">
+          <span className="text-[var(--text)] text-sm font-extrabold tracking-wide">
             {STEP_TITLES[step]}
           </span>
           <div className="flex gap-1.5" aria-hidden>
@@ -132,7 +132,7 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
               <span
                 key={i}
                 className={`h-2 rounded-full transition-all ${
-                  i <= step ? 'bg-[#25DC7F]' : 'bg-[#2B3A32]'
+                  i <= step ? 'bg-[var(--green-fill)]' : 'bg-[var(--cardhi)]'
                 } ${i === step ? 'w-5' : 'w-2'}`}
               />
             ))}
@@ -144,16 +144,16 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
           <div className="px-9 py-8">
             <h1
               id="welcome-wizard-headline"
-              className="text-[26px] leading-tight font-extrabold text-[#0B0B0B] mb-3"
+              className="text-[26px] leading-tight font-extrabold text-[var(--text)] mb-3"
               style={{ overflowWrap: 'anywhere' }}
             >
-              Hey <span className="text-[#1DB96A]">{companyName || 'there'}</span>! We&apos;re
+              Hey <span className="text-[var(--green)]">{companyName || 'there'}</span>! We&apos;re
               thrilled to be working with you.
             </h1>
-            <p className="text-[15px] leading-relaxed text-[#46554D]">
+            <p className="text-[15px] leading-relaxed text-[var(--muted)]">
               We&apos;ve already done some homework on your site and we&apos;re excited to get
               going. Before we dive into the full onboarding,{' '}
-              <span className="text-[#1DB96A] font-semibold">
+              <span className="text-[var(--green)] font-semibold">
                 there are just a couple of things we need from you
               </span>{' '}
               to get the ball rolling.
@@ -164,32 +164,32 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
         {/* STEP 2 — Urgent access items */}
         {step === 1 && (
           <div className="px-9 py-7">
-            <h1 className="text-[24px] font-extrabold text-[#0B0B0B] mb-2">
+            <h1 className="text-[24px] font-extrabold text-[var(--text)] mb-2">
               Everything else can wait.
             </h1>
-            <p className="text-[15px] text-[#46554D] mb-4">
+            <p className="text-[15px] text-[var(--muted)] mb-4">
               To start work immediately, we urgently need access to these two services.
             </p>
 
-            <div className="flex gap-2.5 bg-[#FFF7ED] border border-[#FFE2BD] text-[#9A5B14] rounded-xl px-4 py-3 text-[13.5px] leading-relaxed mb-5">
+            <div className="flex gap-2.5 bg-[var(--amber-soft)] border border-[var(--amber-soft)] text-[var(--amber)] rounded-xl px-4 py-3 text-[13.5px] leading-relaxed mb-5">
               <span>
-                <b className="text-[#7C4710]">Why these two?</b> WordPress lets us optimize, and
+                <b className="text-[var(--amber)]">Why these two?</b> WordPress lets us optimize, and
                 Search Console lets us track your rankings from day one. The rest of your
                 onboarding can follow at your own pace.
               </span>
             </div>
 
-            <div className="border border-[#E6E8EA] rounded-xl overflow-hidden">
-              <div className="hidden sm:grid grid-cols-[1.15fr_1.45fr_170px] gap-4 bg-[#F4F5F6] px-4 py-3 text-xs font-bold text-[#6B7A72]">
+            <div className="border border-[var(--border2)] rounded-xl overflow-hidden">
+              <div className="hidden sm:grid grid-cols-[1.15fr_1.45fr_170px] gap-4 bg-[var(--bg)] px-4 py-3 text-xs font-bold text-[var(--muted)]">
                 <span>Service</span>
                 <span>What We Need</span>
                 <span>Status</span>
               </div>
               {items.map((item) => (
-                <div key={item.key} className="border-t border-[#E6E8EA]">
+                <div key={item.key} className="border-t border-[var(--border2)]">
                   <div className="grid grid-cols-1 sm:grid-cols-[1.15fr_1.45fr_170px] gap-3 sm:gap-4 items-center px-4 py-3.5">
                     <div>
-                      <div className="font-bold text-[15px] text-[#0B0B0B]">{item.label}</div>
+                      <div className="font-bold text-[15px] text-[var(--text)]">{item.label}</div>
                       {item.videoId && (
                         <button
                           type="button"
@@ -197,13 +197,13 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
                             setOpenTutorial(openTutorial === item.key ? null : item.key);
                             setPlaying(null);
                           }}
-                          className="inline-flex items-center gap-1.5 mt-1.5 text-[13px] font-bold text-[#1DB96A] hover:text-[#0FA45C] transition-colors"
+                          className="inline-flex items-center gap-1.5 mt-1.5 text-[13px] font-bold text-[var(--green)] hover:text-[var(--green)] transition-colors"
                         >
-                          <span className="w-[17px] h-[17px] bg-[#25DC7F] rounded flex items-center justify-center shrink-0">
+                          <span className="w-[17px] h-[17px] bg-[var(--green-fill)] rounded flex items-center justify-center shrink-0">
                             <span
                               className="block ml-px"
                               style={{
-                                borderLeft: '6px solid #fff',
+                                borderLeft: '6px solid var(--on-green)',
                                 borderTop: '4px solid transparent',
                                 borderBottom: '4px solid transparent',
                               }}
@@ -213,7 +213,7 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
                         </button>
                       )}
                     </div>
-                    <div className="text-sm text-[#6B7A72] leading-snug">
+                    <div className="text-sm text-[var(--muted)] leading-snug">
                       <WhatWeNeed text={item.whatWeNeed} />
                     </div>
                     <div>
@@ -223,10 +223,10 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
                           setStatuses((prev) => ({ ...prev, [item.key]: e.target.value }))
                         }
                         aria-label={`${item.label} status`}
-                        className={`w-full border rounded-lg px-3 py-2.5 text-[13px] font-semibold cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#25DC7F]/30 ${
+                        className={`w-full border rounded-lg px-3 py-2.5 text-[13px] font-semibold cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--green)]/30 ${
                           statuses[item.key] === 'done'
-                            ? 'border-[#25DC7F] bg-[#25DC7F]/10 text-[#1DB96A]'
-                            : 'border-[#E6E8EA] text-[#3A4842] bg-white'
+                            ? 'border-[var(--green)] bg-[var(--green-fill)]/10 text-[var(--green)]'
+                            : 'border-[var(--border2)] text-[var(--faint)] bg-[var(--card)]'
                         }`}
                       >
                         <option value="" disabled>
@@ -241,19 +241,19 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
                     </div>
                   </div>
                   {openTutorial === item.key && item.videoId && (
-                    <div className="mx-4 mb-4 border border-[#E6E8EA] rounded-xl overflow-hidden">
-                      <div className="flex items-center gap-2 px-3.5 py-2.5 bg-[#FAFBFB] border-b border-[#E6E8EA]">
-                        <span className="w-[18px] h-[18px] bg-[#FF0000] rounded flex items-center justify-center shrink-0">
+                    <div className="mx-4 mb-4 border border-[var(--border2)] rounded-xl overflow-hidden">
+                      <div className="flex items-center gap-2 px-3.5 py-2.5 bg-[var(--card)] border-b border-[var(--border2)]">
+                        <span className="w-[18px] h-[18px] bg-[var(--red)] rounded flex items-center justify-center shrink-0">
                           <span
                             className="block ml-px"
                             style={{
-                              borderLeft: '7px solid #fff',
+                              borderLeft: '7px solid var(--on-green)',
                               borderTop: '4.5px solid transparent',
                               borderBottom: '4.5px solid transparent',
                             }}
                           />
                         </span>
-                        <span className="text-[13px] font-bold text-[#0B0B0B]">
+                        <span className="text-[13px] font-bold text-[var(--text)]">
                           {item.tutorialTitle}
                         </span>
                       </div>
@@ -278,11 +278,11 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
                               backgroundPosition: 'center',
                             }}
                           >
-                            <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[62px] h-[44px] bg-[#FF0000] hover:bg-[#FF2A2A] rounded-xl flex items-center justify-center shadow-lg transition-colors">
+                            <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[62px] h-[44px] bg-[var(--red)] hover:bg-[var(--red)] rounded-xl flex items-center justify-center shadow-lg transition-colors">
                               <span
                                 className="block ml-1"
                                 style={{
-                                  borderLeft: '18px solid #fff',
+                                  borderLeft: '18px solid var(--on-green)',
                                   borderTop: '11px solid transparent',
                                   borderBottom: '11px solid transparent',
                                 }}
@@ -302,9 +302,9 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
         {/* STEP 3 — Confirmation */}
         {step === 2 && (
           <div className="px-9 py-9 text-center">
-            <div className="w-16 h-16 mx-auto mb-5 bg-[#25DC7F]/10 rounded-full flex items-center justify-center">
+            <div className="w-16 h-16 mx-auto mb-5 bg-[var(--green-fill)]/10 rounded-full flex items-center justify-center">
               <svg
-                className="w-8 h-8 text-[#1DB96A]"
+                className="w-8 h-8 text-[var(--green)]"
                 fill="none"
                 stroke="currentColor"
                 strokeWidth={3}
@@ -313,10 +313,10 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
               </svg>
             </div>
-            <h1 className="text-[24px] font-extrabold text-[#0B0B0B] mb-2">
+            <h1 className="text-[24px] font-extrabold text-[var(--text)] mb-2">
               That&apos;s everything we need to begin.
             </h1>
-            <p className="text-[15px] text-[#46554D]">
+            <p className="text-[15px] text-[var(--muted)]">
               Our team will confirm access and get to work right away. You can now continue
               through the rest of your onboarding at your own pace.
             </p>
@@ -324,12 +324,12 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
         )}
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-9 py-4 border-t border-[#E6E8EA] bg-[#FAFBFB]">
+        <div className="flex items-center justify-between px-9 py-4 border-t border-[var(--border2)] bg-[var(--card)]">
           {step > 0 ? (
             <button
               type="button"
               onClick={() => setStep((s) => (s === 2 ? 1 : 0))}
-              className="text-sm font-semibold text-[#6B6B6B] hover:text-[#3A4842] transition-colors py-2"
+              className="text-sm font-semibold text-[var(--muted)] hover:text-[var(--faint)] transition-colors py-2"
             >
               ← Back
             </button>
@@ -340,7 +340,7 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
             <button
               type="button"
               onClick={() => setStep(1)}
-              className="px-6 py-3 bg-[#25DC7F] text-white rounded-lg text-sm font-extrabold hover:bg-[#1DB96A] transition-colors"
+              className="px-6 py-3 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg text-sm font-extrabold hover:bg-[var(--green-dim)] transition-colors"
             >
               Let&apos;s get started →
             </button>
@@ -350,7 +350,7 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
               type="button"
               disabled={!bothSelected}
               onClick={() => setStep(2)}
-              className="px-6 py-3 bg-[#25DC7F] text-white rounded-lg text-sm font-extrabold hover:bg-[#1DB96A] transition-colors disabled:bg-[#CFD8D3] disabled:text-[#8C988F] disabled:cursor-not-allowed"
+              className="px-6 py-3 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg text-sm font-extrabold hover:bg-[var(--green-dim)] transition-colors disabled:bg-[var(--border2)] disabled:text-[var(--faint)] disabled:cursor-not-allowed"
             >
               Continue →
             </button>
@@ -360,7 +360,7 @@ export default function WelcomeAccessWizard({ companyName, onFinish }: WelcomeAc
               type="button"
               disabled={submitting}
               onClick={handleFinish}
-              className="px-6 py-3 bg-[#25DC7F] text-white rounded-lg text-sm font-extrabold hover:bg-[#1DB96A] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              className="px-6 py-3 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg text-sm font-extrabold hover:bg-[var(--green-dim)] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {submitting ? 'Just a moment…' : 'Continue to onboarding →'}
             </button>

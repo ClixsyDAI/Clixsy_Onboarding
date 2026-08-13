@@ -71,7 +71,7 @@ export default function StepTransition({ active, message, onCovered, onDone }: S
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: '#F4F5F6',
+        background: 'var(--bg)',
         opacity: visible ? 1 : 0,
         transition: 'opacity 0.4s ease-in-out',
       }}
@@ -82,7 +82,7 @@ export default function StepTransition({ active, message, onCovered, onDone }: S
             fontSize: 'clamp(1.5rem, 4vw, 1.875rem)',
             fontWeight: 700,
             fontStyle: 'italic',
-            color: '#25DC7F',
+            color: 'var(--green)',
             marginBottom: '0.75rem',
             lineHeight: 1.3,
           }}
@@ -93,7 +93,7 @@ export default function StepTransition({ active, message, onCovered, onDone }: S
           style={{
             fontSize: 'clamp(1.25rem, 3.5vw, 1.5rem)',
             fontWeight: 700,
-            color: '#1A1D1F',
+            color: 'var(--text)',
             lineHeight: 1.3,
           }}
         >

@@ -52,7 +52,7 @@ function VideoTutorial({ url, title }: { url: string; title: string }) {
         href={url}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-2 text-sm text-[#25DC7F] hover:text-[#1eb86a] font-medium"
+        className="inline-flex items-center gap-2 text-sm text-[var(--green)] hover:text-[var(--green)] font-medium"
       >
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
           <path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/>
@@ -65,12 +65,12 @@ function VideoTutorial({ url, title }: { url: string; title: string }) {
   return (
     <div className="mb-4">
       <div className="flex items-center gap-2 mb-2">
-        <svg className="w-5 h-5 text-[#E5484D]" fill="currentColor" viewBox="0 0 24 24">
+        <svg className="w-5 h-5 text-[var(--red)]" fill="currentColor" viewBox="0 0 24 24">
           <path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/>
         </svg>
-        <span className="text-sm font-semibold text-[#0B0B0B]">{title}</span>
+        <span className="text-sm font-semibold text-[var(--text)]">{title}</span>
       </div>
-      <div className="relative w-full aspect-video rounded-lg overflow-hidden border border-[#E6E8EA] bg-black">
+      <div className="relative w-full aspect-video rounded-lg overflow-hidden border border-[var(--border2)] bg-black">
         <iframe
           src={embedUrl}
           title={title}
@@ -120,7 +120,7 @@ function ScrapedValuePreview({
           <button
             type="button"
             onClick={() => setMode('preview')}
-            className="mt-1 text-xs text-[#6B6B6B] hover:text-[#0B0B0B] underline"
+            className="mt-1 text-xs text-[var(--muted)] hover:text-[var(--text)] underline"
           >
             Back to preview
           </button>
@@ -131,23 +131,23 @@ function ScrapedValuePreview({
 
   if (mode === 'confirmed') {
     return (
-      <div className="flex items-center gap-3 px-3 py-2.5 border border-[#25DC7F]/30 bg-[#25DC7F]/5 rounded-lg">
+      <div className="flex items-center gap-3 px-3 py-2.5 border border-[var(--green)]/30 bg-[var(--green-fill)]/5 rounded-lg">
         {kind === 'color-swatch' && /^#?[0-9a-fA-F]{3,8}$/.test(value.trim()) && (
           <span
-            className="w-6 h-6 rounded border border-[#E6E8EA] flex-shrink-0"
+            className="w-6 h-6 rounded border border-[var(--border2)] flex-shrink-0"
             style={{ backgroundColor: value.trim().startsWith('#') ? value.trim() : `#${value.trim()}` }}
             aria-hidden
           />
         )}
-        <span className="flex-1 text-sm text-[#0B0B0B] font-mono">{value}</span>
-        <svg className="w-4 h-4 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <span className="flex-1 text-sm text-[var(--text)] font-mono">{value}</span>
+        <svg className="w-4 h-4 text-[var(--green)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
         </svg>
-        <span className="text-xs text-[#25DC7F] font-medium">Confirmed</span>
+        <span className="text-xs text-[var(--green)] font-medium">Confirmed</span>
         <button
           type="button"
           onClick={() => setMode('preview')}
-          className="text-xs text-[#6B6B6B] hover:text-[#0B0B0B] underline"
+          className="text-xs text-[var(--muted)] hover:text-[var(--text)] underline"
         >
           Change
         </button>
@@ -161,11 +161,11 @@ function ScrapedValuePreview({
   const fontNames = kind === 'font-sample' ? value.split(/[,;]/).map((s) => s.trim()).filter(Boolean) : [];
 
   return (
-    <div className="border border-[#25DC7F]/30 bg-[#25DC7F]/5 rounded-lg p-3">
+    <div className="border border-[var(--green)]/30 bg-[var(--green-fill)]/5 rounded-lg p-3">
       <div className="flex items-center gap-3">
         {kind === 'color-swatch' && isHex && (
           <span
-            className="w-10 h-10 rounded border border-[#E6E8EA] flex-shrink-0"
+            className="w-10 h-10 rounded border border-[var(--border2)] flex-shrink-0"
             style={{ backgroundColor: swatchHex }}
             aria-label={`Color swatch ${value}`}
           />
@@ -173,31 +173,31 @@ function ScrapedValuePreview({
         {kind === 'font-sample' && fontNames.length > 0 && (
           <div className="flex-1 min-w-0">
             {fontNames.slice(0, 3).map((fn) => (
-              <div key={fn} className="text-base text-[#0B0B0B] truncate" style={{ fontFamily: `'${fn}', sans-serif` }}>
+              <div key={fn} className="text-base text-[var(--text)] truncate" style={{ fontFamily: `'${fn}', sans-serif` }}>
                 {fn}
               </div>
             ))}
           </div>
         )}
         {kind === 'color-swatch' && (
-          <span className="flex-1 text-sm text-[#0B0B0B] font-mono">{value}</span>
+          <span className="flex-1 text-sm text-[var(--text)] font-mono">{value}</span>
         )}
       </div>
       {evidence && (
-        <p className="mt-2 text-xs text-[#6B6B6B] italic">{evidence}</p>
+        <p className="mt-2 text-xs text-[var(--muted)] italic">{evidence}</p>
       )}
       <div className="mt-3 flex gap-2">
         <button
           type="button"
           onClick={() => setMode('confirmed')}
-          className="px-3 py-1.5 bg-[#25DC7F] text-white rounded-md text-xs font-semibold hover:bg-[#1DB96A] transition-colors"
+          className="px-3 py-1.5 bg-[var(--green-fill)] text-[var(--on-green)] rounded-md text-xs font-semibold hover:bg-[var(--green-dim)] transition-colors"
         >
           Confirm
         </button>
         <button
           type="button"
           onClick={() => setMode('edit')}
-          className="px-3 py-1.5 border border-[#E6E8EA] text-[#0B0B0B] rounded-md text-xs font-semibold hover:bg-[#F4F5F6] transition-colors"
+          className="px-3 py-1.5 border border-[var(--border2)] text-[var(--text)] rounded-md text-xs font-semibold hover:bg-[var(--bg)] transition-colors"
         >
           Edit
         </button>
@@ -299,7 +299,7 @@ function ExternalLinkButton({ label, href }: { label: string; href: string }) {
       <button
         type="button"
         disabled
-        className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg border border-[#E6E8EA] text-[#A0A0A0] cursor-not-allowed whitespace-nowrap"
+        className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg border border-[var(--border2)] text-[var(--faint)] cursor-not-allowed whitespace-nowrap"
         title="Enter a valid URL to enable this button"
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -314,7 +314,7 @@ function ExternalLinkButton({ label, href }: { label: string; href: string }) {
       href={resolved}
       target="_blank"
       rel="noopener noreferrer"
-      className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg border border-[#25DC7F] text-[#25DC7F] hover:bg-[#25DC7F]/10 transition-colors whitespace-nowrap"
+      className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg border border-[var(--green)] text-[var(--green)] hover:bg-[var(--green-fill)]/10 transition-colors whitespace-nowrap"
     >
       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
@@ -330,9 +330,9 @@ function SuggestionChip({ value, onAccept }: { value: string; onAccept: () => vo
     <button
       type="button"
       onClick={onAccept}
-      className="inline-flex items-center gap-1.5 mt-1.5 px-3 py-1.5 bg-[#25DC7F]/10 border border-[#25DC7F]/30 rounded-full text-xs text-[#0B0B0B] font-medium hover:bg-[#25DC7F]/20 transition-colors"
+      className="inline-flex items-center gap-1.5 mt-1.5 px-3 py-1.5 bg-[var(--green-fill)]/10 border border-[var(--green)]/30 rounded-full text-xs text-[var(--text)] font-medium hover:bg-[var(--green-fill)]/20 transition-colors"
     >
-      <svg className="w-3 h-3 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg className="w-3 h-3 text-[var(--green)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
       </svg>
       Use suggestion: {value}
@@ -480,8 +480,8 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
     const suggestion = getSuggestion(field.name);
     const baseInputClasses = `w-full px-3 py-2.5 border rounded-lg transition-all duration-150 text-sm ${
       error
-        ? 'border-[#E5484D] bg-red-50'
-        : 'border-[#E6E8EA] bg-white hover:border-[#A0A0A0] focus:border-[#25DC7F] focus:ring-2 focus:ring-[#25DC7F]/20'
+        ? 'border-[var(--red)] bg-[var(--red-soft)]'
+        : 'border-[var(--border2)] bg-[var(--card)] hover:border-[var(--border2)] focus:border-[var(--green)] focus:ring-2 focus:ring-[var(--green)]/20'
     }`;
 
     // Check if field should be shown based on dependsOn (supports
@@ -551,7 +551,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                     placeholder={field.placeholder}
                     className={baseInputClasses}
                   />
-                  <p className="mt-1 text-xs text-[#6B6B6B] italic">
+                  <p className="mt-1 text-xs text-[var(--muted)] italic">
                     We couldn&apos;t extract this from your website automatically. Enter it manually above.
                   </p>
                 </>
@@ -686,7 +686,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
             const tradesView = getAllTradesWithSelections(selectedTrades, selectedValues);
             if (tradesView.length === 0) {
               return (
-                <p className="text-sm text-[#6B6B6B] italic px-3 py-2 bg-[#F4F5F6] rounded-lg">
+                <p className="text-sm text-[var(--muted)] italic px-3 py-2 bg-[var(--bg)] rounded-lg">
                   Tick at least one trade above to see the services you can choose from.
                 </p>
               );
@@ -695,15 +695,15 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
               <div className="space-y-5">
                 {tradesView.map((trade) => (
                   <div key={trade.tradeId}>
-                    <h3 className="text-sm font-semibold text-[#0B0B0B] mb-2">{trade.tradeLabel}</h3>
+                    <h3 className="text-sm font-semibold text-[var(--text)] mb-2">{trade.tradeLabel}</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       {trade.services.map((svc) => (
                         <label
                           key={svc.id}
                           className={`flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer transition-all duration-150 text-sm ${
                             selectedValues.includes(svc.id)
-                              ? 'border-[#25DC7F] bg-[#25DC7F]/5'
-                              : 'border-[#E6E8EA] hover:border-[#A0A0A0]'
+                              ? 'border-[var(--green)] bg-[var(--green-fill)]/5'
+                              : 'border-[var(--border2)] hover:border-[var(--border2)]'
                           }`}
                         >
                           <input
@@ -723,9 +723,9 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                                 onChange('service_priority', '');
                               }
                             }}
-                            className="w-4 h-4 text-[#25DC7F] rounded border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
+                            className="w-4 h-4 text-[var(--green)] rounded border-[var(--border2)] focus:ring-[var(--green)] focus:ring-offset-0"
                           />
-                          <span className="text-[#1A1A1A]">{svc.label}</span>
+                          <span className="text-[var(--text)]">{svc.label}</span>
                         </label>
                       ))}
                     </div>
@@ -761,8 +761,8 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                   key={option.value}
                   className={`flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer transition-all duration-150 text-sm ${
                     selectedValues.includes(option.value)
-                      ? 'border-[#25DC7F] bg-[#25DC7F]/5'
-                      : 'border-[#E6E8EA] hover:border-[#A0A0A0]'
+                      ? 'border-[var(--green)] bg-[var(--green-fill)]/5'
+                      : 'border-[var(--border2)] hover:border-[var(--border2)]'
                   }`}
                 >
                   <input
@@ -778,9 +778,9 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                         onChange(field.name, next);
                       }
                     }}
-                    className="w-4 h-4 text-[#25DC7F] rounded border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
+                    className="w-4 h-4 text-[var(--green)] rounded border-[var(--border2)] focus:ring-[var(--green)] focus:ring-offset-0"
                   />
-                  <span className="text-[#1A1A1A]">{option.label}</span>
+                  <span className="text-[var(--text)]">{option.label}</span>
                 </label>
               ))}
             </div>
@@ -796,9 +796,9 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                 name={field.name}
                 checked={(value as boolean) || false}
                 onChange={(e) => onChange(field.name, e.target.checked)}
-                className="w-5 h-5 mt-0.5 text-[#25DC7F] rounded border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
+                className="w-5 h-5 mt-0.5 text-[var(--green)] rounded border-[var(--border2)] focus:ring-[var(--green)] focus:ring-offset-0"
               />
-              <span className="text-[#1A1A1A]">{override?.label_override || labelFor(field)}</span>
+              <span className="text-[var(--text)]">{override?.label_override || labelFor(field)}</span>
             </label>
           );
 
@@ -809,7 +809,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
           const opts = dynamicOptions ?? field.options ?? [];
           if (field.optionsFromField && dynamicOptions !== null && dynamicOptions.length === 0) {
             return (
-              <p className="text-sm text-[#6B6B6B] italic px-3 py-2 bg-[#F4F5F6] rounded-lg">
+              <p className="text-sm text-[var(--muted)] italic px-3 py-2 bg-[var(--bg)] rounded-lg">
                 Select at least one option above to choose from here.
               </p>
             );
@@ -821,8 +821,8 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                   key={option.value}
                   className={`flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer transition-all duration-150 text-sm ${
                     value === option.value
-                      ? 'border-[#25DC7F] bg-[#25DC7F]/5'
-                      : 'border-[#E6E8EA] hover:border-[#A0A0A0]'
+                      ? 'border-[var(--green)] bg-[var(--green-fill)]/5'
+                      : 'border-[var(--border2)] hover:border-[var(--border2)]'
                   }`}
                 >
                   <input
@@ -831,9 +831,9 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                     value={option.value}
                     checked={value === option.value}
                     onChange={(e) => onChange(field.name, e.target.value)}
-                    className="w-4 h-4 text-[#25DC7F] border-[#E6E8EA] focus:ring-[#25DC7F] focus:ring-offset-0"
+                    className="w-4 h-4 text-[var(--green)] border-[var(--border2)] focus:ring-[var(--green)] focus:ring-offset-0"
                   />
-                  <span className="text-[#1A1A1A]">{option.label}</span>
+                  <span className="text-[var(--text)]">{option.label}</span>
                 </label>
               ))}
             </div>
@@ -866,10 +866,10 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
           // entry in a new visually distinct group (e.g. the welcome-gift
           // block at the bottom of the Other Contacts step).
           const headerNode = field.sectionHeader ? (
-            <div key={`${field.name}__hdr`} className="md:col-span-2 mt-6 pt-6 border-t border-[#E6E8EA]">
-              <h2 className="text-lg font-bold text-[#0B0B0B]">{field.sectionHeader.title}</h2>
+            <div key={`${field.name}__hdr`} className="md:col-span-2 mt-6 pt-6 border-t border-[var(--border2)]">
+              <h2 className="text-lg font-bold text-[var(--text)]">{field.sectionHeader.title}</h2>
               {field.sectionHeader.subtitle && (
-                <p className="text-sm italic text-[#6B6B6B] mt-1">{field.sectionHeader.subtitle}</p>
+                <p className="text-sm italic text-[var(--muted)] mt-1">{field.sectionHeader.subtitle}</p>
               )}
             </div>
           ) : null;
@@ -885,10 +885,10 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                   )}
                   {renderField(field)}
                   {(override?.help_override || helpTextFor(field)) && (
-                    <p className="mt-1 text-xs text-[#6B6B6B] ml-8">{override?.help_override || helpTextFor(field)}</p>
+                    <p className="mt-1 text-xs text-[var(--muted)] ml-8">{override?.help_override || helpTextFor(field)}</p>
                   )}
                   {errors[field.name] && (
-                    <p className="mt-1 text-xs text-[#E5484D] ml-8">{errors[field.name]}</p>
+                    <p className="mt-1 text-xs text-[var(--red)] ml-8">{errors[field.name]}</p>
                   )}
                 </div>
               </Fragment>
@@ -927,17 +927,17 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                 )}
                 <label
                   htmlFor={field.name}
-                  className="block text-sm font-semibold text-[#0B0B0B] mb-1.5"
+                  className="block text-sm font-semibold text-[var(--text)] mb-1.5"
                 >
                   {override?.label_override || labelFor(field)}
-                  {field.required && <span className="text-[#E5484D] ml-1">*</span>}
+                  {field.required && <span className="text-[var(--red)] ml-1">*</span>}
                 </label>
                 {renderField(field)}
                 {(override?.help_override || helpTextFor(field)) && (
-                  <p className="mt-1 text-xs text-[#6B6B6B]">{override?.help_override || helpTextFor(field)}</p>
+                  <p className="mt-1 text-xs text-[var(--muted)]">{override?.help_override || helpTextFor(field)}</p>
                 )}
                 {errors[field.name] && (
-                  <p className="mt-1 text-xs text-[#E5484D]">{errors[field.name]}</p>
+                  <p className="mt-1 text-xs text-[var(--red)]">{errors[field.name]}</p>
                 )}
               </div>
             </Fragment>
@@ -1007,10 +1007,10 @@ function ConfirmationField({
   const detectedValueText = formatConfirmationValue(value);
 
   return (
-    <div className="bg-[#25DC7F]/5 border border-[#25DC7F]/20 rounded-lg p-4">
-      <label className="block text-sm font-semibold text-[#0B0B0B] mb-3">
+    <div className="bg-[var(--green-fill)]/5 border border-[var(--green)]/20 rounded-lg p-4">
+      <label className="block text-sm font-semibold text-[var(--text)] mb-3">
         {override.label_override}
-        {field.required && <span className="text-[#E5484D] ml-1">*</span>}
+        {field.required && <span className="text-[var(--red)] ml-1">*</span>}
       </label>
 
       {confirmed === null && hasValue && (
@@ -1018,14 +1018,14 @@ function ConfirmationField({
           {/* Fix B: always show the detected value being confirmed, so the
               client can see address/phone/name (not just the ones whose
               value is baked into label_override). */}
-          <div className="mb-3 rounded-md border border-[#E6E8EA] bg-white px-3 py-2 text-sm text-[#0B0B0B] whitespace-pre-line break-words">
+          <div className="mb-3 rounded-md border border-[var(--border2)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--text)] whitespace-pre-line break-words">
             {detectedValueText}
           </div>
           <div className="flex gap-2 mb-3">
             <button
               type="button"
               onClick={() => setConfirmed(true)}
-              className="px-4 py-2 bg-[#25DC7F] text-white rounded-lg text-sm font-semibold hover:bg-[#1DB96A] transition-colors"
+              className="px-4 py-2 bg-[var(--green-fill)] text-[var(--on-green)] rounded-lg text-sm font-semibold hover:bg-[var(--green-dim)] transition-colors"
             >
               Yes, that&apos;s correct
             </button>
@@ -1035,7 +1035,7 @@ function ConfirmationField({
                 setConfirmed(false);
                 onDismiss();
               }}
-              className="px-4 py-2 border border-[#E6E8EA] text-[#0B0B0B] rounded-lg text-sm font-semibold hover:bg-[#F4F5F6] transition-colors"
+              className="px-4 py-2 border border-[var(--border2)] text-[var(--text)] rounded-lg text-sm font-semibold hover:bg-[var(--bg)] transition-colors"
             >
               No, let me edit
             </button>
@@ -1054,13 +1054,13 @@ function ConfirmationField({
         <div>
           {renderField()}
           {override.help_override && (
-            <p className="mt-1 text-xs text-[#6B6B6B]">{override.help_override}</p>
+            <p className="mt-1 text-xs text-[var(--muted)]">{override.help_override}</p>
           )}
         </div>
       )}
 
       {confirmed === true && hasValue && (
-        <div className="flex items-center gap-2 text-sm text-[#25DC7F]">
+        <div className="flex items-center gap-2 text-sm text-[var(--green)]">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
@@ -1068,7 +1068,7 @@ function ConfirmationField({
           <button
             type="button"
             onClick={() => setConfirmed(null)}
-            className="text-xs text-[#6B6B6B] hover:text-[#0B0B0B] ml-2"
+            className="text-xs text-[var(--muted)] hover:text-[var(--text)] ml-2"
           >
             Change
           </button>
@@ -1076,7 +1076,7 @@ function ConfirmationField({
       )}
 
       {error && (
-        <p className="mt-1 text-xs text-[#E5484D]">{error}</p>
+        <p className="mt-1 text-xs text-[var(--red)]">{error}</p>
       )}
     </div>
   );

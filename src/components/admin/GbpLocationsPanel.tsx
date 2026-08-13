@@ -124,16 +124,16 @@ export default function GbpLocationsPanel({ sessionId, sessionStatus, onApplied 
   };
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] p-6 mb-6">
+    <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] p-6 mb-6">
       <div className="flex items-center justify-between mb-1">
-        <h2 className="text-lg font-bold text-[#0B0B0B]">GBP Locations</h2>
+        <h2 className="text-lg font-bold text-[var(--text)]">GBP Locations</h2>
         {mode === 'mock' && (
-          <span className="px-2 py-1 text-xs font-bold uppercase tracking-wide rounded bg-[#F5A524]/15 text-[#F5A524] border border-[#F5A524]/30">
+          <span className="px-2 py-1 text-xs font-bold uppercase tracking-wide rounded bg-[var(--amber)]/15 text-[var(--amber)] border border-[var(--amber)]/30">
             Mock data
           </span>
         )}
       </div>
-      <p className="text-sm text-[#6B6B6B] mb-4">
+      <p className="text-sm text-[var(--muted)] mb-4">
         Pull the Business Profiles visible to the agency Google account and add the
         ones that belong to this client into the form&apos;s GBP profile rows.
         {mode === 'mock' && (
@@ -143,7 +143,7 @@ export default function GbpLocationsPanel({ sessionId, sessionStatus, onApplied 
       </p>
 
       {isSubmitted && (
-        <p className="mb-4 px-3 py-2 text-sm text-[#6B6B6B] bg-[#F4F5F6] border border-[#E6E8EA] rounded-lg">
+        <p className="mb-4 px-3 py-2 text-sm text-[var(--muted)] bg-[var(--bg)] border border-[var(--border2)] rounded-lg">
           This session has been submitted, so its form answers are locked.
           You can still fetch and view GBP locations, but they can&apos;t be
           added to the form.
@@ -154,7 +154,7 @@ export default function GbpLocationsPanel({ sessionId, sessionStatus, onApplied 
         <button
           onClick={handleFetch}
           disabled={isFetching}
-          className="px-4 py-2 text-sm font-semibold text-white bg-[#25DC7F] hover:bg-[#1DB96A] disabled:opacity-50 rounded-lg transition-colors"
+          className="px-4 py-2 text-sm font-semibold text-[var(--on-green)] bg-[var(--green-fill)] hover:bg-[var(--green-dim)] disabled:opacity-50 rounded-lg transition-colors"
         >
           {isFetching ? 'Fetching…' : 'Fetch GBP locations'}
         </button>
@@ -168,50 +168,50 @@ export default function GbpLocationsPanel({ sessionId, sessionStatus, onApplied 
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               placeholder="Filter by name or address…"
-              className="flex-1 min-w-[220px] px-3 py-2 text-sm border border-[#E6E8EA] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#25DC7F] focus:border-transparent"
+              className="flex-1 min-w-[220px] px-3 py-2 text-sm border border-[var(--border2)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--green)] focus:border-transparent"
             />
             <button
               onClick={selectAllVisible}
-              className="px-3 py-2 text-sm font-medium text-[#0B0B0B] border border-[#E6E8EA] hover:bg-[#F4F5F6] rounded-lg transition-colors"
+              className="px-3 py-2 text-sm font-medium text-[var(--text)] border border-[var(--border2)] hover:bg-[var(--bg)] rounded-lg transition-colors"
             >
               {allVisibleSelected ? 'Clear visible' : 'Select visible'}
             </button>
             <button
               onClick={handleFetch}
               disabled={isFetching}
-              className="px-3 py-2 text-sm font-medium text-[#6B6B6B] hover:text-[#0B0B0B] border border-[#E6E8EA] hover:bg-[#F4F5F6] disabled:opacity-50 rounded-lg transition-colors"
+              className="px-3 py-2 text-sm font-medium text-[var(--muted)] hover:text-[var(--text)] border border-[var(--border2)] hover:bg-[var(--bg)] disabled:opacity-50 rounded-lg transition-colors"
             >
               {isFetching ? 'Refreshing…' : 'Refresh'}
             </button>
           </div>
 
-          <div className="max-h-80 overflow-y-auto border border-[#E6E8EA] rounded-lg divide-y divide-[#E6E8EA]">
+          <div className="max-h-80 overflow-y-auto border border-[var(--border2)] rounded-lg divide-y divide-[var(--border2)]">
             {visible.length === 0 && (
-              <p className="p-4 text-sm text-[#6B6B6B]">No locations match the filter.</p>
+              <p className="p-4 text-sm text-[var(--muted)]">No locations match the filter.</p>
             )}
             {visible.map((loc) => {
               const url = loc.mapsUri ?? loc.websiteUri;
               return (
                 <label
                   key={loc.id}
-                  className="flex items-start gap-3 px-3 py-2.5 cursor-pointer hover:bg-[#F4F5F6] transition-colors"
+                  className="flex items-start gap-3 px-3 py-2.5 cursor-pointer hover:bg-[var(--bg)] transition-colors"
                 >
                   <input
                     type="checkbox"
                     checked={selected.has(loc.id)}
                     onChange={() => toggle(loc.id)}
                     disabled={!url}
-                    className="mt-0.5 w-4 h-4 accent-[#25DC7F]"
+                    className="mt-0.5 w-4 h-4 accent-[var(--green)]"
                   />
                   <span className="flex-1 min-w-0">
-                    <span className="block text-sm font-medium text-[#0B0B0B] truncate">
+                    <span className="block text-sm font-medium text-[var(--text)] truncate">
                       {loc.title}
                     </span>
-                    <span className="block text-xs text-[#6B6B6B] truncate">
+                    <span className="block text-xs text-[var(--muted)] truncate">
                       {loc.address ?? 'Service-area business (no storefront address)'}
                     </span>
                     {!url && (
-                      <span className="block text-xs text-[#E5484D]">
+                      <span className="block text-xs text-[var(--red)]">
                         No Maps or website URL on this listing -- cannot be added
                       </span>
                     )}
@@ -222,7 +222,7 @@ export default function GbpLocationsPanel({ sessionId, sessionStatus, onApplied 
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={(e) => e.stopPropagation()}
-                      className="flex-shrink-0 text-xs font-medium text-[#25DC7F] hover:text-[#1DB96A]"
+                      className="flex-shrink-0 text-xs font-medium text-[var(--green)] hover:text-[var(--green)]"
                     >
                       View
                     </a>
@@ -237,13 +237,13 @@ export default function GbpLocationsPanel({ sessionId, sessionStatus, onApplied 
               onClick={handleApply}
               disabled={isApplying || selected.size === 0 || isSubmitted}
               title={isSubmitted ? 'Session submitted -- form answers are locked' : undefined}
-              className="px-4 py-2 text-sm font-semibold text-white bg-[#25DC7F] hover:bg-[#1DB96A] disabled:opacity-50 rounded-lg transition-colors"
+              className="px-4 py-2 text-sm font-semibold text-[var(--on-green)] bg-[var(--green-fill)] hover:bg-[var(--green-dim)] disabled:opacity-50 rounded-lg transition-colors"
             >
               {isApplying
                 ? 'Saving…'
                 : `Add ${selected.size} selected to form`}
             </button>
-            <span className="text-xs text-[#6B6B6B]">
+            <span className="text-xs text-[var(--muted)]">
               {locations.length} location{locations.length === 1 ? '' : 's'} fetched
               {filter.trim() ? ` · ${visible.length} matching filter` : ''}
             </span>
@@ -252,10 +252,10 @@ export default function GbpLocationsPanel({ sessionId, sessionStatus, onApplied 
       )}
 
       {error && (
-        <p className="mt-3 text-sm text-[#E5484D]">{error}</p>
+        <p className="mt-3 text-sm text-[var(--red)]">{error}</p>
       )}
       {appliedMessage && (
-        <p className="mt-3 text-sm text-[#25DC7F]">{appliedMessage}</p>
+        <p className="mt-3 text-sm text-[var(--green)]">{appliedMessage}</p>
       )}
     </div>
   );

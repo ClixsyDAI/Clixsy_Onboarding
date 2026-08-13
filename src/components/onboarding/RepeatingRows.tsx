@@ -87,7 +87,7 @@ export default function RepeatingRows({
                       }
                       placeholder={sub.placeholder}
                       aria-label={sub.label ?? sub.name}
-                      className="flex-1 px-3 py-2.5 text-sm border border-[#E6E8EA] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#25DC7F] focus:border-transparent"
+                      className="flex-1 px-3 py-2.5 text-sm border border-[var(--border2)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--green)] focus:border-transparent"
                     />
                     {sub.linkAction &&
                       (canOpen ? (
@@ -95,7 +95,7 @@ export default function RepeatingRows({
                           href={resolveHref(cellValue)}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg border border-[#25DC7F] text-[#25DC7F] hover:bg-[#25DC7F]/10 transition-colors whitespace-nowrap"
+                          className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg border border-[var(--green)] text-[var(--green)] hover:bg-[var(--green-fill)]/10 transition-colors whitespace-nowrap"
                         >
                           <svg
                             className="w-4 h-4"
@@ -117,7 +117,7 @@ export default function RepeatingRows({
                           type="button"
                           disabled
                           title="Enter a valid URL to enable this button"
-                          className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg border border-[#E6E8EA] text-[#A0A0A0] cursor-not-allowed whitespace-nowrap"
+                          className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg border border-[var(--border2)] text-[var(--faint)] cursor-not-allowed whitespace-nowrap"
                         >
                           <svg
                             className="w-4 h-4"
@@ -144,7 +144,7 @@ export default function RepeatingRows({
                 onClick={() => removeRow(rowIdx)}
                 aria-label="Remove this profile"
                 title="Remove this profile"
-                className="flex-shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-lg border border-[#E6E8EA] text-[#6B6B6B] hover:bg-[#F4F5F6] hover:text-[#E5484D] transition-colors"
+                className="flex-shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-lg border border-[var(--border2)] text-[var(--muted)] hover:bg-[var(--bg)] hover:text-[var(--red)] transition-colors"
               >
                 <svg
                   className="w-4 h-4"
@@ -167,7 +167,7 @@ export default function RepeatingRows({
       <button
         type="button"
         onClick={addRow}
-        className="inline-flex items-center gap-1.5 text-sm font-medium text-[#25DC7F] hover:text-[#1eb86a] transition-colors"
+        className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--green)] hover:text-[var(--green)] transition-colors"
       >
         <svg
           className="w-4 h-4"

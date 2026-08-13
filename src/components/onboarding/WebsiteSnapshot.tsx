@@ -97,23 +97,23 @@ export default function WebsiteSnapshot({ branding, insights, techStack, onDismi
   if (!hasData && !branding?.screenshot_url) return null;
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-[#E6E8EA] mb-6 overflow-hidden">
+    <div className="bg-[var(--card)] rounded-xl shadow-sm border border-[var(--border2)] mb-6 overflow-hidden">
       {/* Header */}
-      <div className="px-6 py-4 bg-gradient-to-r from-[#0F1A14] to-[#1A2A1F] flex items-center justify-between">
+      <div className="px-6 py-4 bg-gradient-to-r from-[var(--side)] to-[var(--border2)] flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-[#25DC7F]/20 rounded-full flex items-center justify-center">
-            <svg className="w-4 h-4 text-[#25DC7F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-8 h-8 bg-[var(--green-fill)]/20 rounded-full flex items-center justify-center">
+            <svg className="w-4 h-4 text-[var(--green)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
             </svg>
           </div>
           <div>
-            <h2 className="text-white font-semibold text-sm">We did our homework</h2>
-            <p className="text-[#569077] text-xs">Here&apos;s what we found on your website</p>
+            <h2 className="text-[var(--text)] font-semibold text-sm">We did our homework</h2>
+            <p className="text-[var(--muted)] text-xs">Here&apos;s what we found on your website</p>
           </div>
         </div>
         <button
           onClick={() => { setDismissed(true); onDismiss(); }}
-          className="text-[#569077] hover:text-white text-xs font-medium transition-colors"
+          className="text-[var(--muted)] hover:text-[var(--text)] text-xs font-medium transition-colors"
         >
           Dismiss
         </button>
@@ -124,7 +124,7 @@ export default function WebsiteSnapshot({ branding, insights, techStack, onDismi
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {branding?.screenshot_url && (
             <div>
-              <div className="rounded-lg overflow-hidden border border-[#E6E8EA] shadow-sm">
+              <div className="rounded-lg overflow-hidden border border-[var(--border2)] shadow-sm">
                 <img
                   src={branding.screenshot_url}
                   alt="Website screenshot"
@@ -138,20 +138,20 @@ export default function WebsiteSnapshot({ branding, insights, techStack, onDismi
             {/* Summary — sanitised pipeline string or built from insights */}
             {summaryToShow && (
               <div>
-                <h3 className="text-xs font-semibold text-[#6B6B6B] uppercase mb-1">What we found</h3>
-                <p className="text-sm text-[#0B0B0B] leading-relaxed">{summaryToShow}</p>
+                <h3 className="text-xs font-semibold text-[var(--muted)] uppercase mb-1">What we found</h3>
+                <p className="text-sm text-[var(--text)] leading-relaxed">{summaryToShow}</p>
               </div>
             )}
 
             {/* Services */}
             {insights?.primary_services && insights.primary_services.length > 0 && (
               <div>
-                <h3 className="text-xs font-semibold text-[#6B6B6B] uppercase mb-2">Top services we noticed</h3>
+                <h3 className="text-xs font-semibold text-[var(--muted)] uppercase mb-2">Top services we noticed</h3>
                 <div className="flex flex-wrap gap-1.5">
                   {insights.primary_services.slice(0, 6).map((svc, i) => (
                     <span
                       key={i}
-                      className="inline-flex items-center px-2.5 py-1 bg-[#25DC7F]/10 border border-[#25DC7F]/20 rounded-full text-xs text-[#0B0B0B] font-medium"
+                      className="inline-flex items-center px-2.5 py-1 bg-[var(--green-fill)]/10 border border-[var(--green)]/20 rounded-full text-xs text-[var(--text)] font-medium"
                     >
                       {svc.name}
                     </span>
@@ -163,12 +163,12 @@ export default function WebsiteSnapshot({ branding, insights, techStack, onDismi
             {/* Locations */}
             {insights?.primary_locations && insights.primary_locations.length > 0 && (
               <div>
-                <h3 className="text-xs font-semibold text-[#6B6B6B] uppercase mb-2">Primary market</h3>
+                <h3 className="text-xs font-semibold text-[var(--muted)] uppercase mb-2">Primary market</h3>
                 <div className="flex flex-wrap gap-1.5">
                   {insights.primary_locations.map((loc, i) => (
                     <span
                       key={i}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 border border-blue-100 rounded-full text-xs text-blue-700 font-medium"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-[var(--card2)] border border-blue-100 rounded-full text-xs text-[var(--blue)] font-medium"
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
@@ -187,7 +187,7 @@ export default function WebsiteSnapshot({ branding, insights, techStack, onDismi
           {/* Tech Stack */}
           {techStack && (techStack.cms || techStack.analytics?.length) && (
             <div>
-              <h3 className="text-xs font-semibold text-[#6B6B6B] uppercase mb-2">Your site setup</h3>
+              <h3 className="text-xs font-semibold text-[var(--muted)] uppercase mb-2">Your site setup</h3>
               <div className="flex flex-wrap gap-1.5">
                 {techStack.cms && (
                   <span className="inline-flex items-center px-2.5 py-1 bg-purple-50 border border-purple-100 rounded-full text-xs text-purple-700">
@@ -200,7 +200,7 @@ export default function WebsiteSnapshot({ branding, insights, techStack, onDismi
                   </span>
                 )}
                 {techStack.analytics?.map((a, i) => (
-                  <span key={i} className="inline-flex items-center px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-full text-xs text-gray-600">
+                  <span key={i} className="inline-flex items-center px-2.5 py-1 bg-[var(--card2)] border border-[var(--border2)] rounded-full text-xs text-[var(--muted)]">
                     {a}
                   </span>
                 ))}
@@ -211,7 +211,7 @@ export default function WebsiteSnapshot({ branding, insights, techStack, onDismi
           {/* Key Pages */}
           {insights?.key_pages && insights.key_pages.length > 0 && (
             <div>
-              <h3 className="text-xs font-semibold text-[#6B6B6B] uppercase mb-2">Key pages we reviewed</h3>
+              <h3 className="text-xs font-semibold text-[var(--muted)] uppercase mb-2">Key pages we reviewed</h3>
               <div className="space-y-1">
                 {insights.key_pages.slice(0, 5).map((page, i) => (
                   <a
@@ -219,7 +219,7 @@ export default function WebsiteSnapshot({ branding, insights, techStack, onDismi
                     href={page.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-1.5 text-xs text-[#25DC7F] hover:text-[#1DB96A] font-medium"
+                    className="flex items-center gap-1.5 text-xs text-[var(--green)] hover:text-[var(--green)] font-medium"
                   >
                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
@@ -235,12 +235,12 @@ export default function WebsiteSnapshot({ branding, insights, techStack, onDismi
         {/* Brand Colors */}
         {branding?.colors && branding.colors.length > 0 && (
           <div>
-            <h3 className="text-xs font-semibold text-[#6B6B6B] uppercase mb-2">Detected brand colors</h3>
+            <h3 className="text-xs font-semibold text-[var(--muted)] uppercase mb-2">Detected brand colors</h3>
             <div className="flex gap-3">
               {branding.colors.slice(0, 5).map((color, i) => (
                 <div key={i} className="flex flex-col items-center gap-1">
-                  <div className="w-8 h-8 rounded-lg border border-[#E6E8EA] shadow-sm" style={{ backgroundColor: color }} />
-                  <span className="text-[10px] text-[#6B6B6B]">{color}</span>
+                  <div className="w-8 h-8 rounded-lg border border-[var(--border2)] shadow-sm" style={{ backgroundColor: color }} />
+                  <span className="text-[10px] text-[var(--muted)]">{color}</span>
                 </div>
               ))}
             </div>
@@ -248,7 +248,7 @@ export default function WebsiteSnapshot({ branding, insights, techStack, onDismi
         )}
 
         {/* Disclaimer */}
-        <p className="text-[10px] text-[#A0A0A0] text-center pt-2 border-t border-[#E6E8EA]">
+        <p className="text-[10px] text-[var(--faint)] text-center pt-2 border-t border-[var(--border2)]">
           Based on publicly available pages. Please confirm or correct anything that looks off as you go through the onboarding.
         </p>
       </div>
