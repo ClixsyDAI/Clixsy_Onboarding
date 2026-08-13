@@ -1,0 +1,38 @@
+# Tests plus the public-route auth guard. This repo had no CI at all, so the
+# guard would otherwise run only on whichever machine typed the npm command.
+# Counterpart of the dashboard's .github/workflows/checks.yml.
+#
+# No paths-ignore here: unlike the dashboard, nothing in this repo commits data
+# on a schedule, so there is no sync-bot traffic to keep ungated.
+
+name: checks
+
+on:
+  push:
+    paths-ignore: ["**/*.md"]
+  pull_request:
+    paths-ignore: ["**/*.md"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      # Every route under src/app/api/public/** must authorise its caller.
+      # Mutation-tested 4/4. This repo is public and these routes touch
+      # onboarding sessions and answers.
+      - run: npm run lint:public-route-auth
