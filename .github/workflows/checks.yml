@@ -43,3 +43,11 @@ jobs:
       # the form is public and client-facing, and before the retheme its primary
       # call to action shipped as white on the brand green at 1.81.
       - run: npm run lint:token-contrast
+
+      # Every control type the Almost-There summary can list must render an
+      # element carrying id={field.name}, because the summary focuses a field
+      # with getElementById. Mutation-tested 12/12. Radio, multiselect and
+      # repeating had no such element, so clicking a missing field navigated
+      # to the right step and then focused nothing, silently -- found by
+      # walking a real session, not by reading the code.
+      - run: npm run lint:focus-targets
