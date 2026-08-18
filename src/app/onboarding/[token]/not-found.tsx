@@ -24,10 +24,20 @@ import Link from 'next/link';
  *    sentence in the repo (checked repo-wide, both repos: 12 occurrences, all
  *    "Clixsy account manager", zero "agency").
  *
- *    STILL DIVERGENT, and still his: the HEADINGS. This page says "Session Not
- *    Found"; the served surface says "Onboarding link not found". Same dead
- *    end, two names. He ruled on the sentence, not the heading, so the heading
- *    is left alone rather than changed on an assumption.
+ *    HEADINGS, settled 2026-08-18. Johan's call: "Onboarding link not found"
+ *    wins, so this page no longer says "Session Not Found". Both client-facing
+ *    dead ends now carry the same heading and the same sentence.
+ *
+ *    ONE "Session Not Found" HEADING SURVIVES, deliberately:
+ *    src/app/admin/onboarding/sessions/[id]/page.tsx. That is an ADMIN surface
+ *    behind /admin/login, reached when a staff member opens a session id that
+ *    does not resolve, and it offers "Back to Sessions". There the noun is
+ *    right -- they looked up a session, not a link -- and no client can reach
+ *    it. Renaming it would make the admin page describe the wrong object in
+ *    order to make a grep uniform.
+ *
+ *    The ~20 'Session not found' strings in API routes are JSON error payloads
+ *    for programmatic callers, not headings, and are also left alone.
  */
 export default function NotFound() {
   return (
@@ -45,7 +55,7 @@ export default function NotFound() {
           </svg>
         </div>
         <h1 className="text-2xl font-bold mb-4" style={{ color: 'var(--text)' }}>
-          Session Not Found
+          Onboarding link not found
         </h1>
         <p className="mb-6" style={{ color: 'var(--muted)' }}>
           This onboarding link is invalid or has expired. Please contact your Clixsy account manager for a new link.
