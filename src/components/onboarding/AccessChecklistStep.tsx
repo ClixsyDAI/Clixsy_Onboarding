@@ -205,6 +205,8 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
                   <select
                     value={currentStatus}
                     onChange={e => onChange(row.statusField, e.target.value)}
+                    aria-invalid={errors[row.statusField] ? true : undefined}
+                    aria-describedby={errors[row.statusField] ? `${row.statusField}-error` : undefined}
                     className={`w-full px-3 py-2 rounded-lg border text-sm transition-colors ${
                       currentStatus === 'done'
                         ? 'border-[var(--green)] bg-[var(--green-fill)]/5 text-[var(--text)]'
@@ -221,7 +223,7 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
                     ))}
                   </select>
                   {errors[row.statusField] && (
-                    <p className="text-xs text-[var(--red)]">{errors[row.statusField]}</p>
+                    <p id={`${row.statusField}-error`} role="alert" className="text-xs text-[var(--red)]">{errors[row.statusField]}</p>
                   )}
                 </div>
               </div>

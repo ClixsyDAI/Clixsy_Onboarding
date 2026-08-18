@@ -221,6 +221,10 @@ function AutoGrowTextarea({
   className,
   minRows = 3,
   maxRows = 6,
+  // Forwarded explicitly: this component destructures a fixed prop list with no
+  // ...rest, so a spread of aria attributes would be dropped without a warning.
+  'aria-invalid': ariaInvalid,
+  'aria-describedby': ariaDescribedby,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -230,6 +234,8 @@ function AutoGrowTextarea({
   className?: string;
   minRows?: number;
   maxRows?: number;
+  'aria-invalid'?: boolean;
+  'aria-describedby'?: string;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -275,6 +281,8 @@ function AutoGrowTextarea({
       rows={minRows}
       className={className}
       style={{ resize: 'none' }}
+      aria-invalid={ariaInvalid}
+      aria-describedby={ariaDescribedby}
     />
   );
 }
@@ -476,6 +484,15 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
   const renderField = (field: OnboardingField) => {
     const value = values[field.name];
     const error = errors[field.name];
+    // Per-field error wiring. Without this a screen-reader user gets SILENCE when
+    // submission is blocked: the message renders visually, nothing announces it,
+    // and no control points at it. WCAG 3.3.1 (Error Identification) and 4.1.3
+    // (Status Messages). Measured on production 2026-08-17: role=alert 0,
+    // aria-live 0, aria-invalid 0 across the whole document in the error state.
+    const errorId = `${field.name}-error`;
+    const errorAria: { 'aria-invalid'?: boolean; 'aria-describedby'?: string } = error
+      ? { 'aria-invalid': true, 'aria-describedby': errorId }
+      : {};
     const override = getOverride(field.name);
     const suggestion = getSuggestion(field.name);
     const baseInputClasses = `w-full px-3 py-2.5 border rounded-lg transition-all duration-150 text-sm ${
@@ -526,6 +543,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                     <input
                       type="text"
                       id={field.name}
+                      {...errorAria}
                       name={field.name}
                       value={previewValue}
                       onChange={(e) => onChange(field.name, e.target.value)}
@@ -545,6 +563,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                   <input
                     type="text"
                     id={field.name}
+                    {...errorAria}
                     name={field.name}
                     value={previewValue}
                     onChange={(e) => onChange(field.name, e.target.value)}
@@ -564,6 +583,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                 <input
                   type={field.type}
                   id={field.name}
+                  {...errorAria}
                   name={field.name}
                   value={(value as string) || ''}
                   onChange={(e) => onChange(field.name, e.target.value)}
@@ -627,6 +647,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
             <>
               <AutoGrowTextarea
                 id={field.name}
+                {...errorAria}
                 name={field.name}
                 value={(value as string) || ''}
                 onChange={(v) => onChange(field.name, v)}
@@ -652,6 +673,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
           return (
             <select
               id={field.name}
+              {...errorAria}
               name={field.name}
               value={(value as string) || ''}
               onChange={(e) => onChange(field.name, e.target.value)}
@@ -793,6 +815,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
               <input
                 type="checkbox"
                 id={field.name}
+                {...errorAria}
                 name={field.name}
                 checked={(value as boolean) || false}
                 onChange={(e) => onChange(field.name, e.target.checked)}
@@ -888,7 +911,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                     <p className="mt-1 text-xs text-[var(--muted)] ml-8">{override?.help_override || helpTextFor(field)}</p>
                   )}
                   {errors[field.name] && (
-                    <p className="mt-1 text-xs text-[var(--red)] ml-8">{errors[field.name]}</p>
+                    <p id={`${field.name}-error`} role="alert" className="mt-1 text-xs text-[var(--red)] ml-8">{errors[field.name]}</p>
                   )}
                 </div>
               </Fragment>
@@ -937,7 +960,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                   <p className="mt-1 text-xs text-[var(--muted)]">{override?.help_override || helpTextFor(field)}</p>
                 )}
                 {errors[field.name] && (
-                  <p className="mt-1 text-xs text-[var(--red)]">{errors[field.name]}</p>
+                  <p id={`${field.name}-error`} role="alert" className="mt-1 text-xs text-[var(--red)]">{errors[field.name]}</p>
                 )}
               </div>
             </Fragment>
@@ -1076,7 +1099,7 @@ function ConfirmationField({
       )}
 
       {error && (
-        <p className="mt-1 text-xs text-[var(--red)]">{error}</p>
+        <p id={`${field.name}-error`} role="alert" className="mt-1 text-xs text-[var(--red)]">{error}</p>
       )}
     </div>
   );
