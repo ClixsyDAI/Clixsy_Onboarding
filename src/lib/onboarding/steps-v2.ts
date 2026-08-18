@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { OnboardingStep, VerticalId } from './steps';
 import { STEP_ICONS } from './steps';
 import { ALL_TRADE_IDS, HOME_SERVICES_TAXONOMY } from './service-taxonomy';
+import { buildErrorMap } from './field-messages';
 
 // Build the trade option list from the taxonomy at module load. The
 // service options aren't a flat list — they're grouped under their
@@ -1014,7 +1015,8 @@ const stepValidationSchemasV2: Record<string, z.ZodSchema> = {
 
 export function validateStepDataV2(
   stepKey: string,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  vertical?: VerticalId
 ): { success: boolean; errors?: Record<string, string> } {
   const schema = stepValidationSchemasV2[stepKey];
   if (!schema) {
@@ -1026,15 +1028,21 @@ export function validateStepDataV2(
     return { success: true };
   }
 
-  const errors: Record<string, string> = {};
-  result.error.issues.forEach((issue) => {
-    const fieldName = issue.path[0] as string;
-    if (fieldName) {
-      errors[fieldName] = issue.message;
-    }
-  });
-
-  return { success: false, errors };
+  // Messages are built from the FIELD, never taken from the issue. The
+  // schema messages below are attached to .min(1), which only runs on a
+  // string that is already present -- an untouched field is undefined,
+  // fails the type check first, and used to reach the client as
+  // "Invalid input: expected string, received undefined". See
+  // field-messages.ts for the full note.
+  const stepFields = onboardingStepsV2.find((s) => s.key === stepKey)?.fields ?? [];
+  return {
+    success: false,
+    errors: buildErrorMap(
+      result.error.issues,
+      (name) => stepFields.find((f) => f.name === name),
+      vertical
+    ),
+  };
 }
 
 export function getMissingRequiredFieldsV2(

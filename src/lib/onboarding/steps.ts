@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { buildErrorMap } from './field-messages';
 
 // =============================================
 // ONBOARDING STEP DEFINITIONS
@@ -1583,7 +1584,7 @@ export function getStepIndex(key: string): number {
 }
 
 // Validate step data
-export function validateStepData(stepKey: string, data: Record<string, unknown>): { success: boolean; errors?: Record<string, string> } {
+export function validateStepData(stepKey: string, data: Record<string, unknown>, vertical?: VerticalId): { success: boolean; errors?: Record<string, string> } {
   const schema = stepValidationSchemas[stepKey];
   if (!schema) {
     return { success: true };
@@ -1594,13 +1595,16 @@ export function validateStepData(stepKey: string, data: Record<string, unknown>)
     return { success: true };
   }
 
-  const errors: Record<string, string> = {};
-  result.error.issues.forEach(issue => {
-    const path = issue.path.join('.');
-    errors[path] = issue.message;
-  });
-
-  return { success: false, errors };
+  // Same rule as v2: copy comes from the field, never from the issue.
+  const stepFields = onboardingSteps.find(s => s.key === stepKey)?.fields ?? [];
+  return {
+    success: false,
+    errors: buildErrorMap(
+      result.error.issues,
+      name => stepFields.find(f => f.name === name),
+      vertical
+    ),
+  };
 }
 
 // Get all required fields across all steps

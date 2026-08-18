@@ -224,6 +224,8 @@ export default function Wizard({
   // `lastNavClickRef` is a 150ms hard floor on click rate, matching the
   // operator's latency target.
   const [isNavigating, setIsNavigating] = useState(false);
+  /** Field to focus after the next step swap, set by the summary. */
+  const focusFieldRef = useRef<string | null>(null);
   const lastNavClickRef = useRef(0);
 
   // Scroll navigation state
@@ -746,7 +748,7 @@ export default function Wizard({
   const handleNext = async () => {
     // Skip validation for review step
     if (!currentStep.isReviewStep) {
-      const validation = validateStepDataForVersion(flowVersion, currentStep.key, stepAnswers);
+      const validation = validateStepDataForVersion(flowVersion, currentStep.key, stepAnswers, vertical);
       if (!validation.success && validation.errors) {
         setErrors(validation.errors);
         return;
@@ -805,7 +807,7 @@ export default function Wizard({
     }
 
     // Validate final step
-    const validation = validateStepDataForVersion(flowVersion, currentStep.key, stepAnswers);
+    const validation = validateStepDataForVersion(flowVersion, currentStep.key, stepAnswers, vertical);
     if (!validation.success && validation.errors) {
       setErrors(validation.errors);
       return;
@@ -871,8 +873,16 @@ export default function Wizard({
   // fire the save in the background. The save closure captures the
   // outgoing step's key/index/answers so the POST body is still correct
   // even though state has already advanced.
-  const navigateToStep = (index: number) => {
-    if (index === currentStepIndex) return;
+  // `focusFieldName` is set when the client clicks a specific missing field
+  // in the Almost-There summary: navigate to the step AND put the caret in
+  // that field, rather than dropping them at the top of a 14-field step to
+  // hunt for the one that was named.
+  const navigateToStep = (index: number, focusFieldName?: string) => {
+    if (index === currentStepIndex) {
+      if (focusFieldName) focusFieldRef.current = focusFieldName;
+      return;
+    }
+    if (focusFieldName) focusFieldRef.current = focusFieldName;
 
     // Click guard: drop clicks while another nav is settling, while the
     // step-advance interstitial is on screen, or within 150ms of the
@@ -902,6 +912,37 @@ export default function Wizard({
       setTimeout(() => setIsNavigating(false), 150);
     }
   };
+
+  // ---------------------------------------------------------------
+  // Focus hand-off for the Almost-There summary
+  // ---------------------------------------------------------------
+  // The step swap is not synchronous: navigateToStep sets state, the
+  // transition splash may cover the screen, and StepRenderer mounts the
+  // controls afterwards. So poll for the element by id (StepRenderer sets
+  // id={field.name} on every control) across a bounded number of frames
+  // rather than guessing a delay. Gives up silently -- a summary entry
+  // that cannot focus still navigates, which is the pre-existing
+  // behaviour, so this can only improve on it.
+  useEffect(() => {
+    const name = focusFieldRef.current;
+    if (!name) return;
+    let frames = 0;
+    let raf = 0;
+    const tryFocus = () => {
+      const el = document.getElementById(name) as HTMLElement | null;
+      if (el) {
+        focusFieldRef.current = null;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // focus() after scrollIntoView so the browser does not fight it.
+        el.focus({ preventScroll: true });
+        return;
+      }
+      if (frames++ > 120) { focusFieldRef.current = null; return; }
+      raf = requestAnimationFrame(tryFocus);
+    };
+    raf = requestAnimationFrame(tryFocus);
+    return () => cancelAnimationFrame(raf);
+  }, [currentStepIndex, transitioning]);
 
   // Calculate progress percentage
   const progressPercentage = ((currentStepIndex + 1) / steps.length) * 100;
@@ -993,28 +1034,53 @@ export default function Wizard({
             </div>
 
             <div className="space-y-4">
+              {/*
+                Every entry is a real <button>, not a clickable <div>. The card
+                used to carry the onClick, which meant the whole thing was one
+                mouse-only target: a keyboard or screen-reader user could see
+                the list and reach none of it. Each field now navigates to its
+                own step AND focuses that control, so "Email Address" takes you
+                to the email box rather than to the top of a 14-field step.
+                Step key and field key both come from the shared
+                getMissingRequiredFieldsForVersion derivation -- the same one
+                canSubmit uses -- so this list and the submit gate cannot
+                disagree.
+              */}
               {Object.entries(missingFieldsByStep).map(([stepKey, { stepTitle, stepIndex, fields }]) => (
                 <div
                   key={stepKey}
-                  className="bg-[var(--amber-soft)] border border-[var(--amber)]/30 rounded-lg p-4 cursor-pointer hover:bg-[var(--amber-soft)] transition-colors"
-                  onClick={() => navigateToStep(stepIndex)}
+                  className="bg-[var(--amber-soft)] border border-[var(--amber)]/30 rounded-lg overflow-hidden"
                 >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="font-semibold text-[var(--amber)] mb-1">{stepTitle}</h3>
-                      <ul className="text-sm text-[var(--amber)]">
-                        {fields.map((field) => (
-                          <li key={field.fieldName} className="flex items-center gap-2">
-                            <span className="w-1.5 h-1.5 bg-[var(--amber)] rounded-full"></span>
-                            {field.fieldLabel}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                    <svg className="w-5 h-5 text-[var(--amber)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigateToStep(stepIndex)}
+                    className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-[var(--amber)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--amber)]"
+                  >
+                    <h3 className="font-semibold text-[var(--amber)]">{stepTitle}</h3>
+                    <span className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs text-[var(--amber)]">
+                        {fields.length} {fields.length === 1 ? 'field' : 'fields'}
+                      </span>
+                      <svg className="w-5 h-5 text-[var(--amber)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </span>
+                  </button>
+                  <ul className="px-2 pb-2 space-y-1">
+                    {fields.map((field) => (
+                      <li key={field.fieldName}>
+                        <button
+                          type="button"
+                          onClick={() => navigateToStep(stepIndex, field.fieldName)}
+                          className="w-full flex items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-[var(--amber)] transition-colors hover:bg-[var(--amber)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--amber)]"
+                        >
+                          <span className="w-1.5 h-1.5 bg-[var(--amber)] rounded-full shrink-0" aria-hidden="true"></span>
+                          <span className="min-w-0 break-words">{field.fieldLabel}</span>
+                          <span className="sr-only"> — go to this field on {stepTitle}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               ))}
             </div>

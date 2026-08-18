@@ -16,13 +16,18 @@ import Link from 'next/link';
  * 2. It was blue and indigo (`from-blue-50 to-indigo-100`, `bg-blue-600`),
  *    which is not a Clixsy colour and appears nowhere else in the product.
  *
- * 3. COPY MISMATCH, flagged not fixed. This page says "Session Not Found" and
- *    "contact your agency". The other invalid-link surface, the one actually
- *    served at /onboarding/<bad-token> today, says "Onboarding link not found"
- *    and "contact your Clixsy account manager". Two client-facing dead ends
- *    with different names for the same thing, and only one of them uses the
- *    right word for Clixsy. Which wording wins is a product call, so the text
- *    is untouched here.
+ * 3. COPY MISMATCH, half settled 2026-08-18. This page used to say "contact
+ *    your agency" while the other invalid-link surface -- OnboardingShell's
+ *    notFound branch, the one actually served at /onboarding/<bad-token>
+ *    today -- says "contact your Clixsy account manager". Johan's call:
+ *    "Clixsy account manager" wins, and it is now the only form of that
+ *    sentence in the repo (checked repo-wide, both repos: 12 occurrences, all
+ *    "Clixsy account manager", zero "agency").
+ *
+ *    STILL DIVERGENT, and still his: the HEADINGS. This page says "Session Not
+ *    Found"; the served surface says "Onboarding link not found". Same dead
+ *    end, two names. He ruled on the sentence, not the heading, so the heading
+ *    is left alone rather than changed on an assumption.
  */
 export default function NotFound() {
   return (
@@ -43,7 +48,7 @@ export default function NotFound() {
           Session Not Found
         </h1>
         <p className="mb-6" style={{ color: 'var(--muted)' }}>
-          This onboarding link is invalid or has expired. Please contact your agency for a new link.
+          This onboarding link is invalid or has expired. Please contact your Clixsy account manager for a new link.
         </p>
         <Link
           href="/"

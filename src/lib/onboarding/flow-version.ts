@@ -8,14 +8,22 @@ export function getStepsForVersion(v: FlowVersion | string): OnboardingStep[] {
   return v === 'v2' ? onboardingStepsV2 : onboardingSteps;
 }
 
+/**
+ * `vertical` is optional and only affects the WORDING of a failure: the
+ * message names the label the client is actually looking at, which for a
+ * few fields differs by vertical (Step 7 relabels "case types" ->
+ * "service categories" for home_services). Omitting it falls back to the
+ * default label, so existing callers keep working.
+ */
 export function validateStepDataForVersion(
   v: FlowVersion | string,
   stepKey: string,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  vertical?: VerticalId
 ): { success: boolean; errors?: Record<string, string> } {
   return v === 'v2'
-    ? validateStepDataV2(stepKey, data)
-    : validateStepData(stepKey, data);
+    ? validateStepDataV2(stepKey, data, vertical)
+    : validateStepData(stepKey, data, vertical);
 }
 
 /**
