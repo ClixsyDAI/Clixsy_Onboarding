@@ -349,6 +349,20 @@ function SuggestionChip({ value, onAccept }: { value: string; onAccept: () => vo
 }
 
 // Determine if a field should span both columns (full width)
+/**
+ * Control types rendered as N inputs rather than one control, so there is no
+ * single element to hang id={field.name} on. They carry the id on their
+ * CONTAINER instead (see `groupAria` in renderField), which has two knock-on
+ * requirements this set keeps in one place:
+ *   - the outer <label> must reference the group with aria-labelledby, since
+ *     htmlFor may only point at a labelable element, never a <div>;
+ *   - the container needs tabIndex={-1} so the Almost-There summary can focus
+ *     it without adding a tab stop.
+ * Guarded by scripts/check-focus-targets.mjs.
+ */
+const GROUP_CONTROL_TYPES = new Set(['radio', 'multiselect', 'repeating']);
+const isGroupControl = (type: string): boolean => GROUP_CONTROL_TYPES.has(type);
+
 function shouldSpanFullWidth(field: OnboardingField): boolean {
   if (field.videoUrl) return true;
   if (field.type === 'textarea') return true;
@@ -493,6 +507,28 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
     const errorAria: { 'aria-invalid'?: boolean; 'aria-describedby'?: string } = error
       ? { 'aria-invalid': true, 'aria-describedby': errorId }
       : {};
+    // Radio and multi-select render N inputs, so there is no single control to
+    // hang id={field.name} on. Two things broke because of that:
+    //   1. The Almost-There summary focuses a field by getElementById(name).
+    //      It resolved to null here, so clicking "What are your primary case
+    //      types or services?" navigated to step 7 and then focused nothing.
+    //      Measured: 1 of the 11 required fields on EACH vertical is one of
+    //      these (primary_case_types_keywords / service_trades) -- and it is
+    //      the long checkbox list clients are most likely to skip.
+    //   2. The group's <label htmlFor={field.name}> pointed at an id that did
+    //      not exist, so the group was unlabelled to a screen reader.
+    // The container carries the id instead of the first input. Putting it on
+    // the first input would also have satisfied both, but it would make
+    // clicking the question heading tick "Personal Injury", which is worse
+    // than the bug. tabIndex={-1} makes the container programmatically
+    // focusable without adding a tab stop.
+    const groupAria = {
+      id: field.name,
+      tabIndex: -1,
+      role: field.type === 'radio' ? 'radiogroup' : 'group',
+      'aria-labelledby': `${field.name}-label`,
+      ...errorAria,
+    } as const;
     const override = getOverride(field.name);
     const suggestion = getSuggestion(field.name);
     const baseInputClasses = `w-full px-3 py-2.5 border rounded-lg transition-all duration-150 text-sm ${
@@ -633,12 +669,17 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
               ? [{ url: seed }]
               : [];
           return (
-            <RepeatingRows
-              values={rows}
-              rowFields={field.rowFields ?? []}
-              onChange={(next) => onChange(field.name, next)}
-              addButtonLabel={field.addButtonLabel ?? 'Add another'}
-            />
+            // Same reason as radio/multiselect: N rows, no single control to
+            // carry id={field.name}. gbp_locations becomes required as soon
+            // as a client answers "yes" to has_gbp, so this is reachable.
+            <div {...groupAria}>
+              <RepeatingRows
+                values={rows}
+                rowFields={field.rowFields ?? []}
+                onChange={(next) => onChange(field.name, next)}
+                addButtonLabel={field.addButtonLabel ?? 'Add another'}
+              />
+            </div>
           );
         }
 
@@ -714,7 +755,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
               );
             }
             return (
-              <div className="space-y-5">
+              <div {...groupAria} className="space-y-5">
                 {tradesView.map((trade) => (
                   <div key={trade.tradeId}>
                     <h3 className="text-sm font-semibold text-[var(--text)] mb-2">{trade.tradeLabel}</h3>
@@ -777,7 +818,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
           };
 
           return (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div {...groupAria} className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {field.options?.map((option) => (
                 <label
                   key={option.value}
@@ -838,7 +879,7 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
             );
           }
           return (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div {...groupAria} className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {opts.map((option) => (
                 <label
                   key={option.value}
@@ -949,7 +990,12 @@ export default function StepRenderer({ step, values, errors, onChange, questionO
                   <VideoTutorial url={field.videoUrl} title={field.videoTitle} />
                 )}
                 <label
-                  htmlFor={field.name}
+                  // A radio/multiselect group is a <div>, not a labelable
+                  // element, so htmlFor must not point at it. Those groups
+                  // reference this label by id instead (aria-labelledby).
+                  {...(isGroupControl(field.type)
+                    ? { id: `${field.name}-label` }
+                    : { htmlFor: field.name })}
                   className="block text-sm font-semibold text-[var(--text)] mb-1.5"
                 >
                   {override?.label_override || labelFor(field)}
