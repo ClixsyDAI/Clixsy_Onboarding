@@ -104,7 +104,8 @@ export async function POST(request: NextRequest) {
 
     // --- Generate IDs, session token, and 6-digit PIN --------------
     const agencyId = ADMIN_AGENCY_ID;
-    const clientId = uuidv4();
+    // Reassigned when an existing clients row is adopted — see below.
+    let clientId = uuidv4();
     const sessionId = uuidv4();
     const token = crypto.randomBytes(32).toString('hex');
 
@@ -114,50 +115,144 @@ export async function POST(request: NextRequest) {
     const pin = generatePin();
     const pinHash = await hashPin(pin);
 
-    // --- Create client --------------------------------------------
-    // workbook_id is only included in the INSERT payload when the
-    // caller supplied it — leaving the column NULL (its default)
-    // preserves the admin UI path's existing behaviour.
-    const clientInsert: Record<string, unknown> = {
-      id: clientId,
-      agency_id: agencyId,
-      client_name: clientName,
-      primary_contact_name: contactName ?? null,
-      primary_contact_email: contactEmail ?? null,
-      website_url: websiteUrl ?? null,
-    };
+    // --- Resolve the client: ADOPT an existing row, or create one --
+    //
+    // A workbook_id that already has a `clients` row is the NORMAL
+    // case for any client that predates its onboarding session: every
+    // roster client seeded by a backfill, and every client whose
+    // session was never minted.
+    //
+    // Before this branch existed, the INSERT below hit
+    // `clients_workbook_id_unique` and this route answered 409, which
+    // the workbook read as "a session already exists". For a client
+    // with a row but no session that was simply false, and it was the
+    // only thing standing between an AM and an onboarding link.
+    // Measured on production 2026-08-18: 5 of 97 clients were in
+    // exactly that state — Sunset Heating (J153) among them — and
+    // there was no way to onboard any of them from any surface.
+    //
+    // Adopting matters beyond unblocking the button: the submit-time
+    // export sheet is keyed on `clients.workbook_id` (column O). A
+    // session hung off a NEW client row would carry a null workbook_id
+    // and produce a sheet row nothing can ever match. Adopting the row
+    // that already holds the id is what keeps that key intact.
+    //
+    // The 409 is now reserved for the one case that genuinely is a
+    // conflict: the client already has a session.
+    let adoptedExistingClient = false;
+
     if (workbookId !== undefined) {
-      clientInsert.workbook_id = workbookId;
+      const { data: existingClient, error: clientLookupError } = await supabase
+        .from('clients')
+        .select('id')
+        .eq('workbook_id', workbookId)
+        .maybeSingle<{ id: string }>();
+
+      if (clientLookupError) {
+        console.error('Client lookup error:', clientLookupError);
+        return NextResponse.json(
+          { error: 'Failed to look up client: ' + clientLookupError.message },
+          { status: 500 }
+        );
+      }
+      if (existingClient) {
+        clientId = existingClient.id;
+        adoptedExistingClient = true;
+      }
     }
 
-    const { error: clientError } = await supabase
-      .from('clients')
-      .insert(clientInsert);
+    if (!adoptedExistingClient) {
+      // workbook_id is only included in the INSERT payload when the
+      // caller supplied it — leaving the column NULL (its default)
+      // preserves the admin UI path's existing behaviour.
+      const clientInsert: Record<string, unknown> = {
+        id: clientId,
+        agency_id: agencyId,
+        client_name: clientName,
+        primary_contact_name: contactName ?? null,
+        primary_contact_email: contactEmail ?? null,
+        website_url: websiteUrl ?? null,
+      };
+      if (workbookId !== undefined) {
+        clientInsert.workbook_id = workbookId;
+      }
 
-    if (clientError) {
-      // Translate the workbook_id UNIQUE-violation into a structured
-      // 409 so the automation caller can distinguish "this Basecamp
-      // project already has an onboarding session" from a generic DB
-      // failure. Other 23505 violations fall through to the 500 path.
-      if (
-        clientError.code === '23505' &&
-        typeof clientError.message === 'string' &&
-        clientError.message.includes('clients_workbook_id_unique')
-      ) {
+      const { error: clientError } = await supabase
+        .from('clients')
+        .insert(clientInsert);
+
+      if (clientError) {
+        const isWorkbookIdConflict =
+          clientError.code === '23505' &&
+          typeof clientError.message === 'string' &&
+          clientError.message.includes('clients_workbook_id_unique');
+
+        // Lost a race: another request inserted this workbook_id
+        // between the lookup above and this insert. Re-resolve and
+        // adopt rather than failing — the unique constraint did its
+        // job, and the right outcome is the same as if the row had
+        // been visible the first time.
+        if (isWorkbookIdConflict && workbookId !== undefined) {
+          const { data: raced } = await supabase
+            .from('clients')
+            .select('id')
+            .eq('workbook_id', workbookId)
+            .maybeSingle<{ id: string }>();
+          if (raced) {
+            clientId = raced.id;
+            adoptedExistingClient = true;
+          } else {
+            console.error(
+              'Client creation error (unique violation, row not found on re-read):',
+              clientError
+            );
+            return NextResponse.json(
+              { error: 'Failed to create client: ' + clientError.message },
+              { status: 500 }
+            );
+          }
+        } else {
+          console.error('Client creation error:', clientError);
+          return NextResponse.json(
+            { error: 'Failed to create client: ' + clientError.message },
+            { status: 500 }
+          );
+        }
+      }
+    }
+
+    // --- The one true conflict: this client already has a session ---
+    //
+    // Reserved for genuine idempotency. A manual-add retry and a
+    // re-fired GHL webhook both land here, and the workbook's
+    // `already_linked` result is now an accurate statement rather than
+    // an inference drawn from the wrong constraint.
+    if (adoptedExistingClient) {
+      const { data: existingSession, error: sessionLookupError } = await supabase
+        .from('onboarding_sessions')
+        .select('id')
+        .eq('client_id', clientId)
+        .limit(1)
+        .maybeSingle<{ id: string }>();
+
+      if (sessionLookupError) {
+        console.error('Session lookup error:', sessionLookupError);
+        return NextResponse.json(
+          { error: 'Failed to look up session: ' + sessionLookupError.message },
+          { status: 500 }
+        );
+      }
+      if (existingSession) {
         return NextResponse.json(
           {
             success: false,
-            error: 'workbook_id_already_linked',
-            message: `Another client is already linked to workbook_id ${workbookId}. Use a different workbook_id or unlink the existing client.`,
+            error: 'session_already_exists',
+            message: `This client already has an onboarding session (${existingSession.id}). Use Copy link on the workbook's Onboarding tab, or Regenerate PIN, rather than creating a second session.`,
+            sessionId: existingSession.id,
           },
           { status: 409 }
         );
       }
-      console.error('Client creation error:', clientError);
-      return NextResponse.json(
-        { error: 'Failed to create client: ' + clientError.message },
-        { status: 500 }
-      );
     }
 
     // --- Create onboarding session --------------------------------
@@ -243,6 +338,11 @@ export async function POST(request: NextRequest) {
       token,
       sessionId,
       pin,
+      // True when the session was hung off a clients row that already
+      // existed for this workbook_id, rather than off a row created
+      // here. The workbook surfaces this so an operator can tell
+      // "onboarded an existing client" from "created a new one".
+      adoptedExistingClient,
     });
   } catch (error) {
     console.error('Error creating session:', error);
