@@ -35,7 +35,7 @@ interface SessionDetail {
   clients: ClientInfo | null;
   // P1 fields (read-only on this screen)
   account_manager: string | null;
-  vertical: 'law_firm' | 'home_services' | null;
+  vertical: 'law_firm' | 'home_services' | 'other' | null;
   // P2 PIN state (pin_hash itself is never returned to the client)
   pin_set: boolean;
   pin_attempts: number;
@@ -637,6 +637,8 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                   ? 'Law Firm'
                   : session.vertical === 'home_services'
                   ? 'Home Services'
+                  : session.vertical === 'other'
+                  ? 'Other (unclassified — set before push)'
                   : '—'}
               </p>
             </div>

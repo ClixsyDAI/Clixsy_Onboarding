@@ -45,7 +45,7 @@ interface SessionPayload {
      * `case_priority` vs `service_priority`. Defaults to 'law_firm'
      * server-side for legacy rows where the column wasn't yet set.
      */
-    vertical: 'law_firm' | 'home_services';
+    vertical: 'law_firm' | 'home_services' | 'other';
   };
   client: { name: string; contactName: string };
   answers: Record<string, { answers: Record<string, unknown>; completed: boolean }>;

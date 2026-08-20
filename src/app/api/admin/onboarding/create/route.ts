@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import { generatePin, hashPin } from '@/lib/onboarding/pin';
 import { isLikelyUrl } from '@/lib/onboarding/url-shape';
 
-type Vertical = 'law_firm' | 'home_services';
+type Vertical = 'law_firm' | 'home_services' | 'other';
 
 // Empty-after-trim becomes undefined so downstream `?? null` coalesces
 // the optional contact columns the same way the original
@@ -20,8 +20,13 @@ const optionalTrimmedString = z
 const RequestBodySchema = z.object({
   clientName: z.string().trim().min(1, 'Client name is required'),
   accountManager: z.string().trim().min(1, 'Account manager is required'),
-  vertical: z.enum(['law_firm', 'home_services'], {
-    message: 'Vertical must be one of: law_firm, home_services',
+  // 'other' added for clients arriving from a GoHighLevel pipeline the
+  // workbook has no mapping for. Rejecting it here is what used to break the
+  // chain: the dashboard receiver wrote the roster entry, called this endpoint
+  // with vertical 'other', got a 400, and still answered HTTP 200 — leaving a
+  // roster entry with no session, invisible in both systems.
+  vertical: z.enum(['law_firm', 'home_services', 'other'], {
+    message: 'Vertical must be one of: law_firm, home_services, other',
   }),
   contactName: optionalTrimmedString,
   contactEmail: optionalTrimmedString,

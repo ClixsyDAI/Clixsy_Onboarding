@@ -12,7 +12,26 @@ import { buildErrorMap } from './field-messages';
  * cascade sources. New verticals get added here; the field-type
  * predicates below pick them up automatically.
  */
-export type VerticalId = 'law_firm' | 'home_services';
+export type VerticalId = 'law_firm' | 'home_services' | 'other';
+
+/**
+ * 'other' is a real, legal vertical as of the unknown-pipeline work, not a
+ * placeholder. A client arriving from a GoHighLevel pipeline the workbook has
+ * never seen resolves to it, and the whole chain has to complete for them —
+ * roster entry, session, link and PIN.
+ *
+ * What it means for the form falls out of the predicates below rather than
+ * needing special cases: `verticalIn: ['law_firm']` and
+ * `verticalIn: ['home_services']` both exclude it, so an 'other' client sees
+ * the shared Step 7 with NEITHER the case-type nor the service-type block;
+ * `requiredWhen.equals` never matches it, so nothing vertical-specific is
+ * required; and `labelByVertical` is Partial, so labels fall back to defaults.
+ *
+ * It is deliberately still refused by templateForVertical() at
+ * approve-and-push: picking the LEGAL or HVAC workbook for a business nobody
+ * has classified is a wrong workbook that looks right. An operator sets the
+ * real vertical in the workbook admin editor first.
+ */
 
 /**
  * Sub-field config for a `repeating` field. The full OnboardingField
