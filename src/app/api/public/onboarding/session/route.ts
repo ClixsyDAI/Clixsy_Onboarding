@@ -176,8 +176,17 @@ export async function GET(request: NextRequest) {
     // welcome modal) don't care about vertical, so this normalisation
     // can't poison the gated screens.
     const rawVertical = (session as unknown as { vertical?: string | null }).vertical;
-    const vertical: 'law_firm' | 'home_services' =
-      rawVertical === 'home_services' ? 'home_services' : 'law_firm';
+    // 'other' is now a KNOWN value and passes through. It previously fell into
+    // the else-branch and was silently served as 'law_firm', which would have
+    // shown an unclassified client the law-firm question set while its row
+    // said 'other' — working, and silently wrong. Genuinely unknown strings
+    // still fall back to 'law_firm' for the forward-compat reason above.
+    const vertical: 'law_firm' | 'home_services' | 'other' =
+      rawVertical === 'home_services'
+        ? 'home_services'
+        : rawVertical === 'other'
+          ? 'other'
+          : 'law_firm';
 
     return NextResponse.json({
       session: {
