@@ -33,7 +33,7 @@
 import { JWT } from 'google-auth-library';
 import {
   createServiceRoleClient,
-  createAuditEvent,
+  recordAuditEvent,
   getSessionAnswers,
   type OnboardingSession,
 } from '@/lib/supabase/server';
@@ -146,22 +146,21 @@ async function valuesAppend(jwt: JWT, sheetId: string, rows: string[][]): Promis
   });
 }
 
-async function safeAudit(
-  sessionId: string,
-  payload: Record<string, unknown>,
-): Promise<void> {
-  try {
-    await createAuditEvent(sessionId, 'sheet_export_failed', payload);
-  } catch (err) {
-    // The export must never throw into the submit path, even if
-    // auditing the failure itself fails.
-    console.error(
-      `[sheet-export] audit write failed (non-fatal): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}
+// The `safeAudit` wrapper that used to live here is GONE, for the same reason
+// as the bridge's twin: its inner catch was reachable ONLY via
+// createServiceRoleClient() throwing on missing env (which is also what would
+// have got us into the outer catch below in the first place), and it was the
+// wrong shape for the fault that actually happens — postgrest-js RESOLVES both
+// an RLS refusal and a transport failure, so the common case never reached it.
+// `recordAuditEvent` is total AND loud, so the wrapper has nothing to add.
+//
+// The OUTER catch at the bottom of exportSubmissionToSheet STAYS. It is live
+// on its own merits: the google-auth-library JWT sign and every jwt.request()
+// genuinely reject.
+
+/** Where a sheet-export audit write came from, for the failure log line. */
+const SHEET_EXPORT_ROUTE =
+  'after(POST /api/public/onboarding/submit) → sheet-export';
 
 export async function exportSubmissionToSheet(
   session: OnboardingSession,
@@ -355,6 +354,16 @@ export async function exportSubmissionToSheet(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[sheet-export] failed session=${session.id}: ${message}`);
-    await safeAudit(session.id, { error: message });
+    await recordAuditEvent(
+      session.id,
+      'sheet_export_failed',
+      { error: message },
+      {
+        clientId: session.client_id,
+        route: SHEET_EXPORT_ROUTE,
+        succeeded:
+          'the submission itself is committed and the roster sheet failure on the line above is logged; only the audit row recording it was lost',
+      },
+    );
   }
 }

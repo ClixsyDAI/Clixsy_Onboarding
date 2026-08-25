@@ -256,6 +256,21 @@ export async function runSiteAnalysis(recordId: string): Promise<void> {
   const supabase = createServiceRoleClient();
 
   // Mark as running
+  //
+  // SURVIVING SILENT WRITE (1 of 3 in this file). `.error` is never read and
+  // the result is discarded, so an RLS refusal, a schema fault or a dead
+  // transport leaves this record stuck at 'queued' with nothing logged — the
+  // wizard then polls a status that will never change. postgrest-js RESOLVES
+  // all of those rather than throwing, which is why no try/catch above catches
+  // it (src/lib/supabase/server.ts documents the resolved-value contract).
+  // Out of scope for this PR: these are site-intelligence state writes, not
+  // audit writes, so they are not among the seven sites the audit-surfacing
+  // change covers, and their behaviour is deliberately UNCHANGED here.
+  // The primitives to reach for when fixing this: `normaliseAuditFault` +
+  // `AuditWriteError` + `logAuditWriteFailure`, or `recordAuditRow` /
+  // `insertAuditRowOrThrow` (both table-agnostic) in
+  // src/lib/supabase/server.ts, plus `.abortSignal(AbortSignal.timeout(ms))`,
+  // which nothing in this file has either.
   await supabase
     .from('onboarding_site_intelligence')
     .update({ status: 'running', started_at: new Date().toISOString() })
@@ -406,6 +421,16 @@ export async function runSiteAnalysis(recordId: string): Promise<void> {
     const questionOverrides = buildQuestionOverrides(merged.insights, merged.techStack.cms, merged.techStack);
 
     // Save results
+    //
+    // SURVIVING SILENT WRITE (2 of 3, and the worst of them). This is the
+    // write that PERSISTS A COMPLETED ANALYSIS: the branding, insights, tech
+    // stack, prefill map and question overrides the whole Anthropic spend just
+    // produced. `.error` is never read, so if it is refused the record stays
+    // 'running' forever, the paid-for result is dropped on the floor, and
+    // nothing anywhere says so. Same silent class as the audit writes; same
+    // reason (postgrest-js resolves faults instead of throwing).
+    // NOT CHANGED IN THIS PR (not an audit write, outside the seven sites).
+    // Primitives available for the fix: see the note in runSiteAnalysis above.
     await supabase
       .from('onboarding_site_intelligence')
       .update({
@@ -427,6 +452,12 @@ export async function runSiteAnalysis(recordId: string): Promise<void> {
     const errorMessage = err instanceof Error ? err.message : 'Unknown analysis error';
     console.error('Site analysis failed:', errorMessage);
 
+    // SURVIVING SILENT WRITE (3 of 3). The failure-marking write is itself
+    // silent, so a refused update leaves the record stuck at 'running' and the
+    // wizard polling a scan that has already failed. The console.error above
+    // is the only trace, and it does not say the STATUS never landed.
+    // NOT CHANGED IN THIS PR (not an audit write, outside the seven sites).
+    // Primitives available for the fix: see the note in runSiteAnalysis above.
     await supabase
       .from('onboarding_site_intelligence')
       .update({

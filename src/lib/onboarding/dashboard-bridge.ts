@@ -21,9 +21,11 @@
 
 import {
   createServiceRoleClient,
-  createAuditEvent,
+  recordAuditEvent,
   type OnboardingSession,
 } from "@/lib/supabase/server";
+
+const BRIDGE_ROUTE = "after(POST /api/public/onboarding/submit) → dashboard-bridge";
 
 // The dashboard's canonical production origin. Bearer-authed, so it must
 // target the canonical domain directly (a cross-origin redirect would
@@ -31,22 +33,19 @@ import {
 const DASHBOARD_BASE_URL =
   process.env.DASHBOARD_BASE_URL ?? "https://workbooks.clixsy.co";
 
-async function safeAudit(
-  sessionId: string,
-  eventType: string,
-  payload: Record<string, unknown>,
-): Promise<void> {
-  try {
-    await createAuditEvent(sessionId, eventType, payload);
-  } catch (err) {
-    // The bridge must never throw into the submit path, even if auditing fails.
-    console.error(
-      `[dashboard-bridge] audit write failed (non-fatal): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}
+// The `safeAudit` wrapper that used to live here is GONE. Its inner catch was
+// not fully dead — createServiceRoleClient() genuinely throws when the env is
+// missing, which is why the outer catch at the bottom of this file could reach
+// it and it could throw a second time from the same cause — but it was the
+// wrong shape for the fault that actually happens: postgrest-js RESOLVES both
+// an RLS refusal and a transport failure, so the overwhelmingly common case
+// never reached that catch at all. `recordAuditEvent` is total (it absorbs the
+// client-init throw as fault kind 'client_init') AND loud, so the wrapper has
+// nothing left to add.
+//
+// The OUTER catch below stays. It is live for reasons that have nothing to do
+// with auditing: fetch(), AbortSignal.timeout(15000) and res.json() all
+// genuinely reject.
 
 export async function fireDashboardClientBridge(
   session: OnboardingSession,
@@ -73,10 +72,17 @@ export async function fireDashboardClientBridge(
       console.error(
         `[dashboard-bridge] client lookup failed session=${session.id}: ${error.message}`,
       );
-      await safeAudit(session.id, "dashboard_sync_failed", {
-        stage: "client_lookup",
-        error: error.message,
-      });
+      await recordAuditEvent(
+        session.id,
+        "dashboard_sync_failed",
+        { stage: "client_lookup", error: error.message },
+        {
+          clientId: session.client_id,
+          route: BRIDGE_ROUTE,
+          succeeded:
+            "the submission itself is committed; the dashboard sync failure on the line above is now unrecorded too, so re-fire the bridge for this session",
+        },
+      );
       return;
     }
 
@@ -90,9 +96,17 @@ export async function fireDashboardClientBridge(
       console.warn(
         `[dashboard-bridge] session ${session.id} has no workbook_id — dashboard sync deferred (pending backfill)`,
       );
-      await safeAudit(session.id, "dashboard_sync_deferred", {
-        reason: "no_workbook_id",
-      });
+      await recordAuditEvent(
+        session.id,
+        "dashboard_sync_deferred",
+        { reason: "no_workbook_id" },
+        {
+          clientId: session.client_id,
+          route: BRIDGE_ROUTE,
+          succeeded:
+            "the submission itself is committed; the deferral on the line above is now unrecorded too, so re-fire the bridge once workbook_id is backfilled",
+        },
+      );
       return;
     }
 
@@ -132,11 +146,17 @@ export async function fireDashboardClientBridge(
       console.error(
         `[dashboard-bridge] dashboard POST /api/clients failed status=${res.status} session=${session.id} body=${body.slice(0, 500)}`,
       );
-      await safeAudit(session.id, "dashboard_sync_failed", {
-        status: res.status,
-        body: body.slice(0, 500),
-        workbookId,
-      });
+      await recordAuditEvent(
+        session.id,
+        "dashboard_sync_failed",
+        { status: res.status, body: body.slice(0, 500), workbookId },
+        {
+          clientId: session.client_id,
+          route: BRIDGE_ROUTE,
+          succeeded:
+            "the submission itself is committed; the dashboard sync failure on the line above is now unrecorded too, so re-fire the bridge for this session",
+        },
+      );
       return;
     }
 
@@ -152,6 +172,16 @@ export async function fireDashboardClientBridge(
     console.error(
       `[dashboard-bridge] error session=${session.id}: ${message}`,
     );
-    await safeAudit(session.id, "dashboard_sync_failed", { error: message });
+    await recordAuditEvent(
+      session.id,
+      "dashboard_sync_failed",
+      { error: message },
+      {
+        clientId: session.client_id,
+        route: BRIDGE_ROUTE,
+        succeeded:
+          "the submission itself is committed; the dashboard sync failure on the line above is now unrecorded too, so re-fire the bridge for this session",
+      },
+    );
   }
 }

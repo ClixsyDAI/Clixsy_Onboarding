@@ -44,7 +44,10 @@ import {
 import {
   getSessionByToken,
   createServiceRoleClient,
-  createAuditEvent,
+  insertAuditEventOrThrow,
+  logAuditWriteFailure,
+  AuditWriteError,
+  AUDIT_READ_TIMEOUT_MS_FAIL_CLOSED,
 } from '@/lib/supabase/server';
 import { resolveSessionAccess } from '@/lib/onboarding/session-guard';
 import { isLikelyUrl } from '@/lib/onboarding/url-shape';
@@ -145,14 +148,60 @@ export async function POST(request: NextRequest) {
     // even before any analysis completes.
     const supabase = createServiceRoleClient();
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    //
+    // BOUNDED, for the same reason the write is (see server.ts,
+    // AUDIT_READ_TIMEOUT_MS_FAIL_CLOSED). Nothing upstream bounds a Supabase
+    // request on a useful horizon, so a PostgREST that accepts the connection
+    // and never answers froze this handler here — BEFORE the write, before any
+    // log line, and with no 503 ever reaching the caller. An abort resolves as
+    // `{ count: null, error: { message: 'TimeoutError: ...' }, status: 0 }`,
+    // which is `countErr !== null` and therefore already lands in the
+    // fail-closed branch below. A stall is now a 503, not a freeze.
     const { count, error: countErr } = await supabase
       .from('onboarding_audit_events')
       .select('*', { count: 'exact', head: true })
       .eq('session_id', session.id)
       .eq('event_type', 'site_intelligence_analyze_requested')
-      .gte('created_at', oneHourAgo);
+      .gte('created_at', oneHourAgo)
+      .abortSignal(AbortSignal.timeout(AUDIT_READ_TIMEOUT_MS_FAIL_CLOSED));
 
-    if (!countErr && (count ?? 0) >= RATE_LIMIT_PER_HOUR) {
+    // FAIL CLOSED ON THE READ TOO. `if (!countErr && ...)` skipped the limit
+    // entirely whenever the count query errored — the same degraded Supabase
+    // that loses the write, so fixing only the write would leave the bigger
+    // hole open. A `count` of null when a count WAS requested is the same
+    // condition wearing a different face.
+    //
+    // Scoped to the non-bypass branch on purpose: an AM-bypass caller is never
+    // counted (the write below is suppressed for them), so an unknown counter
+    // cannot fail an AM's limit open and must not 503 them.
+    const rateLimitStateUnknown = countErr !== null || count === null;
+    if (rateLimitStateUnknown && !isAmBypass) {
+      console.error(
+        `[rate-limit][READ-FAILURE] ${JSON.stringify({
+          route: 'POST /api/public/site-intelligence/analyze',
+          table: 'onboarding_audit_events',
+          event_type: 'site_intelligence_analyze_requested',
+          session_id: session.id,
+          client_id: session.client_id,
+          fault: countErr ? 'postgrest' : 'null_count',
+          pg_code: countErr?.code || null,
+          message:
+            countErr?.message ||
+            'the count query returned no error body, or a null count where an exact count was requested',
+          succeeded: 'nothing was started: no analysis record, no Anthropic spend',
+        })}`
+      );
+      return NextResponse.json(
+        {
+          error:
+            'We could not check your analysis limit just now. Please try again in a few minutes.',
+          code: 'rate_limit_state_unavailable',
+        },
+        { status: 503 }
+      );
+    }
+
+    if (!rateLimitStateUnknown && (count ?? 0) >= RATE_LIMIT_PER_HOUR) {
       return NextResponse.json(
         {
           error: `Rate limit exceeded. You can run up to ${RATE_LIMIT_PER_HOUR} analyses per hour. Please wait before trying again.`,
@@ -170,15 +219,58 @@ export async function POST(request: NextRequest) {
     // logs as client activity nor counts against the client's hourly
     // limit. The rate-limit CHECK above still runs (protects against a
     // real-client flood); AM runs simply aren't recorded.
+    //
+    // FAIL CLOSED. This row is not bookkeeping here: it IS the rate limiter's
+    // state, counted by the exact-count query above. A silent loss therefore
+    // fails the limit OPEN on the one route in this app that spends Anthropic
+    // tokens, so a degraded Supabase would turn the 5-per-hour cap into no cap
+    // at all. The accepted consequence, stated plainly: this route errors while
+    // Supabase is degraded. Nothing is stranded by returning here, because
+    // createSiteIntelligenceRecord, attachPendingScanToSession and the
+    // Anthropic spend inside after() are ALL still below this point.
     if (!isAmBypass) {
-      await createAuditEvent(
-        session.id,
-        'site_intelligence_analyze_requested',
-        {
-          website_url: normalizedUrl,
-          via: 'public_wizard_step_1',
+      try {
+        await insertAuditEventOrThrow(
+          session.id,
+          'site_intelligence_analyze_requested',
+          {
+            website_url: normalizedUrl,
+            via: 'public_wizard_step_1',
+          },
+          {
+            clientId: session.client_id,
+            route: 'POST /api/public/site-intelligence/analyze',
+            succeeded: 'nothing was started: no analysis record, no Anthropic spend',
+          }
+        );
+      } catch (err) {
+        // Caught HERE, above the generic catch below, which would flatten
+        // this into an opaque 500 and lose the machine-readable reason.
+        //
+        // A TIMEOUT IS NOT A PASS-THROUGH. The insert is bounded by
+        // AUDIT_WRITE_TIMEOUT_MS_FAIL_CLOSED, and an abort arrives as an
+        // ordinary fault (kind 'timeout', status 0) inside the same
+        // AuditWriteError as an RLS refusal — so it takes this identical 503
+        // branch. There is deliberately no `if (fault.kind === 'timeout')`
+        // escape hatch: "we could not tell whether you are over your limit"
+        // is the same answer whichever way Supabase failed to say so.
+        if (err instanceof AuditWriteError) {
+          logAuditWriteFailure(err);
+          // Same machine code as the read-side 503 above, deliberately: from
+          // the caller's side both mean "your analysis limit cannot be
+          // maintained right now, retry", and one code to branch on beats two
+          // that need the same handling.
+          return NextResponse.json(
+            {
+              error:
+                'We could not start the analysis just now. Please try again in a few minutes.',
+              code: 'rate_limit_state_unavailable',
+            },
+            { status: 503 }
+          );
         }
-      );
+        throw err;
+      }
     }
 
     // Create the record (status='queued'), kick the analyzer off
