@@ -1,0 +1,301 @@
+-- =============================================================
+-- Migration: 011_pin_envelope.sql
+-- Target:    Supabase project gmvdmgcueveuedhkucsh (shared by both apps)
+-- Branch:    feat/pin-plaintext-retrieval
+-- Purpose:   Add public.onboarding_sessions.pin_envelope, a reversible
+--            AES-256-GCM copy of the session's 6-digit PIN, so an
+--            admin can be SHOWN an existing PIN instead of rotating
+--            it. Rotating locks out a client who already has the old
+--            PIN, which is why "just regenerate" was never a real
+--            answer to "what was their PIN again".
+--
+-- APPLY ORDER: THIS SQL FIRST, THE CODE SECOND
+-- --------------------------------------------
+-- This repo's DDL is applied by hand in the Supabase dashboard while
+-- merges to master deploy themselves, so the two halves can land in
+-- either order. Only one order works.
+--
+-- Apply this migration, let the schema-cache reload below run, check
+-- POST-APPLY CHECK 1, and only THEN let the code that writes
+-- pin_envelope reach production. If the code lands first:
+--
+--   * PostgREST REJECTS an insert or update naming a column it does
+--     not know (error PGRST204, "Could not find the 'pin_envelope'
+--     column of 'onboarding_sessions' in the schema cache"). It does
+--     not ignore the unknown key.
+--   * So EVERY onboarding-session creation 500s, and every PIN
+--     rotation returns an error, for as long as the gap lasts.
+--   * Session creation is called by the GoHighLevel webhook receiver
+--     in the dashboard repo, which answers HTTP 200 to GHL whatever
+--     the create call returned. Nothing retries and nothing alerts:
+--     clients silently never get a session.
+--   * Rotation is also the only way to clear a PIN lockout (it resets
+--     pin_attempts, pin_lockout_until, pin_locked_at), so a
+--     locked-out client cannot be unblocked during the gap either.
+--
+-- The write path's fail-open policy does NOT cover this. It catches
+-- ENCRYPTION failures and leaves the column NULL, and a NULL still
+-- has to be written to a column that exists. Nothing in the
+-- application can soften a missing column.
+--
+-- PostgREST serves from a cached schema, so the ALTER can stay
+-- invisible to the API for a few seconds after it commits. The notify
+-- at the end forces that reload instead of waiting it out.
+--
+-- Reverting: revert the CODE first, then
+--   alter table public.onboarding_sessions
+--     drop column if exists pin_envelope;
+-- Dropping the column strands nobody, because pin_hash is untouched
+-- and remains the only verification path, but dropping it underneath
+-- running code reproduces the PGRST204 outage above.
+--
+-- Notes for reviewer
+-- ------------------
+-- Additive only: one nullable text column. No existing column is
+-- renamed, dropped, reshaped or backfilled, and no index is added
+-- (nothing ever queries BY this column). The ALTER takes a brief
+-- ACCESS EXCLUSIVE lock and rewrites no rows, since the column has no
+-- default.
+--
+-- pin_envelope is NOT a second verification path. pin_hash stays the
+-- only value verify-pin ever compares against, so a pin_envelope that
+-- is missing, stale or unreadable can never let anybody in and can
+-- never keep anybody out.
+--
+-- THE THREE STATES (the whole reason this column is nullable)
+-- ----------------------------------------------------------
+-- The pair (pin_hash, pin_envelope) encodes three states that must
+-- stay distinguishable all the way out to the admin UI. Do NOT
+-- collapse the first two: they call for opposite operator actions.
+--
+--   (a) pin_hash IS NULL
+--       Legacy session predating migration 005. It has no PIN gate at
+--       all, the client just opens the link. Nothing to show and
+--       nothing to repair.
+--
+--   (b) pin_hash IS NOT NULL and pin_envelope IS NULL
+--       PIN gated, but no recoverable copy exists: the row predates
+--       this migration, or encryption failed at write time (see the
+--       column note below). The plaintext is genuinely gone because
+--       scrypt is one way. The only remedy is to regenerate, which
+--       populates pin_envelope and hands the admin the new PIN.
+--
+--   (c) pin_hash IS NOT NULL and pin_envelope IS NOT NULL
+--       Recoverable. The retrieval endpoint decrypts pin_envelope and
+--       returns the PIN in plaintext.
+--
+-- Said plainly, because it is the easy mistake: a NULL pin_envelope
+-- means state (b), NOT state (a). ONLY pin_hash IS NULL means state
+-- (a). Code that tests pin_envelope alone cannot tell "no gate" from
+-- "gated but unrecoverable", and would offer to regenerate a PIN for
+-- a session that has no PIN, turning an ungated session into a gated
+-- one and breaking a link the client is already using.
+--
+-- No boolean flag column is added. Those two nullable columns already
+-- encode all three states exactly, and a third column would only add
+-- a fourth possibility: a flag that disagrees with the data.
+--
+-- No CHECK constraint on the text either. The format is
+-- self-describing and versioned, and pin-encryption.ts validates
+-- every field before it touches key material. A shape CHECK here
+-- would need migrating in lockstep with every envelope version bump,
+-- and Postgres cannot check the part that actually matters: whether
+-- the GCM auth tag verifies.
+--
+-- WHERE ELSE THIS COLUMN NOW TRAVELS (accepted, with a follow-up)
+-- --------------------------------------------------------------
+-- pin_hash was safe to copy anywhere, because scrypt is one way.
+-- pin_envelope is not: it is reversible by anyone holding
+-- PIN_ENCRYPTION_KEY. One existing copier was audited and is named
+-- here so the next reader does not have to rediscover it.
+--
+--   Dashboard repo, app/lib/client-backup.ts: buildSupabaseSnapshot()
+--   reads onboarding_sessions with select("*") and writeBackupRow()
+--   stores the result in
+--   public.deleted_clients_backup.supabase_snapshot before a client
+--   is hard-deleted. From now on that table retains reversible PINs
+--   for clients that no longer exist, with no retention window and no
+--   redaction, and restoreClientFromBackup() puts them back verbatim.
+--
+-- Accepted rather than blocked, because it does not widen WHO can
+-- read a PIN: deleted_clients_backup already requires the service
+-- role, the same credential that can read pin_envelope on the live
+-- row, and the key still lives only in the environment. What it
+-- widens is HOW LONG. Recommended follow-up in that repo, in
+-- preference order: drop pin_envelope from the session snapshot (a
+-- restored session can land in state (b) and be regenerated), or
+-- scrub it on restore, or give the backup table a retention job.
+-- POST-APPLY CHECK 6 measures the exposure at any time.
+--
+-- Nothing else known copies whole session rows outward: the public
+-- session route, dashboard-bridge.ts and sheet-export.ts all build
+-- their payloads field by field, and the admin session-detail route
+-- selects an explicit column list. Keep it that way. A select("*")
+-- feeding a response body is what would turn this column into a leak.
+--
+-- Wrapped in begin;/commit; for atomic apply, matching 005 through
+-- 009. (010 is the outlier that omits them.) The ALTER is written
+-- "if not exists", following 006 and 010, so an operator who is
+-- unsure whether this already ran can simply run it again.
+-- =============================================================
+
+begin;
+
+
+-- -------------------------------------------------------------
+-- Reversible PIN copy
+-- -------------------------------------------------------------
+-- pin_envelope: AES-256-GCM envelope over the same 6-digit PIN that
+--   pin_hash hashes. Written by src/lib/onboarding/pin-encryption.ts
+--   at every point a PIN comes into existence: the admin create route
+--   (which mints inline) and rotatePin() (which covers both
+--   regenerate entry points).
+--
+--     aes-256-gcm$<version>$<ivHex>$<authTagHex>$<ciphertextHex>
+--
+--   A deliberate sibling of pin_hash's own encoding
+--   (scrypt$N$r$p$saltHex$derivedHex): same "$" delimiter, same
+--   lowercase hex, algorithm named first. A reader who can read one
+--   column can read the other, and the parser can reject an unknown
+--   version instead of guessing at the layout, so the format can
+--   change without a schema change.
+--
+--   The key lives only in the PIN_ENCRYPTION_KEY env var, never in
+--   this table, so a database dump on its own discloses no PIN.
+--   Losing or rotating that key moves rows out of state (c) into an
+--   unreadable state that the retrieval endpoint must report exactly
+--   like state (b): regenerate. Nobody is locked out either way,
+--   because pin_hash is untouched by any of this.
+--
+--   NULL semantics: see THE THREE STATES above. NULL is state (b),
+--   "PIN gated but unrecoverable". That covers every row that existed
+--   before this migration, and any future row whose encryption failed
+--   at write time: the write path deliberately keeps the session
+--   usable rather than failing creation or rotation, because pin_hash
+--   is the gate and a missing envelope costs only convenience.
+--
+--   A write-time encryption failure is recorded in the database, not
+--   just in a server log that ages out: the create path writes a
+--   pin_envelope_write_failed audit event, and the rotation path
+--   carries pin_encryption_error_code on its pin_rotated event.
+--   POST-APPLY CHECK 5 is the query that finds them, and it is the
+--   check to run after any PIN_ENCRYPTION_KEY change.
+
+alter table public.onboarding_sessions
+  add column if not exists pin_envelope text;
+
+comment on column public.onboarding_sessions.pin_envelope is
+  'Reversible AES-256-GCM envelope over this session''s 6-digit PIN, format aes-256-gcm$version$ivHex$authTagHex$ciphertextHex, key held in the PIN_ENCRYPTION_KEY env var. Recovery path ONLY: pin_hash remains the sole verification path. NULL means PIN gated but unrecoverable (regenerate the PIN to populate it). A session with NO PIN gate at all is pin_hash IS NULL instead, which is a different state needing a different admin action.';
+
+
+-- -------------------------------------------------------------
+-- (No backfill, and none is possible. Every pre-existing row keeps
+-- pin_envelope = NULL, which is the truth: scrypt is one way, so no
+-- migration can recover those PINs. Each populates on the next
+-- regenerate-PIN for that session.)
+-- -------------------------------------------------------------
+
+
+-- -------------------------------------------------------------
+-- Make the new column visible to the API immediately
+-- -------------------------------------------------------------
+-- Without this, PostgREST can keep answering PGRST204 ("column not
+-- found in the schema cache") for a few seconds after commit, which
+-- looks exactly like the code-deployed-first outage described in the
+-- header. Harmless to run twice, and delivered on commit like any
+-- other Postgres notification.
+
+notify pgrst, 'reload schema';
+
+
+commit;
+
+
+-- =============================================================
+-- POST-APPLY SANITY CHECKS (run manually after apply)
+-- =============================================================
+-- 1. THE DEPLOY GATE. Confirm the column exists, is text, and is
+--    nullable. Do not let the code deploy until this returns a row:
+--      select column_name, data_type, is_nullable, column_default
+--        from information_schema.columns
+--       where table_schema = 'public'
+--         and table_name = 'onboarding_sessions'
+--         and column_name = 'pin_envelope';
+--
+-- 2. Census the three states. Immediately after apply the expected
+--    shape is: some rows in (a), the rest in (b), and ZERO in (c).
+--    (c) can only appear once a session is created or regenerated on
+--    the new code path.
+--      select case
+--               when pin_hash is null     then 'a_no_pin_gate'
+--               when pin_envelope is null then 'b_gated_unrecoverable'
+--               else                           'c_gated_recoverable'
+--             end as pin_state,
+--             count(*)
+--        from public.onboarding_sessions
+--       group by 1
+--       order by 1;
+--
+-- 3. After creating ONE session on the new code, confirm it landed in
+--    (c) with the expected self-describing prefix. This reveals no
+--    plaintext, the key is not in the database:
+--      select id, left(pin_envelope, 14) as envelope_prefix
+--        from public.onboarding_sessions
+--       where pin_envelope is not null
+--       order by created_at desc
+--       limit 5;
+--    Expect envelope_prefix = 'aes-256-gcm$1$' on every row.
+--
+-- 4. Confirm nothing is recoverable without being gated, which would
+--    mean an envelope was written with no hash beside it. Expect 0:
+--      select count(*) as impossible_rows
+--        from public.onboarding_sessions
+--       where pin_hash is null
+--         and pin_envelope is not null;
+--
+-- 5. THE MISCONFIGURATION CHECK. Run after the deploy, and after any
+--    PIN_ENCRYPTION_KEY change. Any rows here mean the key was unset
+--    or malformed on the deployment that minted those PINs, so each
+--    of those sessions is stuck in state (b) permanently: the PIN
+--    still works, but it can never be shown, and the admin UI will
+--    offer to regenerate it, which would break a PIN the client
+--    already holds. Fix the env var FIRST, then decide per session
+--    whether a rotation is safe.
+--      select event_type, count(*), max(created_at) as most_recent
+--        from public.onboarding_audit_events
+--       where event_type = 'pin_envelope_write_failed'
+--          or (event_type = 'pin_rotated'
+--              and payload ->> 'pin_encryption_error_code' is not null)
+--       group by 1
+--       order by 1;
+--
+--    The affected session ids, to decide what to do about them:
+--      select session_id, event_type, payload, created_at
+--        from public.onboarding_audit_events
+--       where event_type = 'pin_envelope_write_failed'
+--          or (event_type = 'pin_rotated'
+--              and payload ->> 'pin_encryption_error_code' is not null)
+--       order by created_at desc
+--       limit 50;
+--
+-- 6. Measure the backup-table exposure from WHERE ELSE THIS COLUMN
+--    NOW TRAVELS: recoverable PINs retained for hard-deleted clients.
+--    Expect 0 until the first hard delete of a client whose session
+--    was created on the new code.
+--      select count(*) as backups_holding_pin_envelopes
+--        from public.deleted_clients_backup b
+--       where exists (
+--               select 1
+--                 from jsonb_array_elements(
+--                        b.supabase_snapshot -> 'onboarding_sessions') s
+--                where s ->> 'pin_envelope' is not null);
+--
+-- 7. Confirm rotations are logged at all (they were not, before this
+--    branch). After one regenerate, expect a row whose payload
+--    contains no PIN and no envelope:
+--      select session_id, event_type, payload, created_at
+--        from public.onboarding_audit_events
+--       where event_type = 'pin_rotated'
+--       order by created_at desc
+--       limit 5;
+-- =============================================================
