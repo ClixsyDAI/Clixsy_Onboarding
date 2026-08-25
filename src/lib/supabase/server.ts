@@ -38,6 +38,29 @@ export interface OnboardingSession {
   pin_attempts: number;
   pin_lockout_until: string | null;
   pin_locked_at: string | null;
+  // Migration 011: reversible AES-256-GCM copy of the same PIN that
+  // pin_hash hashes, so an admin can be shown an existing PIN rather
+  // than rotating it. Recovery only, NEVER a verification path.
+  // NULL means "PIN gated but unrecoverable, regenerate to populate",
+  // NOT "no PIN gate": a session with no gate has pin_hash NULL
+  // instead. Testing this field alone cannot tell those two apart.
+  //
+  // Required and non-optional on purpose, which is an ASSERTION about
+  // the database and not a check of it: these interfaces are
+  // hand-maintained and the readers below cast a select('*') row
+  // straight to them. It holds only because migration 011 is applied
+  // before this code deploys (that order is mandatory for other
+  // reasons too, see APPLY ORDER in 011_pin_envelope.sql). Against a
+  // database where 011 has NOT been applied, the field is absent, so
+  // it arrives as undefined while the type promises string | null.
+  //
+  // Which is why the three states must never be classified with
+  // `pin_envelope !== null`: undefined passes that test and an
+  // unmigrated row would be reported as recoverable. Use a positive
+  // test on the value itself, isPinEnvelope() from
+  // @/lib/onboarding/pin-encryption or at minimum
+  // `typeof x === 'string' && x.length > 0`.
+  pin_envelope: string | null;
   // Stage 7 (migration 006) — first-login welcome modal flag.
   welcome_wizard_seen: boolean;
   // Site-intelligence link — points to onboarding_site_intelligence.id
