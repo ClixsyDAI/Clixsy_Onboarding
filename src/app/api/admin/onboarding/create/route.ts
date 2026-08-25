@@ -4,6 +4,7 @@ import { createServiceRoleClient, upsertAnswer } from '@/lib/supabase/server';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import { generatePin, hashPin } from '@/lib/onboarding/pin';
+import { encryptPinForStorage } from '@/lib/onboarding/pin-envelope-write';
 import { isLikelyUrl } from '@/lib/onboarding/url-shape';
 
 type Vertical = 'law_firm' | 'home_services' | 'other';
@@ -119,6 +120,22 @@ export async function POST(request: NextRequest) {
     // Regenerating later (admin session-detail) replaces both.
     const pin = generatePin();
     const pinHash = await hashPin(pin);
+
+    // A reversible copy goes in beside the hash, so an admin who loses
+    // this one-time response can be shown THIS PIN later instead of
+    // regenerating, which would lock out a client already holding it.
+    // This route mints its PIN inline and never calls rotatePin, so it
+    // needs its own call: patching only rotatePin would leave every
+    // newly created session unrecoverable.
+    //
+    // Never throws, and a null envelope is not an error here: see the
+    // fail-open rationale in @/lib/onboarding/pin-envelope-write. The
+    // session is fully usable either way because pin_hash is the gate.
+    // The error code is kept, not discarded: it becomes an audit row
+    // after the insert below, which is the only trace of this failure
+    // that outlives the runtime log.
+    const { envelope: pinEnvelope, errorCode: pinEnvelopeErrorCode } =
+      encryptPinForStorage(pin, sessionId);
 
     // --- Resolve the client: ADOPT an existing row, or create one --
     //
@@ -272,6 +289,13 @@ export async function POST(request: NextRequest) {
       account_manager: accountManager,
       vertical: verticalValue,
       pin_hash: pinHash,
+      // Kept adjacent to pin_hash, not added conditionally below with
+      // the optional FK columns, because the two are one fact written
+      // together: a reader checking "what happens to the PIN here" has
+      // to see both or they will change one and not the other. Null is
+      // a legitimate value (migration 011 state b, PIN gated but
+      // unrecoverable), not an absent field.
+      pin_envelope: pinEnvelope,
       // pin_attempts defaults to 0 in DB; pin_lockout_until / pin_locked_at default null.
     };
 
@@ -289,6 +313,77 @@ export async function POST(request: NextRequest) {
         { error: 'Failed to create session: ' + sessionError.message },
         { status: 500 }
       );
+    }
+
+    // --- Durable record of a failed PIN encryption -----------------
+    //
+    // Without this row the failure is invisible. The response shape
+    // cannot grow a field, this route writes no other audit events,
+    // and a session created with pin_envelope NULL is byte-for-byte
+    // indistinguishable in the database from a pre-migration-011 row.
+    // So the whole trace would be one console.error in a runtime log
+    // that ages out. Weeks later an admin is told "PIN cannot be
+    // shown, regenerate it", regenerates, and breaks a PIN the client
+    // is already using: exactly the harm this feature exists to
+    // prevent, caused by the feature's own fail-open policy. The
+    // likeliest trigger is a deployment missing PIN_ENCRYPTION_KEY,
+    // which affects EVERY session it mints, so the row also tells an
+    // operator how far back the misconfiguration goes. Migration 011's
+    // POST-APPLY CHECK 5 is the query.
+    //
+    // Written AFTER the session insert because onboarding_audit_events
+    // .session_id is a FK to onboarding_sessions: written before, it
+    // would be rejected.
+    //
+    // Inline insert with the error CHECKED rather than createAuditEvent
+    // (which discards its insert error and builds a second client),
+    // because this row is the only durable channel this path has, and
+    // a silently dropped insert would leave nothing at all. Checked but
+    // NOT fatal: the session already exists, and the GHL receiver
+    // answers 200 whatever this route returns, so failing here would
+    // just hide a created session behind an unretried 500. That is
+    // deliberately weaker than the PIN retrieval endpoint's fail-closed
+    // audit, where the row is the only record that a plaintext PIN was
+    // disclosed. Nothing was disclosed here.
+    if (pinEnvelopeErrorCode !== null) {
+      // try/catch as well as the checked error, and both are
+      // load-bearing: a rejected insert promise would otherwise land in
+      // this route's outer catch and 500 a session that has ALREADY
+      // been created, which is the silent half-create this whole block
+      // is here to make visible.
+      try {
+        const { error: pinAuditError } = await supabase
+          .from('onboarding_audit_events')
+          .insert({
+            session_id: sessionId,
+            event_type: 'pin_envelope_write_failed',
+            payload: {
+              // No PIN and no envelope: there is no envelope to record,
+              // and the payload is a fixed vocabulary (one error code
+              // from a closed union, one state label) with no free-text
+              // field a secret could later be interpolated into. This
+              // table is readable by anything holding the service role,
+              // a far wider set than the callers allowed to see a PIN.
+              pin_encryption_error_code: pinEnvelopeErrorCode,
+              resulting_pin_state: 'b_gated_unrecoverable',
+            },
+          });
+        if (pinAuditError) {
+          console.error(
+            `[create] pin_envelope_write_failed audit insert failed for session ${sessionId} ` +
+              `(encryption error was: ${pinEnvelopeErrorCode}). The session was created and its ` +
+              `PIN works, but nothing durable now records that its PIN can never be shown: ` +
+              pinAuditError.message
+          );
+        }
+      } catch (pinAuditThrew) {
+        console.error(
+          `[create] pin_envelope_write_failed audit threw for session ${sessionId} ` +
+            `(encryption error was: ${pinEnvelopeErrorCode}). The session was created and its ` +
+            `PIN works, but nothing durable now records that its PIN can never be shown: ` +
+            (pinAuditThrew instanceof Error ? pinAuditThrew.message : String(pinAuditThrew))
+        );
+      }
     }
 
     // --- Auto-prefill seed (website field) ------------------------
