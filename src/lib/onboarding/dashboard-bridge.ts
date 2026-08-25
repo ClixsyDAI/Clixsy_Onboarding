@@ -22,6 +22,10 @@
 import {
   createServiceRoleClient,
   recordAuditEvent,
+  logSupabaseFailure,
+  normaliseAuditFault,
+  SUPABASE_READ_FAILURE_TAG,
+  SUPABASE_READ_TIMEOUT_MS_AFTER,
   type OnboardingSession,
 } from "@/lib/supabase/server";
 
@@ -62,15 +66,44 @@ export async function fireDashboardClientBridge(
     // workbook_id + website_url live in `clients` columns not declared on
     // the Client TS type — query them directly.
     const supabase = createServiceRoleClient();
-    const { data: client, error } = await supabase
+    // BOUNDED, and the bound is the point.
+    //
+    // Reading `.error` is NECESSARY BUT NOT SUFFICIENT: a call that never
+    // settles has no `.error` to read. This read sits immediately UPSTREAM of
+    // the audit write below, inside the same after() callback, so a Supabase
+    // that accepts the connection and never answers used to freeze the
+    // callback HERE — the audit write was never issued, logAuditWriteFailure
+    // never ran, and the operator got nothing at all, with the submit's 200
+    // long since shipped. `.abortSignal` must precede `.single()`, which
+    // returns a PostgrestBuilder and no longer carries it.
+    const {
+      data: client,
+      error,
+      status,
+    } = await supabase
       .from("clients")
       .select("client_name, workbook_id, website_url")
       .eq("id", session.client_id)
+      .abortSignal(AbortSignal.timeout(SUPABASE_READ_TIMEOUT_MS_AFTER))
       .single();
 
     if (error) {
-      console.error(
-        `[dashboard-bridge] client lookup failed session=${session.id}: ${error.message}`,
+      logSupabaseFailure(
+        SUPABASE_READ_FAILURE_TAG,
+        {
+          route: BRIDGE_ROUTE,
+          table: "clients",
+          eventType: "client_lookup",
+          sessionId: session.id,
+          clientId: session.client_id,
+          succeeded:
+            "the submission itself is committed; the dashboard sync did not run, so re-fire the bridge for this session",
+        },
+        normaliseAuditFault(
+          status,
+          error,
+          "the client lookup was refused with no error body",
+        ),
       );
       await recordAuditEvent(
         session.id,

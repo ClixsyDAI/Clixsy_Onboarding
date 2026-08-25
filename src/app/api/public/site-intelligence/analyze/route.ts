@@ -46,8 +46,11 @@ import {
   createServiceRoleClient,
   insertAuditEventOrThrow,
   logAuditWriteFailure,
+  logSupabaseFailure,
+  normaliseReadFault,
   AuditWriteError,
   AUDIT_READ_TIMEOUT_MS_FAIL_CLOSED,
+  RATE_LIMIT_READ_FAILURE_TAG,
 } from '@/lib/supabase/server';
 import { resolveSessionAccess } from '@/lib/onboarding/session-guard';
 import { isLikelyUrl } from '@/lib/onboarding/url-shape';
@@ -157,7 +160,7 @@ export async function POST(request: NextRequest) {
     // `{ count: null, error: { message: 'TimeoutError: ...' }, status: 0 }`,
     // which is `countErr !== null` and therefore already lands in the
     // fail-closed branch below. A stall is now a 503, not a freeze.
-    const { count, error: countErr } = await supabase
+    const { count, error: countErr, status: countStatus } = await supabase
       .from('onboarding_audit_events')
       .select('*', { count: 'exact', head: true })
       .eq('session_id', session.id)
@@ -176,20 +179,38 @@ export async function POST(request: NextRequest) {
     // cannot fail an AM's limit open and must not 503 them.
     const rateLimitStateUnknown = countErr !== null || count === null;
     if (rateLimitStateUnknown && !isAmBypass) {
-      console.error(
-        `[rate-limit][READ-FAILURE] ${JSON.stringify({
+      // ONE SHAPE FOR BOTH HALVES OF THE LIMITER. This line used to be built
+      // by hand: it hard-coded `fault: countErr ? 'postgrest' : 'null_count'`,
+      // carried no HTTP status at all, and applied neither the fault
+      // normaliser nor the message bound. Two of those were wrong rather than
+      // merely thin — a STALLED count read (kind 'timeout', status 0) and a
+      // proxy's HTML 502 (kind 'gateway') were both reported as 'postgrest',
+      // sending an operator to hunt a Postgres refusal that never happened,
+      // and an unbounded gateway body could push the actionable half of the
+      // line off the screen. It now goes through the same normaliser, the same
+      // bound and the same emitter as the write-side line below.
+      //
+      // ONE HONEST CAVEAT, since this is a `head: true` probe: an HTTP HEAD
+      // can carry NO BODY, so the postgrest-vs-gateway discriminator (the
+      // presence of a code/details/hint triple) degenerates and any non-2xx
+      // answer to THIS query reads as 'gateway'. The `status` field, which the
+      // old line omitted entirely, is what carries the information there.
+      logSupabaseFailure(
+        RATE_LIMIT_READ_FAILURE_TAG,
+        {
           route: 'POST /api/public/site-intelligence/analyze',
           table: 'onboarding_audit_events',
-          event_type: 'site_intelligence_analyze_requested',
-          session_id: session.id,
-          client_id: session.client_id,
-          fault: countErr ? 'postgrest' : 'null_count',
-          pg_code: countErr?.code || null,
-          message:
-            countErr?.message ||
-            'the count query returned no error body, or a null count where an exact count was requested',
+          eventType: 'site_intelligence_analyze_requested',
+          sessionId: session.id,
+          clientId: session.client_id,
           succeeded: 'nothing was started: no analysis record, no Anthropic spend',
-        })}`
+        },
+        normaliseReadFault(
+          countStatus,
+          countErr,
+          'the count query answered with a null count where an exact count was requested',
+          'the count query was refused with no error body (an HTTP HEAD carries none)'
+        )
       );
       return NextResponse.json(
         {

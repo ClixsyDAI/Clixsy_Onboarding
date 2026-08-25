@@ -35,6 +35,11 @@ import {
   createServiceRoleClient,
   recordAuditEvent,
   getSessionAnswers,
+  logSupabaseFailure,
+  normaliseAuditFault,
+  SUPABASE_READ_FAILURE_TAG,
+  SUPABASE_WRITE_FAILURE_TAG,
+  SUPABASE_READ_TIMEOUT_MS_AFTER,
   type OnboardingSession,
 } from '@/lib/supabase/server';
 import { onboardingStepsV2 } from './steps-v2';
@@ -181,18 +186,67 @@ export async function exportSubmissionToSheet(
     }
 
     // ── Gather the submission data ──────────────────────────────
+    //
+    // EVERY Supabase call below is BOUNDED and every `.error` is READ. Both
+    // halves are required and neither is sufficient on its own:
+    //
+    //   - `.error` was DISCARDED here and on the submitted_at re-read below,
+    //     so a refusal degraded the row silently — a blank Business Name and
+    //     a blank Workbook ID in the roster, with nothing said.
+    //   - and a call that NEVER SETTLES has no `.error` to read. These calls
+    //     sit UPSTREAM of the audit write in the same after() callback, so an
+    //     unbounded stall froze the callback here: no sheet row, no
+    //     pm_tracker seed, no audit event, no log line, and the submit's 200
+    //     already shipped. That is the shape the whole bounding exercise
+    //     exists to remove, and bounding only the write left it wide open.
+    //
+    // `.abortSignal` precedes `.maybeSingle()` because maybeSingle returns a
+    // PostgrestBuilder, which does not carry it.
     const supabase = createServiceRoleClient();
-    const { data: client } = await supabase
+    const SHEET_EXPORT_SUCCEEDED =
+      'the submission itself is committed; the roster row and the pm_tracker seed may be missing or incomplete, so re-run the export for this session';
+    const {
+      data: client,
+      error: clientErr,
+      status: clientStatus,
+    } = await supabase
       .from('clients')
       .select('client_name, website_url, workbook_id')
       .eq('id', session.client_id)
+      .abortSignal(AbortSignal.timeout(SUPABASE_READ_TIMEOUT_MS_AFTER))
       .maybeSingle();
+    if (clientErr) {
+      logSupabaseFailure(
+        SUPABASE_READ_FAILURE_TAG,
+        {
+          route: SHEET_EXPORT_ROUTE,
+          table: 'clients',
+          eventType: 'client_lookup',
+          sessionId: session.id,
+          clientId: session.client_id,
+          succeeded: SHEET_EXPORT_SUCCEEDED,
+        },
+        normaliseAuditFault(clientStatus, clientErr, 'the client lookup was refused with no error body'),
+      );
+    }
     const workbookId =
       client?.workbook_id !== null && client?.workbook_id !== undefined
         ? String(client.workbook_id).trim()
         : '';
 
-    const answerRows = await getSessionAnswers(session.id);
+    // Bounded and reported for the same reason as its siblings: this helper is
+    // shared with two request-path callers, so the bound is passed in here
+    // rather than baked into it.
+    const answerRows = await getSessionAnswers(session.id, {
+      timeoutMs: SUPABASE_READ_TIMEOUT_MS_AFTER,
+      readFailure: {
+        tag: SUPABASE_READ_FAILURE_TAG,
+        route: SHEET_EXPORT_ROUTE,
+        eventType: 'answers_lookup',
+        clientId: session.client_id,
+        succeeded: SHEET_EXPORT_SUCCEEDED,
+      },
+    });
     const answers: AnswersByStep = {};
     for (const r of answerRows) {
       answers[r.step_key] = (r.answers as Record<string, unknown>) ?? {};
@@ -200,11 +254,34 @@ export async function exportSubmissionToSheet(
 
     // The session object in scope was fetched BEFORE updateSessionStep
     // stamped submitted_at — re-read it for the real timestamp.
-    const { data: fresh } = await supabase
+    const {
+      data: fresh,
+      error: freshErr,
+      status: freshStatus,
+    } = await supabase
       .from('onboarding_sessions')
       .select('submitted_at')
       .eq('id', session.id)
+      .abortSignal(AbortSignal.timeout(SUPABASE_READ_TIMEOUT_MS_AFTER))
       .maybeSingle();
+    if (freshErr) {
+      logSupabaseFailure(
+        SUPABASE_READ_FAILURE_TAG,
+        {
+          route: SHEET_EXPORT_ROUTE,
+          table: 'onboarding_sessions',
+          eventType: 'submitted_at_reread',
+          sessionId: session.id,
+          clientId: session.client_id,
+          succeeded: SHEET_EXPORT_SUCCEEDED,
+        },
+        normaliseAuditFault(
+          freshStatus,
+          freshErr,
+          'the submitted_at re-read was refused with no error body',
+        ),
+      );
+    }
     const submittedDate = String(
       fresh?.submitted_at ?? session.submitted_at ?? new Date().toISOString(),
     ).slice(0, 10);
@@ -257,7 +334,12 @@ export async function exportSubmissionToSheet(
     if (workbookId) {
       try {
         const seedClient = createServiceRoleClient();
-        const { error: seedError } = await seedClient
+        // BOUNDED. This one ALREADY read `.error` and logged, and that was
+        // still not enough: unbounded, a stall here hung the callback AFTER
+        // the roster data was gathered and BEFORE the sheet write, with
+        // nothing emitted — the `.error` branch below cannot run for a call
+        // that never settles. Reading `.error` is necessary, not sufficient.
+        const { error: seedError, status: seedStatus } = await seedClient
           .from('pm_tracker_pushes')
           .upsert(
             {
@@ -273,10 +355,25 @@ export async function exportSubmissionToSheet(
               physical_address: physicalAddress || null,
             },
             { onConflict: 'workbook_id' },
-          );
+          )
+          .abortSignal(AbortSignal.timeout(SUPABASE_READ_TIMEOUT_MS_AFTER));
         if (seedError) {
-          console.error(
-            `[sheet-export] pm_tracker_pushes seed failed session=${session.id}: ${seedError.message}`,
+          logSupabaseFailure(
+            SUPABASE_WRITE_FAILURE_TAG,
+            {
+              route: SHEET_EXPORT_ROUTE,
+              table: 'pm_tracker_pushes',
+              eventType: 'pending_seed',
+              sessionId: session.id,
+              clientId: session.client_id,
+              succeeded:
+                'the submission itself is committed and the roster row is still written below; only the approve-and-push pending record is missing, so re-run the export for this session',
+            },
+            normaliseAuditFault(
+              seedStatus,
+              seedError,
+              'the pm_tracker_pushes seed was refused with no error body',
+            ),
           );
         } else {
           console.log(

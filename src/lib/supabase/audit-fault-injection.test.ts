@@ -1276,6 +1276,21 @@ interface WriteRecord {
   credentialOk: boolean;
 }
 
+/**
+ * How the analyze route's exact-count probe is made to fail.
+ *
+ *   'http_500'   a 500 the HEAD answers with NO BODY (an HTTP HEAD cannot
+ *                carry one), so postgrest-js resolves `{ error: { message: '' } }`.
+ *   'stall'      accepted and never answered. This is the flavour that used to
+ *                be reported as fault 'postgrest' by the hand-built line, when
+ *                it is a 'timeout'.
+ *   'null_count' a perfectly successful 206 with NO content-range header, so
+ *                PostgrestBuilder never assigns `count` (:150-155) and the
+ *                route sees `count === null` with `error === null`. The one
+ *                read fault class that has no error document at all.
+ */
+type CountReadFault = false | 'http_500' | 'stall' | 'null_count';
+
 const BETWEEN_WINDOWS = '<between-windows>';
 
 const stub = {
@@ -1312,7 +1327,17 @@ const stub = {
    * half of the bug, because it fails the limit open BEFORE any write is even
    * attempted.
    */
-  faultCountRead: false,
+  faultCountRead: false as CountReadFault,
+  /**
+   * Tables whose UPSTREAM READ (a GET) is stalled: the request is accepted,
+   * fully read, and then NEVER ANSWERED, exactly like mode 'stall' does for a
+   * write. Separate from `mode` on purpose — the point of these probes is that
+   * the WRITE is healthy and the read in front of it is the thing that never
+   * settles, which is the shape that produced zero operator output.
+   */
+  stallReadTables: [] as string[],
+  /** table -> number of GETs the stub actually received. */
+  readsSeen: {} as Record<string, number>,
 };
 
 /** Let the event loop settle so a straggler cannot slip in after the clear. */
@@ -1359,6 +1384,7 @@ async function openWriteWindow(label: string): Promise<{ empty: boolean; leftove
         fresh.map((w) => `${w.table}:${w.raw.slice(0, 80)}`),
       )}, inFlight=${stub.inFlight}`;
   stub.writesSeen = {};
+  stub.readsSeen = {};
   stub.requestLog = [];
   stub.window = label;
   return { empty, leftovers };
@@ -1467,10 +1493,24 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse, body: strin
 
   // --- HEAD = the exact-count probe (analyze route's rate limiter) ---------
   if (req.method === 'HEAD') {
-    if (stub.faultCountRead && table === 'onboarding_audit_events') {
-      // A 500 with no body is what an HTTP HEAD can actually carry, and it is
-      // what postgrest-js turns into `{ error: { message: '' }, count: null }`
-      // — resolved, not rejected, exactly like the write faults.
+    if (stub.faultCountRead !== false && table === 'onboarding_audit_events') {
+      if (stub.faultCountRead === 'stall') {
+        // Accepted, never answered. Only the caller's own abort can end this,
+        // which is exactly what AUDIT_READ_TIMEOUT_MS_FAIL_CLOSED is for.
+        return;
+      }
+      if (stub.faultCountRead === 'null_count') {
+        // A SUCCESS with an unusable answer: no content-range, so
+        // PostgrestBuilder.ts:150-155 never assigns `count`. There is no error
+        // document here at all, which is why this fault has to be synthesised.
+        res.writeHead(206);
+        res.end();
+        return;
+      }
+      // 'http_500'. A 500 with no body is what an HTTP HEAD can actually
+      // carry, and it is what postgrest-js turns into
+      // `{ error: { message: '' }, count: null }` — resolved, not rejected,
+      // exactly like the write faults.
       res.writeHead(500);
       res.end();
       return;
@@ -1481,6 +1521,13 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse, body: strin
   }
 
   if (req.method === 'GET') {
+    stub.readsSeen[table] = (stub.readsSeen[table] ?? 0) + 1;
+    // THE UPSTREAM STALL. The request has been fully read (this runs from req
+    // 'end'), so it demonstrably crossed the wire; we simply never answer and
+    // never destroy the socket. Before the reads were bounded, this froze the
+    // whole after() callback BEFORE the audit write was ever issued, so the
+    // write bound could not help and the operator saw nothing at all.
+    if (stub.stallReadTables.includes(table)) return;
     res.writeHead(200, { 'content-type': 'application/json', 'content-range': '0-0/1' });
     res.end(JSON.stringify(serveRead(table, req)));
     return;
@@ -2062,6 +2109,19 @@ function auditFailureLines(c: Captured): string[] {
 // WITHOUT a second query — including what DID succeed, so nobody chases
 // phantom data loss.
 const WRITE_FAILURE_TAG = '[audit-write][WRITE-FAILURE]';
+/**
+ * The other three tags. Mirrored as literals for the same reason as the
+ * message bound: this file imports no values from the code under test, so a
+ * tag that was quietly renamed must not rename the assertion with it.
+ *
+ * ONE SHAPE FOR ALL FOUR. Every one of these is verified by the SAME
+ * verifyFailureLine below, which is the whole point of R3: the read-side line
+ * used to be built by hand, with a hard-coded fault, no status, no normaliser
+ * and no message bound.
+ */
+const READ_FAILURE_TAG = '[supabase-read][READ-FAILURE]';
+const SUPABASE_WRITE_FAILURE_TAG = '[supabase-write][WRITE-FAILURE]';
+const RATE_LIMIT_READ_FAILURE_TAG = '[rate-limit][READ-FAILURE]';
 
 interface FailureLine {
   channel: string;
@@ -2069,12 +2129,12 @@ interface FailureLine {
   raw: string;
 }
 
-function writeFailureLines(c: Captured): FailureLine[] {
+function failureLines(c: Captured, tag: string): FailureLine[] {
   return c.ordered
-    .filter((l) => l.includes(WRITE_FAILURE_TAG))
+    .filter((l) => l.includes(tag))
     .map((l) => {
-      const at = l.indexOf(WRITE_FAILURE_TAG);
-      const json = l.slice(at + WRITE_FAILURE_TAG.length).trim();
+      const at = l.indexOf(tag);
+      const json = l.slice(at + tag.length).trim();
       let parsed: Record<string, unknown> | null = null;
       try {
         const p: unknown = JSON.parse(json);
@@ -2086,6 +2146,10 @@ function writeFailureLines(c: Captured): FailureLine[] {
       }
       return { channel: l.slice(0, at).split(':')[0] ?? '?', parsed, raw: l };
     });
+}
+
+function writeFailureLines(c: Captured): FailureLine[] {
+  return failureLines(c, WRITE_FAILURE_TAG);
 }
 
 /** What the normaliser must have produced, per injected fault class. */
@@ -2118,14 +2182,47 @@ const EXPECTED_FAULT: Record<Exclude<Mode, 'ok'>, { kind: string; status: number
 const EXPECTED_MAX_FAULT_MESSAGE_CHARS = 300;
 const TRUNCATION_MARKER = '[truncated:';
 
-/** Why the single WRITE-FAILURE line does or does not satisfy the contract. */
-function verifyFailureLine(
-  lines: FailureLine[],
+/**
+ * What one failure line must say. Explicit rather than derived from the fault
+ * MODE, because the same checks now have to serve four tags and three
+ * conditions the write modes do not name (a stalled upstream READ, a null
+ * count, a seed upsert). The checks themselves are shared on purpose — R3's
+ * complaint was that the read-side line met a lower bar than the write-side
+ * one, so there is exactly one bar and both are held to it.
+ */
+interface LineExpectation {
+  tag: string;
+  table: string;
+  eventType: string;
+  sessionId: string;
+  clientId: string | null;
+  fault: string;
+  status: number | null;
+  pgCode: string | null;
+}
+
+/** Build the expectation the SITE MATRIX wants, from a site and a fault mode. */
+function siteExpectation(
   site: { faultTable: string; logEventType: string },
   mode: Exclude<Mode, 'ok'>,
-): RowVerdict {
+): LineExpectation {
+  const want = EXPECTED_FAULT[mode];
+  return {
+    tag: WRITE_FAILURE_TAG,
+    table: site.faultTable,
+    eventType: site.logEventType,
+    sessionId: SESSION_ID,
+    clientId: CLIENT_ID,
+    fault: want.kind,
+    status: want.status,
+    pgCode: want.pgCode,
+  };
+}
+
+/** Why the single failure line does or does not satisfy the contract. */
+function verifyFailureLine(lines: FailureLine[], want: LineExpectation): RowVerdict {
   if (lines.length !== 1) {
-    return { ok: false, reason: `expected exactly 1 ${WRITE_FAILURE_TAG} line, saw ${lines.length}` };
+    return { ok: false, reason: `expected exactly 1 ${want.tag} line, saw ${lines.length}` };
   }
   const line = lines[0]!;
   if (line.channel !== 'error') {
@@ -2135,13 +2232,12 @@ function verifyFailureLine(
     return { ok: false, reason: `the tail after the tag is not ONE line of JSON: ${line.raw.slice(0, 200)}` };
   }
   const f = line.parsed;
-  const want = EXPECTED_FAULT[mode];
   const checks: Array<[string, unknown, unknown]> = [
-    ['table', f.table, site.faultTable],
-    ['event_type', f.event_type, site.logEventType],
-    ['session_id', f.session_id, SESSION_ID],
-    ['client_id', f.client_id, CLIENT_ID],
-    ['fault', f.fault, want.kind],
+    ['table', f.table, want.table],
+    ['event_type', f.event_type, want.eventType],
+    ['session_id', f.session_id, want.sessionId],
+    ['client_id', f.client_id, want.clientId],
+    ['fault', f.fault, want.fault],
     ['status', f.status, want.status],
     ['pg_code', f.pg_code, want.pgCode],
   ];
@@ -2185,7 +2281,7 @@ function verifyFailureLine(
   // newline inside the HTML body, so a multi-line body must not fragment the
   // record and strand the tag on the uninteresting half.
   if (/[\r\n]/.test(line.raw)) {
-    return { ok: false, reason: `the ${WRITE_FAILURE_TAG} record spans more than one physical line` };
+    return { ok: false, reason: `the ${want.tag} record spans more than one physical line` };
   }
   return { ok: true, reason: line.raw.slice(0, 300) };
 }
@@ -2990,8 +3086,7 @@ async function run(): Promise<void> {
           );
           const lineVerdict = verifyFailureLine(
             writeFailureLines(outcome.captured),
-            site,
-            mode,
+            siteExpectation(site, mode),
           );
           assert(
             lineVerdict.ok,
@@ -3267,7 +3362,7 @@ async function run(): Promise<void> {
     out('\n--- analyze route: the rate-limit READ fails, the write is healthy ---');
     stub.mode = 'ok';
     stub.faultTable = 'onboarding_audit_events';
-    stub.faultCountRead = true;
+    stub.faultCountRead = 'http_500';
     const readWindow = await openWriteWindow('analyze rate-limit read failure');
     const readFault = await withCapture(() => driveAnalyze());
     closeWriteWindow();
@@ -3315,6 +3410,154 @@ async function run(): Promise<void> {
       readFaultWrites.length === 0,
       `[analyze rate-limit read] the refused request spent NO rate-limit slot: no audit row was written for a request that never ran`,
       `writes=${readFaultWrites.length} (stub saw: ${stub.requestLog.join(' | ')})`,
+    );
+
+    // -----------------------------------------------------------------------
+    // 11b-ii. R3 — ONE SHAPE FOR BOTH HALVES OF THE LIMITER.
+    // -----------------------------------------------------------------------
+    // The read-side line existed but did not meet the bar the write-side line
+    // sets. It was BUILT BY HAND: it hard-coded
+    // `fault: countErr ? 'postgrest' : 'null_count'`, omitted the HTTP status
+    // field entirely, and applied neither normaliseAuditFault nor
+    // boundFaultMessage. Two of those were WRONG rather than merely thin — a
+    // stalled read and a proxy's HTML 502 both reported as 'postgrest' — so
+    // the fix is not "add a field", it is "route it through the same code".
+    //
+    // The proof is that the read-side line is now handed to the SAME
+    // verifyFailureLine the write-side line passes, with nothing relaxed:
+    // field set, channel, one-line-of-JSON, non-empty route/message/succeeded,
+    // the message bound, and single-physical-line greppability.
+    const readLineVerdict = verifyFailureLine(
+      failureLines(readFault.captured, RATE_LIMIT_READ_FAILURE_TAG),
+      {
+        tag: RATE_LIMIT_READ_FAILURE_TAG,
+        table: 'onboarding_audit_events',
+        eventType: 'site_intelligence_analyze_requested',
+        sessionId: SESSION_ID,
+        clientId: CLIENT_ID,
+        // An HTTP HEAD carries NO BODY, so there is no code/details/hint
+        // triple to discriminate on and every non-2xx answer to THIS query
+        // normalises as 'gateway'. `status` is what carries the information —
+        // and `status` is exactly the field the hand-built line omitted.
+        fault: 'gateway',
+        status: 500,
+        pgCode: null,
+      },
+    );
+    assert(
+      readLineVerdict.ok,
+      `[analyze rate-limit read | http 500] the ${RATE_LIMIT_READ_FAILURE_TAG} line passes the SAME verifyFailureLine checks as the write-side line: one shape for both, carrying the HTTP status the hand-built line omitted, and a fault kind produced by normaliseAuditFault rather than hard-coded`,
+      readLineVerdict.reason,
+    );
+
+    /** Drive the analyze route with one flavour of count-read fault. */
+    const measureCountReadFault = async (
+      flavour: Exclude<CountReadFault, false>,
+      label: string,
+    ): Promise<{
+      windowEmpty: boolean;
+      leftovers: string;
+      status?: number;
+      code?: unknown;
+      threw: boolean;
+      elapsedMs: number;
+      slotsSpent: number;
+      lines: FailureLine[];
+    }> => {
+      stub.mode = 'ok';
+      stub.faultTable = 'onboarding_audit_events';
+      stub.faultCountRead = flavour;
+      const opened = await openWriteWindow(label);
+      const startedAt = Date.now();
+      const outcome = await withCapture(() => driveAnalyze());
+      const elapsedMs = Date.now() - startedAt;
+      closeWriteWindow();
+      stub.faultCountRead = false;
+      const lines = failureLines(outcome.captured, RATE_LIMIT_READ_FAILURE_TAG);
+      rows.push({
+        site: `4b analyze route → rate-limit COUNT read (${flavour})`,
+        mode: 'count_read',
+        threw: outcome.threw,
+        thrownMessage: outcome.threw ? String(outcome.error) : undefined,
+        loggedLines: allLines(outcome.captured),
+        responseStatus: outcome.result?.status,
+        reachedWrite: false,
+        writeCount: 0,
+        rowPersisted: 'n/a',
+      });
+      return {
+        windowEmpty: opened.empty,
+        leftovers: opened.leftovers,
+        status: outcome.result?.status,
+        code: (outcome.result?.body as { code?: unknown } | undefined)?.code,
+        threw: outcome.threw,
+        elapsedMs,
+        slotsSpent: stub.writes.filter(
+          (w) => w.table === 'onboarding_audit_events' && w.window === label,
+        ).length,
+        lines,
+      };
+    };
+
+    // --- the STALL flavour: the misclassification the hard-coding produced --
+    out('\n--- analyze route: the rate-limit READ stalls (the fault the old line called "postgrest") ---');
+    const countStall = await measureCountReadFault('stall', 'analyze rate-limit read | stall');
+    out(`    stall → status=${countStall.status} elapsed=${countStall.elapsedMs}ms slots=${countStall.slotsSpent}`);
+    assert(
+      countStall.windowEmpty &&
+        countStall.threw === false &&
+        countStall.status === 503 &&
+        countStall.code === 'rate_limit_state_unavailable' &&
+        countStall.slotsSpent === 0 &&
+        countStall.elapsedMs < TERMINATION_BUDGET_MS,
+      `[analyze rate-limit read | stall] a count query that is ACCEPTED AND NEVER ANSWERED still terminates, still 503s with the machine code, and still spends no rate-limit slot`,
+      `windowEmpty=${countStall.windowEmpty} (${countStall.leftovers}) threw=${countStall.threw} status=${countStall.status} code=${JSON.stringify(countStall.code)} slots=${countStall.slotsSpent} elapsed=${countStall.elapsedMs}ms budget=${TERMINATION_BUDGET_MS}ms`,
+    );
+    const stallLineVerdict = verifyFailureLine(countStall.lines, {
+      tag: RATE_LIMIT_READ_FAILURE_TAG,
+      table: 'onboarding_audit_events',
+      eventType: 'site_intelligence_analyze_requested',
+      sessionId: SESSION_ID,
+      clientId: CLIENT_ID,
+      fault: 'timeout',
+      status: 0,
+      pgCode: null,
+    });
+    assert(
+      stallLineVerdict.ok,
+      `[analyze rate-limit read | stall] the line names fault=timeout status=0, NOT the hard-coded 'postgrest' the old line printed for every countErr: this is the misclassification, and it pointed an operator at a Postgres refusal that never happened`,
+      stallLineVerdict.reason,
+    );
+
+    // --- the NULL-COUNT flavour: a success whose answer is unusable ---------
+    out('\n--- analyze route: the rate-limit READ succeeds with a null count ---');
+    const countNull = await measureCountReadFault('null_count', 'analyze rate-limit read | null count');
+    out(`    null count → status=${countNull.status} slots=${countNull.slotsSpent}`);
+    assert(
+      countNull.windowEmpty &&
+        countNull.threw === false &&
+        countNull.status === 503 &&
+        countNull.code === 'rate_limit_state_unavailable' &&
+        countNull.slotsSpent === 0,
+      `[analyze rate-limit read | null count] a 206 with no content-range — no error anywhere, and a null count where an exact one was requested — is still an unknown limit, so it still fails closed and still spends no slot`,
+      `windowEmpty=${countNull.windowEmpty} (${countNull.leftovers}) threw=${countNull.threw} status=${countNull.status} code=${JSON.stringify(countNull.code)} slots=${countNull.slotsSpent}`,
+    );
+    const nullLineVerdict = verifyFailureLine(countNull.lines, {
+      tag: RATE_LIMIT_READ_FAILURE_TAG,
+      table: 'onboarding_audit_events',
+      eventType: 'site_intelligence_analyze_requested',
+      sessionId: SESSION_ID,
+      clientId: CLIENT_ID,
+      // SYNTHESISED, like 'client_init': there is no error document to
+      // normalise, because nothing refused anything.
+      fault: 'null_result',
+      status: 206,
+      pgCode: null,
+    });
+    assert(
+      nullLineVerdict.ok,
+      `[analyze rate-limit read | null count] the no-error fault is SYNTHESISED as kind null_result carrying the real HTTP status, and still passes the same line checks: the one read fault class with no error body does not get a second line shape`,
+      nullLineVerdict.reason,
     );
 
     // -----------------------------------------------------------------------
@@ -3569,7 +3812,7 @@ async function run(): Promise<void> {
 
     // --- analyze: the COUNT READ fault -------------------------------------
     stub.mode = 'ok';
-    stub.faultCountRead = true;
+    stub.faultCountRead = 'http_500';
     await openWriteWindow('am-bypass | analyze read fault | bypass');
     const analyzeReadBypass = await withCapture(() => driveAnalyzeAs(true));
     closeWriteWindow();
@@ -3656,6 +3899,362 @@ async function run(): Promise<void> {
     );
 
     stub.mode = 'ok';
+
+    // -----------------------------------------------------------------------
+    // 11f. THE NAMED GAP — an UNBOUNDED READ UPSTREAM OF THE BOUNDED WRITE.
+    // -----------------------------------------------------------------------
+    // Bounding the audit WRITE was necessary and NOT sufficient. On both
+    // after()-resident paths a Supabase READ sits immediately upstream of the
+    // write, on the same code path, inside the same callback. Under a Supabase
+    // that accepts the connection and never answers, that read never settles,
+    // so the audit write is NEVER ISSUED, logAuditWriteFailure never runs, and
+    // the operator gets literally zero output — while the submit's 200 has
+    // long since shipped, so nothing anywhere notices.
+    //
+    // Measured against the previous revision, on the bridge: 10s elapsed, the
+    // promise never settled, the stub saw exactly ONE request (the clients
+    // GET) and zero POSTs to onboarding_audit_events, and the captured
+    // operator output was empty.
+    //
+    // WHY THE SITE MATRIX COULD NOT SEE THIS. Every site above stalls the
+    // WRITE and reaches it through healthy reads. The fault has to be injected
+    // UPSTREAM to exist at all, which is what `stub.stallReadTables` does: the
+    // GET is accepted, fully read, and then never answered, with the write
+    // left healthy throughout.
+    //
+    // THE PRINCIPLE the fix states in a comment at each site: reading `.error`
+    // is NECESSARY BUT NOT SUFFICIENT, because a call that never settles has
+    // no `.error` to read. Two of these four sites discarded `.error`
+    // outright; one of them (the pm_tracker seed) read it and logged, and was
+    // still silent under a stall, which is the whole argument in one site.
+    out('\n--- upstream reads: the call in FRONT of the audit write never answers ---');
+
+    /** Register the submit route's after() tasks with everything healthy. */
+    const prepareSubmitTasksQuietly = async (label: string): Promise<AfterTask[]> => {
+      stub.mode = 'ok';
+      stub.faultTable = 'onboarding_audit_events';
+      stub.faultTableSecondary = null;
+      stub.stallReadTables = [];
+      stub.faultCountRead = false;
+      labelWriteWindow(label);
+      capturedAfterTasks = [];
+      await driveSubmit();
+      return capturedAfterTasks.filter(Boolean);
+    };
+
+    interface UpstreamCase {
+      key: string;
+      /** 0 = fireDashboardClientBridge, 1 = exportSubmissionToSheet. */
+      taskIndex: 0 | 1;
+      /** GET tables to stall. */
+      stallReads: string[];
+      /** POST table to stall, for the one site that is a write. */
+      stallWrite: string | null;
+      /** What the failure line must name. */
+      tag: string;
+      table: string;
+      eventType: string;
+      /** Where in the source this call lives, for the transcript. */
+      where: string;
+    }
+
+    const upstreamCases: UpstreamCase[] = [
+      {
+        key: 'bridge → clients lookup',
+        taskIndex: 0,
+        stallReads: ['clients'],
+        stallWrite: null,
+        tag: READ_FAILURE_TAG,
+        table: 'clients',
+        eventType: 'client_lookup',
+        where: 'dashboard-bridge.ts, the clients lookup',
+      },
+      {
+        key: 'sheet-export → clients lookup',
+        taskIndex: 1,
+        stallReads: ['clients'],
+        stallWrite: null,
+        tag: READ_FAILURE_TAG,
+        table: 'clients',
+        eventType: 'client_lookup',
+        where: 'sheet-export.ts, the clients select (which also DISCARDED .error)',
+      },
+      {
+        key: 'sheet-export → answers lookup',
+        taskIndex: 1,
+        stallReads: ['onboarding_answers'],
+        stallWrite: null,
+        tag: READ_FAILURE_TAG,
+        table: 'onboarding_answers',
+        eventType: 'answers_lookup',
+        where: 'sheet-export.ts, getSessionAnswers on the after() path',
+      },
+      {
+        key: 'sheet-export → submitted_at re-read',
+        taskIndex: 1,
+        stallReads: ['onboarding_sessions'],
+        stallWrite: null,
+        tag: READ_FAILURE_TAG,
+        table: 'onboarding_sessions',
+        eventType: 'submitted_at_reread',
+        where: 'sheet-export.ts, the submitted_at re-read (which also DISCARDED .error)',
+      },
+      {
+        key: 'sheet-export → pm_tracker_pushes seed',
+        taskIndex: 1,
+        stallReads: [],
+        stallWrite: 'pm_tracker_pushes',
+        tag: SUPABASE_WRITE_FAILURE_TAG,
+        table: 'pm_tracker_pushes',
+        eventType: 'pending_seed',
+        where: 'sheet-export.ts, the pm_tracker_pushes upsert (which DID read .error, and was still silent)',
+      },
+    ];
+
+    for (const c of upstreamCases) {
+      const setupLabel = `setup: upstream | ${c.key}`;
+      const tasks = await prepareSubmitTasksQuietly(setupLabel);
+      const task = tasks[c.taskIndex] ?? makeMissingTaskDriver(`upstream ${c.key}`);
+
+      stub.stallReadTables = c.stallReads;
+      if (c.stallWrite) {
+        stub.mode = 'stall';
+        stub.faultTable = c.stallWrite;
+        stub.faultTableSecondary = null;
+      }
+
+      const label = `upstream | ${c.key}`;
+      const opened = await openWriteWindow(label);
+      const startedAt = Date.now();
+      const outcome = await withCapture(async () => {
+        await task();
+        return {};
+      });
+      const elapsedMs = Date.now() - startedAt;
+      closeWriteWindow();
+
+      const crossedTheWire = c.stallWrite
+        ? (stub.writesSeen[c.stallWrite] ?? 0)
+        : (stub.readsSeen[c.table] ?? 0);
+      const lines = failureLines(outcome.captured, c.tag);
+      const auditPosts = stub.writes.filter(
+        (w) => w.table === 'onboarding_audit_events' && w.window === label,
+      ).length;
+
+      stub.stallReadTables = [];
+      stub.mode = 'ok';
+      stub.faultTable = 'onboarding_audit_events';
+      stub.faultTableSecondary = null;
+
+      out(
+        `    ${pad(c.key, 40)} crossedWire=${crossedTheWire} elapsed=${elapsedMs}ms ` +
+          `lines=${lines.length} auditPosts=${auditPosts}`,
+      );
+      rows.push({
+        site: `8 upstream ${c.key}`,
+        mode: 'stall',
+        threw: outcome.threw,
+        thrownMessage: outcome.threw ? String(outcome.error) : undefined,
+        loggedLines: allLines(outcome.captured),
+        responseStatus: undefined,
+        reachedWrite: crossedTheWire > 0,
+        writeCount: crossedTheWire,
+        rowPersisted: 'n/a',
+      });
+
+      assert(
+        opened.empty && crossedTheWire >= 1,
+        `[upstream | ${c.key}] the stalled call really CROSSED THE WIRE (${c.where}): the stub accepted it, read it in full, and never answered — a fault that was never issued would prove nothing`,
+        `windowEmpty=${opened.empty} (${opened.leftovers}) crossedWire=${crossedTheWire} (stub saw: ${stub.requestLog.join(' | ')})`,
+      );
+      assert(
+        outcome.threw === false && elapsedMs < TERMINATION_BUDGET_MS,
+        `[upstream | ${c.key}] the after() callback TERMINATES when the call UPSTREAM of the audit write never answers: bounding only the write left this frozen, with the 200 already shipped`,
+        `threw=${outcome.threw} elapsed=${elapsedMs}ms budget=${TERMINATION_BUDGET_MS}ms`,
+      );
+      const verdict = verifyFailureLine(lines, {
+        tag: c.tag,
+        table: c.table,
+        eventType: c.eventType,
+        sessionId: SESSION_ID,
+        clientId: CLIENT_ID,
+        fault: 'timeout',
+        status: 0,
+        pgCode: null,
+      });
+      assert(
+        verdict.ok,
+        `[upstream | ${c.key}] and it is LOUD: exactly one ${c.tag} line naming ${c.table}, fault=timeout status=0, in the same shape as the write-side line — terminating quietly would be no better than hanging`,
+        verdict.reason,
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // 11g. R4 — the "NEVER throws, under any input" claim, made true.
+    // -----------------------------------------------------------------------
+    // recordAuditRow's comment claimed it never throws under any input. That
+    // was literally false for the two wrappers built on it: auditEventSpec and
+    // openEventSpec dereferenced `opts.clientId` / `meta.clientId` OUTSIDE
+    // recordAuditRow's try — a spec argument is EVALUATED BEFORE the call it
+    // is passed to — so a caller handing in a null or hostile options object
+    // got a raw TypeError out of a frame that promised not to throw.
+    //
+    // Hostile means all three shapes at once: a missing object, and an object
+    // with a THROWING GETTER on each field the builder reads.
+    out('\n--- hostile options objects: the totality claim, tested rather than asserted ---');
+    const hostileOpts = (): Record<string, unknown> => {
+      const o = Object.create(null) as Record<string, unknown>;
+      for (const key of ['clientId', 'route', 'succeeded', 'userAgent', 'ipHash']) {
+        Object.defineProperty(o, key, {
+          enumerable: true,
+          get() {
+            throw new TypeError(`hostile getter for ${key}`);
+          },
+        });
+      }
+      return o;
+    };
+
+    stub.mode = 'rls_denied';
+    stub.faultTable = 'onboarding_audit_events';
+
+    await openWriteWindow('hostile | recordAuditEvent | null opts');
+    const hostileNull = await withCapture(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await serverMod.recordAuditEvent(SESSION_ID, 'hostile_probe', { probe: true }, null as any);
+      return {};
+    });
+    closeWriteWindow();
+    const hostileNullLines = writeFailureLines(hostileNull.captured);
+    out(`    recordAuditEvent(null opts)    threw=${hostileNull.threw} lines=${hostileNullLines.length}`);
+    assert(
+      hostileNull.threw === false &&
+        hostileNullLines.length === 1 &&
+        typeof hostileNullLines[0]?.parsed?.route === 'string' &&
+        (hostileNullLines[0]?.parsed?.route as string).length > 0 &&
+        typeof hostileNullLines[0]?.parsed?.succeeded === 'string' &&
+        (hostileNullLines[0]?.parsed?.succeeded as string).length > 0,
+      `[hostile opts | recordAuditEvent] a NULL options object no longer produces a raw TypeError from the spec builder: the call stays total and still emits one line, whose route and succeeded say plainly that the call site supplied neither`,
+      `threw=${hostileNull.threw} :: ${String(hostileNull.error)} lines=${JSON.stringify(allLines(hostileNull.captured))}`,
+    );
+
+    await openWriteWindow('hostile | recordAuditEvent | throwing getters');
+    const hostileGetters = await withCapture(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await serverMod.recordAuditEvent(SESSION_ID, 'hostile_probe', { probe: true }, hostileOpts() as any);
+      return {};
+    });
+    closeWriteWindow();
+    const hostileGetterLines = writeFailureLines(hostileGetters.captured);
+    out(`    recordAuditEvent(hostile opts) threw=${hostileGetters.threw} lines=${hostileGetterLines.length}`);
+    assert(
+      hostileGetters.threw === false &&
+        hostileGetterLines.length === 1 &&
+        hostileGetterLines[0]?.parsed?.fault === 'postgrest',
+      `[hostile opts | recordAuditEvent] an options object whose every getter THROWS is absorbed too, and the injected Supabase fault is still the one reported — the hostile input does not become the news`,
+      `threw=${hostileGetters.threw} :: ${String(hostileGetters.error)} lines=${JSON.stringify(allLines(hostileGetters.captured))}`,
+    );
+
+    stub.faultTable = 'onboarding_open_events';
+    await openWriteWindow('hostile | recordOpenEvent | throwing getters');
+    const hostileOpen = await withCapture(async () => {
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      await serverMod.recordOpenEvent(SESSION_ID, hostileOpts() as any, hostileOpts() as any);
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+      return {};
+    });
+    closeWriteWindow();
+    const hostileOpenLines = writeFailureLines(hostileOpen.captured);
+    out(`    recordOpenEvent(hostile x2)    threw=${hostileOpen.threw} lines=${hostileOpenLines.length}`);
+    assert(
+      hostileOpen.threw === false &&
+        hostileOpenLines.length === 1 &&
+        hostileOpenLines[0]?.parsed?.table === 'onboarding_open_events',
+      `[hostile opts | recordOpenEvent] the OTHER wrapper is total in its own right as well, on BOTH of the objects it dereferences: the open-events builder reads a row object and a meta object, and neither was guarded`,
+      `threw=${hostileOpen.threw} :: ${String(hostileOpen.error)} lines=${JSON.stringify(allLines(hostileOpen.captured))}`,
+    );
+
+    stub.faultTable = 'onboarding_audit_events';
+    await openWriteWindow('hostile | insertAuditEventOrThrow | null opts');
+    const hostileThrow = await withCapture(async () => {
+      await serverMod.insertAuditEventOrThrow(
+        SESSION_ID,
+        'hostile_probe',
+        { probe: true },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        null as any,
+      );
+      return {};
+    });
+    closeWriteWindow();
+    out(
+      `    insertAuditEventOrThrow(null)  threw=${hostileThrow.threw} error=${
+        hostileThrow.error instanceof Error ? hostileThrow.error.name : String(hostileThrow.error)
+      }`,
+    );
+    assert(
+      hostileThrow.threw === true &&
+        hostileThrow.error instanceof Error &&
+        hostileThrow.error.name === 'AuditWriteError',
+      `[hostile opts | insertAuditEventOrThrow] the fail-closed entry point still throws the ONE error type its caller branches on, not a TypeError from the spec builder: a raw TypeError would have flattened into the analyze route's generic 500 and lost the machine-readable reason`,
+      `threw=${hostileThrow.threw} error=${String(hostileThrow.error)}`,
+    );
+    stub.mode = 'ok';
+
+    // -----------------------------------------------------------------------
+    // 11h. R5 — the degraded line escapes what it prints.
+    // -----------------------------------------------------------------------
+    // logAuditWriteFailure's fallback branch used to CONCATENATE
+    // `err.fault.message` raw. A message containing a newline therefore
+    // fragmented the record into two physical lines and stranded the tag on
+    // the half without the interesting text — the exact hazard the JSON path
+    // is documented to avoid, reintroduced on the path taken when things are
+    // already going badly.
+    //
+    // Driven directly, because the fallback is only reachable when building
+    // the full record FAILS: a throwing getter on the error object gets there,
+    // and nothing a stub can inject does.
+    out('\n--- the degraded failure line: a newline in the message must not split the record ---');
+    const NEWLINE_MESSAGE = 'first line of the refusal\nsecond line carrying the actionable part';
+    const bomb = {
+      table: 'onboarding_audit_events',
+      fault: { kind: 'postgrest', status: 403, code: '42501', message: NEWLINE_MESSAGE },
+      context: {
+        eventType: 'degraded_probe',
+        sessionId: SESSION_ID,
+        route: 'direct probe',
+        succeeded: 'nothing',
+      },
+    };
+    // Reading client_id is what throws, so the COMPLETE record cannot be
+    // built and the degraded branch is the one that runs.
+    Object.defineProperty(bomb.context, 'clientId', {
+      enumerable: true,
+      get() {
+        throw new TypeError('hostile getter for clientId');
+      },
+    });
+    const degraded = await withCapture(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      serverMod.logAuditWriteFailure(bomb as any);
+      return {};
+    });
+    const degradedLines = writeFailureLines(degraded.captured);
+    const degradedAll = allLines(degraded.captured);
+    out(`    degraded → ${JSON.stringify(degradedAll)}`);
+    assert(
+      degraded.threw === false && degradedLines.length === 1 && degradedAll.length === 1,
+      `[degraded line] the fallback branch emits exactly ONE physical line: a message containing a newline used to fragment the record and leave the ${WRITE_FAILURE_TAG} tag on the half an operator does not need`,
+      `threw=${degraded.threw} taggedLines=${degradedLines.length} totalLines=${degradedAll.length} :: ${JSON.stringify(degradedAll)}`,
+    );
+    assert(
+      degradedLines[0]?.parsed !== null &&
+        degradedLines[0]?.parsed?.message === NEWLINE_MESSAGE &&
+        degradedLines[0]?.parsed?.table === 'onboarding_audit_events' &&
+        degradedLines[0]?.parsed?.session_id === SESSION_ID,
+      `[degraded line] and it is still JSON an operator can parse: the newline is ESCAPED rather than emitted, so the whole message survives on the tagged line alongside the table and session`,
+      `parsed=${JSON.stringify(degradedLines[0]?.parsed ?? null)} raw=${JSON.stringify(degradedLines[0]?.raw ?? null)}`,
+    );
 
     // -----------------------------------------------------------------------
     // 12. Hermeticity — both transports.
@@ -4225,6 +4824,11 @@ const BASE_LABELS: readonly string[] = Object.freeze([
   "[analyze rate-limit read] the 503 body carries a MACHINE code alongside its human message, so a caller can branch on it",
   "[analyze rate-limit read] exactly one [rate-limit][READ-FAILURE] line on console.error records the skipped-limit condition",
   "[analyze rate-limit read] the refused request spent NO rate-limit slot: no audit row was written for a request that never ran",
+  "[analyze rate-limit read | http 500] the [rate-limit][READ-FAILURE] line passes the SAME verifyFailureLine checks as the write-side line: one shape for both, carrying the HTTP status the hand-built line omitted, and a fault kind produced by normaliseAuditFault rather than hard-coded",
+  "[analyze rate-limit read | stall] a count query that is ACCEPTED AND NEVER ANSWERED still terminates, still 503s with the machine code, and still spends no rate-limit slot",
+  "[analyze rate-limit read | stall] the line names fault=timeout status=0, NOT the hard-coded 'postgrest' the old line printed for every countErr: this is the misclassification, and it pointed an operator at a Postgres refusal that never happened",
+  "[analyze rate-limit read | null count] a 206 with no content-range — no error anywhere, and a null count where an exact one was requested — is still an unknown limit, so it still fails closed and still spends no slot",
+  "[analyze rate-limit read | null count] the no-error fault is SYNTHESISED as kind null_result carrying the real HTTP status, and still passes the same line checks: the one read fault class with no error body does not get a second line shape",
   "[independence | audit write stalls] the OPEN-EVENT write is still issued: a tracking write that never settles cannot cancel the other one that shares its after() callback",
   "[independence | audit write stalls] exactly one [audit-write][WRITE-FAILURE] line, naming onboarding_audit_events — the stalled write is reported, the healthy one is not",
   "[independence | audit write stalls] the open-event write is ISSUED WHILE the audit write is still stalling, not after it gives up: \"both eventually happened\" is satisfied by a chained pair that the timeout bound merely rescues, so the arrival GAP is what proves independence",
@@ -4244,6 +4848,27 @@ const BASE_LABELS: readonly string[] = Object.freeze([
   "[am-bypass | save-step] a BYPASS save still persists the answers at 200 and writes NO step_saved row, so a faulted audit table produces no WRITE-FAILURE line for a write that was never meant to happen",
   "[am-bypass | submit] a BYPASS submit still commits at 200 and writes NO session_submitted row, so the faulted audit table produces no line",
   "[am-bypass | session] a BYPASS page-load registers ZERO after() tasks — neither tracking write is even SCHEDULED, so an AM's prep can never reach Open History — while the same load without the signature registers exactly one",
+  "[upstream | bridge → clients lookup] the stalled call really CROSSED THE WIRE (dashboard-bridge.ts, the clients lookup): the stub accepted it, read it in full, and never answered — a fault that was never issued would prove nothing",
+  "[upstream | bridge → clients lookup] the after() callback TERMINATES when the call UPSTREAM of the audit write never answers: bounding only the write left this frozen, with the 200 already shipped",
+  "[upstream | bridge → clients lookup] and it is LOUD: exactly one [supabase-read][READ-FAILURE] line naming clients, fault=timeout status=0, in the same shape as the write-side line — terminating quietly would be no better than hanging",
+  "[upstream | sheet-export → clients lookup] the stalled call really CROSSED THE WIRE (sheet-export.ts, the clients select (which also DISCARDED .error)): the stub accepted it, read it in full, and never answered — a fault that was never issued would prove nothing",
+  "[upstream | sheet-export → clients lookup] the after() callback TERMINATES when the call UPSTREAM of the audit write never answers: bounding only the write left this frozen, with the 200 already shipped",
+  "[upstream | sheet-export → clients lookup] and it is LOUD: exactly one [supabase-read][READ-FAILURE] line naming clients, fault=timeout status=0, in the same shape as the write-side line — terminating quietly would be no better than hanging",
+  "[upstream | sheet-export → answers lookup] the stalled call really CROSSED THE WIRE (sheet-export.ts, getSessionAnswers on the after() path): the stub accepted it, read it in full, and never answered — a fault that was never issued would prove nothing",
+  "[upstream | sheet-export → answers lookup] the after() callback TERMINATES when the call UPSTREAM of the audit write never answers: bounding only the write left this frozen, with the 200 already shipped",
+  "[upstream | sheet-export → answers lookup] and it is LOUD: exactly one [supabase-read][READ-FAILURE] line naming onboarding_answers, fault=timeout status=0, in the same shape as the write-side line — terminating quietly would be no better than hanging",
+  "[upstream | sheet-export → submitted_at re-read] the stalled call really CROSSED THE WIRE (sheet-export.ts, the submitted_at re-read (which also DISCARDED .error)): the stub accepted it, read it in full, and never answered — a fault that was never issued would prove nothing",
+  "[upstream | sheet-export → submitted_at re-read] the after() callback TERMINATES when the call UPSTREAM of the audit write never answers: bounding only the write left this frozen, with the 200 already shipped",
+  "[upstream | sheet-export → submitted_at re-read] and it is LOUD: exactly one [supabase-read][READ-FAILURE] line naming onboarding_sessions, fault=timeout status=0, in the same shape as the write-side line — terminating quietly would be no better than hanging",
+  "[upstream | sheet-export → pm_tracker_pushes seed] the stalled call really CROSSED THE WIRE (sheet-export.ts, the pm_tracker_pushes upsert (which DID read .error, and was still silent)): the stub accepted it, read it in full, and never answered — a fault that was never issued would prove nothing",
+  "[upstream | sheet-export → pm_tracker_pushes seed] the after() callback TERMINATES when the call UPSTREAM of the audit write never answers: bounding only the write left this frozen, with the 200 already shipped",
+  "[upstream | sheet-export → pm_tracker_pushes seed] and it is LOUD: exactly one [supabase-write][WRITE-FAILURE] line naming pm_tracker_pushes, fault=timeout status=0, in the same shape as the write-side line — terminating quietly would be no better than hanging",
+  "[hostile opts | recordAuditEvent] a NULL options object no longer produces a raw TypeError from the spec builder: the call stays total and still emits one line, whose route and succeeded say plainly that the call site supplied neither",
+  "[hostile opts | recordAuditEvent] an options object whose every getter THROWS is absorbed too, and the injected Supabase fault is still the one reported — the hostile input does not become the news",
+  "[hostile opts | recordOpenEvent] the OTHER wrapper is total in its own right as well, on BOTH of the objects it dereferences: the open-events builder reads a row object and a meta object, and neither was guarded",
+  "[hostile opts | insertAuditEventOrThrow] the fail-closed entry point still throws the ONE error type its caller branches on, not a TypeError from the spec builder: a raw TypeError would have flattened into the analyze route's generic 500 and lost the machine-readable reason",
+  "[degraded line] the fallback branch emits exactly ONE physical line: a message containing a newline used to fragment the record and leave the [audit-write][WRITE-FAILURE] tag on the half an operator does not need",
+  "[degraded line] and it is still JSON an operator can parse: the newline is ESCAPED rather than emitted, so the whole message survives on the tagged line alongside the table and session",
   "[hermeticity] no dependency attempted a non-loopback fetch()",
   "[hermeticity] no dependency attempted a non-loopback http(s).request (the gaxios/node-fetch path the fetch guard cannot see)",
   "[hermeticity] no dependency attempted a non-loopback net/tls/http2/dgram connection, including via net.Socket.prototype.connect (the raw socket floor under both guards above, and the one a destructured module reference cannot skip)",

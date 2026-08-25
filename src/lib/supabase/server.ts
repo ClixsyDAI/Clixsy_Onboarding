@@ -98,17 +98,60 @@ export async function getSessionByToken(token: string): Promise<OnboardingSessio
   return data as OnboardingSession;
 }
 
-export async function getSessionAnswers(sessionId: string): Promise<OnboardingAnswer[]> {
+/**
+ * `opts` exists only for the after()-resident callers, and it is OPTIONAL on
+ * purpose. This helper is shared with two REQUEST-path callers (the session
+ * and submit routes), where a stall is at least visible: the request hangs and
+ * the platform kills it with a gateway timeout an operator can see. On an
+ * after() path the 200 has already shipped, so an unbounded read here freezes
+ * the callback with nothing emitted anywhere. Passing the bound only from
+ * there confines the behaviour change to the paths that need it.
+ */
+export async function getSessionAnswers(
+  sessionId: string,
+  opts?: {
+    /** Bound the read. Omitted = unbounded, i.e. the request-path behaviour. */
+    timeoutMs?: number;
+    /** When given, a failure is reported as one tagged, structured line. */
+    readFailure?: {
+      tag: string;
+      route: string;
+      eventType: string;
+      clientId?: string | null;
+      succeeded: string;
+    };
+  },
+): Promise<OnboardingAnswer[]> {
   const supabase = createServiceRoleClient();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('onboarding_answers')
     .select('*')
     .eq('session_id', sessionId)
     .order('updated_at', { ascending: true });
+  if (typeof opts?.timeoutMs === 'number') {
+    query = query.abortSignal(AbortSignal.timeout(opts.timeoutMs));
+  }
+  const { data, error, status } = await query;
 
   if (error) {
-    console.error('Error fetching answers:', error);
+    const failure = opts?.readFailure;
+    if (failure) {
+      logSupabaseFailure(
+        failure.tag,
+        {
+          route: failure.route,
+          table: 'onboarding_answers',
+          eventType: failure.eventType,
+          sessionId,
+          clientId: failure.clientId ?? null,
+          succeeded: failure.succeeded,
+        },
+        normaliseAuditFault(status, error, 'the answers read was refused with no error body'),
+      );
+    } else {
+      console.error('Error fetching answers:', error);
+    }
     return [];
   }
 
@@ -247,6 +290,13 @@ export type AuditFaultKind =
    * 'postgrest'.
    */
   | 'gateway'
+  /**
+   * The call ANSWERED, with no error at all, and the answer is unusable: an
+   * exact-count query that resolved with `count === null`. There is no
+   * PostgREST error to normalise here, so this kind is SYNTHESISED (the same
+   * way 'client_init' is) rather than derived from a body. Read-side only.
+   */
+  | 'null_result'
   /** Anything that did not match the contract above. Should not occur. */
   | 'unknown';
 
@@ -388,8 +438,17 @@ function hasKey(error: PostgrestErrorLike, key: string): boolean {
 export function normaliseAuditFault(
   status: number | null | undefined,
   error: PostgrestErrorLike | null | undefined,
+  /**
+   * What to say when the fault carries no message of its own. Defaulted rather
+   * than required so the write path is unchanged, and parameterised so the
+   * READ path can say "the count query" instead of "the write" without
+   * needing a second normaliser. A HEAD response is the case that forces this:
+   * an HTTP HEAD can carry no body at all, so `error.message` is the EMPTY
+   * STRING for every non-2xx answer to the exact-count probe.
+   */
+  noBodyMessage = 'the write was refused with no error body',
 ): AuditFault {
-  const message = boundFaultMessage(error?.message || 'the write was refused with no error body');
+  const message = boundFaultMessage(error?.message || noBodyMessage);
   const code = error?.code || null;
   const httpStatus = typeof status === 'number' ? status : null;
 
@@ -415,7 +474,156 @@ export function normaliseAuditFault(
   return { kind: 'unknown', status: httpStatus, code, message };
 }
 
-const AUDIT_WRITE_FAILURE_TAG = '[audit-write][WRITE-FAILURE]';
+/**
+ * READ-SIDE NORMALISATION, routed through the SAME normaliser.
+ *
+ * A read has one fault class a write does not: the query ANSWERED, with no
+ * error at all, and the answer is unusable. `head: true, count: 'exact'`
+ * resolving with `count === null` is the case in production — PostgrestBuilder
+ * only assigns `count` when the response carries a parseable `content-range`
+ * (PostgrestBuilder.ts:150-155), so a proxy that strips that header yields a
+ * null count with `error === null`. There is no PostgREST error document to
+ * normalise, so the fault is SYNTHESISED here, exactly as attemptAuditWrite
+ * synthesises 'client_init'. EVERY other read fault delegates to
+ * normaliseAuditFault, so a timeout is 'timeout', an HTML 502 is 'gateway' and
+ * a real refusal is 'postgrest' — on the read side too, and by the same code.
+ */
+export function normaliseReadFault(
+  status: number | null | undefined,
+  error: PostgrestErrorLike | null | undefined,
+  nullResultMessage: string,
+  noBodyMessage: string,
+): AuditFault {
+  if (error === null || error === undefined) {
+    return {
+      kind: 'null_result',
+      status: typeof status === 'number' ? status : null,
+      code: null,
+      message: boundFaultMessage(nullResultMessage),
+    };
+  }
+  return normaliseAuditFault(status, error, noBodyMessage);
+}
+
+/**
+ * THE TAGS. Four conditions, ONE line shape (see emitFailureLine). A tag is a
+ * fixed literal so it is greppable, and the tag is the ONLY thing that differs
+ * between them: an operator who has learned to read one has learned to read
+ * all four, and a field added to one is added to all four.
+ */
+export const AUDIT_WRITE_FAILURE_TAG = '[audit-write][WRITE-FAILURE]';
+/** An upstream Supabase READ that a code path depends on refused or stalled. */
+export const SUPABASE_READ_FAILURE_TAG = '[supabase-read][READ-FAILURE]';
+/** A non-audit Supabase WRITE (today: the pm_tracker_pushes seed) failed. */
+export const SUPABASE_WRITE_FAILURE_TAG = '[supabase-write][WRITE-FAILURE]';
+/** The analyze route could not read its own rate-limit counter. */
+export const RATE_LIMIT_READ_FAILURE_TAG = '[rate-limit][READ-FAILURE]';
+
+/**
+ * The field set EVERY failure line carries. Declared once, as a type, so a
+ * second tag cannot quietly ship a different shape: that is precisely how the
+ * read-side line drifted into hard-coding `fault` and omitting `status`.
+ */
+interface FailureLineFields {
+  route: string;
+  table: string;
+  event_type: string;
+  session_id: string;
+  client_id: string | null;
+  fault: AuditFaultKind;
+  status: number | null;
+  pg_code: string | null;
+  message: string;
+  succeeded: string;
+}
+
+/** Tag, then ONE line of JSON. The single place the shape is realised. */
+function emitFailureLine(tag: string, fields: FailureLineFields): void {
+  console.error(`${tag} ${JSON.stringify(fields)}`);
+}
+
+/**
+ * Read one value that may throw, and hand it back JSON-ENCODED — never raw.
+ *
+ * ENCODING IS THE POINT, not tidiness. The degraded line below used to
+ * CONCATENATE `err.fault.message`, so a message containing a newline split the
+ * record in two and stranded the tag on the half without the interesting text
+ * — the exact hazard the JSON path is documented to avoid, reintroduced on the
+ * fallback path. JSON.stringify escapes the newline, so the record stays one
+ * physical line whatever the message contains.
+ */
+function safeField(read: () => unknown): string {
+  let value: unknown;
+  try {
+    value = read();
+  } catch (err) {
+    value = `<unreadable: ${err instanceof Error ? err.name : 'throw'}>`;
+  }
+  try {
+    const encoded = JSON.stringify(value ?? null);
+    return typeof encoded === 'string' ? encoded : '"<unserialisable>"';
+  } catch {
+    return '"<unserialisable>"';
+  }
+}
+
+/**
+ * The floor: the complete record could not be built, so print whatever can
+ * still be read, one field at a time, each independently guarded and each
+ * JSON-ENCODED. Losing the structure is acceptable; losing the news is not,
+ * and so is losing the tag off the half of a fragmented line that mattered.
+ */
+function emitDegradedFailureLine(tag: string, err: AuditWriteError): void {
+  try {
+    console.error(
+      `${tag} {"table":${safeField(() => err.table)},` +
+        `"event_type":${safeField(() => err.context.eventType)},` +
+        `"session_id":${safeField(() => err.context.sessionId)},` +
+        `"fault":${safeField(() => err.fault.kind)},` +
+        `"message":${safeField(() => err.fault.message)},` +
+        `"degraded":"the full record could not be serialised"}`,
+    );
+  } catch {
+    /* a total function stays total even if the console itself is broken */
+  }
+}
+
+/**
+ * One failure line for a Supabase call that is NOT an audit write: an upstream
+ * read a code path depends on, or the pm_tracker_pushes seed. Same shape, same
+ * bound (the fault arrives already normalised, and every normaliser above runs
+ * boundFaultMessage), different tag.
+ */
+export function logSupabaseFailure(
+  tag: string,
+  ctx: {
+    route: string;
+    table: string;
+    /** Logical name of what the call was for, e.g. 'client_lookup'. */
+    eventType: string;
+    sessionId: string;
+    clientId?: string | null;
+    succeeded: string;
+  },
+  fault: AuditFault,
+): void {
+  try {
+    emitFailureLine(tag, {
+      route: ctx.route,
+      table: ctx.table,
+      event_type: ctx.eventType,
+      session_id: ctx.sessionId,
+      client_id: ctx.clientId ?? null,
+      fault: fault.kind,
+      status: fault.status,
+      pg_code: fault.code,
+      message: fault.message,
+      succeeded: ctx.succeeded,
+    });
+  } catch {
+    /* the logger is observability; it may never become the fault */
+  }
+}
 
 /**
  * THE LOG LINE.
@@ -433,27 +641,26 @@ const AUDIT_WRITE_FAILURE_TAG = '[audit-write][WRITE-FAILURE]';
  */
 export function logAuditWriteFailure(err: AuditWriteError): void {
   try {
-    console.error(
-      `${AUDIT_WRITE_FAILURE_TAG} ${JSON.stringify({
-        route: err.context.route,
-        table: err.table,
-        event_type: err.context.eventType,
-        session_id: err.context.sessionId,
-        client_id: err.context.clientId ?? null,
-        fault: err.fault.kind,
-        status: err.fault.status,
-        pg_code: err.fault.code,
-        message: err.fault.message,
-        succeeded: err.context.succeeded,
-      })}`,
-    );
+    emitFailureLine(AUDIT_WRITE_FAILURE_TAG, {
+      route: err.context.route,
+      table: err.table,
+      event_type: err.context.eventType,
+      session_id: err.context.sessionId,
+      client_id: err.context.clientId ?? null,
+      fault: err.fault.kind,
+      status: err.fault.status,
+      pg_code: err.fault.code,
+      message: err.fault.message,
+      succeeded: err.context.succeeded,
+    });
   } catch {
-    // JSON.stringify can only fail on an exotic payload. Losing the structure
-    // is acceptable; losing the news is not.
-    console.error(
-      `${AUDIT_WRITE_FAILURE_TAG} table=${err.table} event_type=${err.context.eventType} ` +
-        `session_id=${err.context.sessionId} fault=${err.fault.kind} message=${err.fault.message}`,
-    );
+    // Either JSON.stringify refused an exotic payload, or reading one of the
+    // fields threw (a hostile getter on `err`). Fall through to the degraded
+    // line, which reads each field independently and ENCODES every one of
+    // them — the previous version concatenated `err.fault.message` raw, so a
+    // newline in it fragmented the record and lost the tag off the
+    // interesting half.
+    emitDegradedFailureLine(AUDIT_WRITE_FAILURE_TAG, err);
   }
 }
 
@@ -520,6 +727,33 @@ export const AUDIT_WRITE_TIMEOUT_MS_FAIL_CLOSED = 5_000;
 export const AUDIT_READ_TIMEOUT_MS_FAIL_CLOSED = AUDIT_WRITE_TIMEOUT_MS_FAIL_CLOSED;
 
 /**
+ * THE GENERALISATION. Bounding the audit WRITE was necessary and not
+ * sufficient, because on both after()-resident paths an UNBOUNDED Supabase
+ * READ sits immediately UPSTREAM of it, on the same code path, inside the same
+ * callback.
+ *
+ * Under a Supabase that accepts the connection and never answers, that read
+ * never settles, so the audit write is NEVER ISSUED, logAuditWriteFailure
+ * never runs, and the operator gets literally zero output. Measured against
+ * the previous revision: 10s elapsed, the promise never settled, the stub saw
+ * exactly ONE request (the clients GET) and zero POSTs to
+ * onboarding_audit_events, and the captured operator output was empty. The 200
+ * has already shipped by then, so nothing anywhere notices.
+ *
+ * THE PRINCIPLE, stated once and repeated at each site: reading `.error` is
+ * NECESSARY BUT NOT SUFFICIENT, because a call that never settles has no
+ * `.error` to read. Every Supabase call on an after() path must be bounded as
+ * well as checked.
+ *
+ * 5s, not the 2s degrade bound: these calls gather the data the callback
+ * exists to deliver rather than a log row, so a bound that is too tight throws
+ * away real work on an ordinary latency spike. It is still an order of
+ * magnitude under the dashboard bridge's own 15s HTTP bound, so the whole
+ * callback terminates well inside any after() budget.
+ */
+export const SUPABASE_READ_TIMEOUT_MS_AFTER = 5_000;
+
+/**
  * The TABLE-AGNOSTIC CORE. Returns the fault, or null when the row landed.
  * Never throws: both entry points below are built on it, and the total one may
  * not depend on an internal detail staying true.
@@ -544,6 +778,23 @@ async function attemptAuditWrite(
   }
 
   try {
+    // THE ABORT SITE. Aborting stops US waiting; it does NOT roll back an
+    // INSERT that PostgREST may already have COMMITTED server-side. The
+    // request is fire-and-forget from the abort onward, so the row can land
+    // after we have given up on it.
+    //
+    // THE CONSEQUENCE, NAMED SO THE NEXT READER FINDS IT. On the fail-closed
+    // path (the analyze route's rate limiter) a Supabase that is SLOW BUT
+    // WORKING therefore spends a rate-limit slot per attempt while returning
+    // 503, so a client retrying can burn all five hourly slots and then be
+    // 429'd once Supabase recovers.
+    //
+    // This is DELIBERATELY NOT FIXED. It follows directly from the ruled
+    // fail-closed decision: those rows ARE the limiter's state, so the only
+    // alternatives are to fail the limit OPEN on the one route that spends
+    // Anthropic tokens, or to invent a compensating delete that would itself
+    // need to succeed against the same degraded Supabase. Recorded as a
+    // decision, not a defect.
     const { error, status } = await supabase
       .from(spec.table)
       .insert(spec.row)
@@ -582,6 +833,16 @@ export async function insertAuditRowOrThrow(spec: AuditWriteSpec): Promise<void>
  * NEVER throws, under any input, including around client construction, and it
  * LOGS INSIDE ITSELF so loudness never depends on the caller remembering to.
  *
+ * THE CLAIM IS ABOUT THE WHOLE ENTRY POINT, wrappers included, and that had to
+ * be MADE true rather than merely asserted. `recordAuditRow` itself was total,
+ * but the two spec builders it is reached through (auditEventSpec,
+ * openEventSpec) dereferenced `opts.clientId` / `meta.clientId` OUTSIDE this
+ * try — a spec argument is EVALUATED BEFORE the call it is passed to — so a
+ * caller handing in a null or hostile options object got a raw TypeError out
+ * of a frame that promised not to throw. Those builders are now total in their
+ * own right (see readOpt/optText/optClientId below), so the claim above holds
+ * for every public entry point in this section, not just for this function.
+ *
  * Deliberately NOT a discriminated result: TypeScript has no `must_use`, so
  * `await recordAuditRow(...)` discarding a returned result would be the
  * original bug moved one frame up.
@@ -592,9 +853,12 @@ export async function recordAuditRow(spec: AuditWriteSpec): Promise<void> {
     if (fault) logAuditWriteFailure(new AuditWriteError(spec, fault));
   } catch (err) {
     try {
+      // Every value ENCODED, never concatenated: `spec` reached us from a
+      // caller, so neither its fields nor the error's message are ours to
+      // trust with the line's structure.
       console.error(
-        `${AUDIT_WRITE_FAILURE_TAG} {"table":${JSON.stringify(spec.table)},` +
-          `"fault":"unknown","message":${JSON.stringify(
+        `${AUDIT_WRITE_FAILURE_TAG} {"table":${safeField(() => spec.table)},` +
+          `"fault":"unknown","message":${safeField(() =>
             err instanceof Error ? err.message : String(err),
           )}}`,
       );
@@ -611,6 +875,62 @@ export interface AuditEventOptions {
   succeeded: string;
 }
 
+/**
+ * TOTAL PROPERTY READS — why the spec builders below do not simply use dots.
+ *
+ * These builders run OUTSIDE recordAuditRow's try: a spec argument is
+ * evaluated before the call it is passed to. So `opts.clientId` on a null
+ * `opts` threw a raw TypeError from a frame documented as never throwing, and
+ * a throwing getter did the same from a frame that looked safe. The types say
+ * this cannot happen; the types are not present at runtime, the options object
+ * reaches here from six call sites, and the whole point of this section is
+ * that the audit path stays loud when everything else is broken.
+ *
+ * Guarded against all three shapes at once: a null/undefined object, a
+ * non-object, and a property whose getter throws.
+ */
+function readOpt(opts: unknown, key: string): unknown {
+  if (opts === null || opts === undefined) return undefined;
+  if (typeof opts !== 'object' && typeof opts !== 'function') return undefined;
+  try {
+    return (opts as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A required text field. The fallback is DESCRIPTIVE rather than empty: this
+ * value ends up in the failure line's `route` / `succeeded`, and a blank there
+ * is indistinguishable from a site that shipped anonymous.
+ */
+function optText(opts: unknown, key: string, fallback: string): string {
+  const value = readOpt(opts, key);
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return fallback;
+  try {
+    return String(value);
+  } catch {
+    return fallback;
+  }
+}
+
+/** A nullable text field: absent, unreadable and null all collapse to null. */
+function optNullableText(opts: unknown, key: string): string | null {
+  const value = readOpt(opts, key);
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return null;
+  try {
+    return String(value);
+  } catch {
+    return null;
+  }
+}
+
+const HOSTILE_OPTS_ROUTE = '(route unknown: the call site passed no usable options object)';
+const HOSTILE_OPTS_SUCCEEDED =
+  '(unknown: the call site passed no usable options object, so what else survived cannot be stated here)';
+
 /** Thin wrapper: the `onboarding_audit_events` row shape (001_initial_schema.sql:56-62). */
 function auditEventSpec(
   sessionId: string,
@@ -622,10 +942,10 @@ function auditEventSpec(
     table: 'onboarding_audit_events',
     row: { session_id: sessionId, event_type: eventType, payload: payload ?? null },
     sessionId,
-    clientId: opts.clientId ?? null,
+    clientId: optNullableText(opts, 'clientId'),
     eventType,
-    route: opts.route,
-    succeeded: opts.succeeded,
+    route: optText(opts, 'route', HOSTILE_OPTS_ROUTE),
+    succeeded: optText(opts, 'succeeded', HOSTILE_OPTS_SUCCEEDED),
   };
 }
 
@@ -641,18 +961,21 @@ function openEventSpec(
   opts: { userAgent?: string | null; ipHash?: string | null },
   meta: AuditEventOptions,
 ): AuditWriteSpec {
+  // Total in its own right, for the same reason auditEventSpec is: BOTH
+  // objects arrive from the caller and BOTH were dereferenced outside
+  // recordAuditRow's try.
   return {
     table: 'onboarding_open_events',
     row: {
       session_id: sessionId,
-      user_agent: opts.userAgent ?? null,
-      ip_hash: opts.ipHash ?? null,
+      user_agent: optNullableText(opts, 'userAgent'),
+      ip_hash: optNullableText(opts, 'ipHash'),
     },
     sessionId,
-    clientId: meta.clientId ?? null,
+    clientId: optNullableText(meta, 'clientId'),
     eventType: 'session_opened',
-    route: meta.route,
-    succeeded: meta.succeeded,
+    route: optText(meta, 'route', HOSTILE_OPTS_ROUTE),
+    succeeded: optText(meta, 'succeeded', HOSTILE_OPTS_SUCCEEDED),
   };
 }
 
