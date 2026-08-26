@@ -224,10 +224,23 @@ function loadPinEncryptionKey(): Buffer {
   // reads as data corruption rather than as the misconfiguration it
   // is. The re-encode round-trip is the only place that mistake can
   // still be named accurately.
+  // The message names the LIKELY CAUSES, not just the rule it broke.
+  // This check fails closed on keys whose 32 bytes are perfectly correct
+  // but whose encoding is not byte-identical after a round trip: a
+  // newline-wrapped value pasted from a terminal, a base64url variant
+  // with - or _ substituted, or a missing '=' pad. Failing closed on
+  // those is right, because none of them can be distinguished from a
+  // genuinely wrong key without guessing. But an operator holding what
+  // is in fact the correct key needs to be told WHERE to look, or the
+  // message reads as "your key is wrong" when the real fault is a line
+  // break the paste introduced.
   if (key.toString("base64") !== trimmed) {
     throw new PinEncryptionConfigurationError(
-      "PIN_ENCRYPTION_KEY is not canonical base64 (standard alphabet, " +
-        "padding included). Generate one with " +
+      "PIN_ENCRYPTION_KEY is not canonical base64. The bytes may well be " +
+        "correct: the usual causes are a line break or stray whitespace " +
+        "inside the value, base64url characters (- or _) instead of + and /, " +
+        "or missing '=' padding. Standard alphabet with padding, on one line. " +
+        "Generate one with " +
         "require('crypto').randomBytes(32).toString('base64')",
     );
   }
@@ -391,13 +404,40 @@ function parseEnvelope(envelope: unknown): ParsedEnvelope {
   //    auth_tag is truncated, which would allow an attacker to
   //    easily forge it. See https://github.com/ruby/openssl/issues/63"
   //
-  // Node's decipher.setAuthTag accepts every GCM-legal tag length (4,
-  // 8, and 12 through 16 bytes) and then verifies only the bytes it
-  // was handed, so a 4-byte tag leaves a 1-in-2^32 forgery instead of
-  // 1-in-2^128. Passing authTagLength to createDecipheriv is not a
-  // substitute: it constrains what setAuthTag will accept but the
-  // short-tag lengths stay legal for the cipher. The length is
-  // therefore asserted here, explicitly, before the tag is used.
+  // Node has the same hazard, but ONLY when authTagLength is omitted.
+  // An earlier version of this comment claimed the option "constrains
+  // what setAuthTag will accept but the short-tag lengths stay legal".
+  // That is false, and it is worth saying so rather than silently
+  // rewriting, because this file has already carried one fabricated
+  // claim about a runtime.
+  //
+  // MEASURED, not assumed. Probe: encrypt a 6-digit PIN, take the real
+  // 16-byte tag, and hand truncations of it to createDecipheriv.
+  //
+  //   with { authTagLength: 16 }   4B/8B/12B/15B -> setAuthTag THROWS
+  //                                "Invalid authentication tag length: N"
+  //                                16B           -> accepted
+  //   without the option          4B/8B/12B/15B -> ACCEPTED, and final()
+  //                                SUCCEEDS, returning the real plaintext
+  //
+  // So a 4-byte tag on the permissive path leaves a 1-in-2^32 forgery
+  // instead of 1-in-2^128, and the option is what closes it. Node also
+  // emits DEP0182 deprecating the permissive path, which is confirmation
+  // that omitting the option is the unsafe spelling rather than a
+  // neutral one.
+  //
+  // VERSIONS, because this is runtime behaviour and the numbers differ.
+  // Probed on Node v24.15.0 locally. The clixsy-onboarding Vercel project
+  // is configured for Node 24.x, so the same major, but the exact patch
+  // running in a given deployment is not observable from here and was NOT
+  // probed. Same-major is the strongest claim this comment can make; if
+  // that runtime is ever changed to a different major, re-run the probe
+  // rather than trusting these lines.
+  //
+  // The explicit check below is therefore DEFENCE IN DEPTH, not the
+  // primary control. The option above it is the control. The check
+  // survives an accidental removal of the option, and turns what would
+  // be a silent weakening into a named error.
   if (authTag.length !== AUTH_TAG_LENGTH_BYTES) {
     throw new PinEncryptedContentIntegrityError(
       `PIN envelope auth tag must be exactly ${AUTH_TAG_LENGTH_BYTES} bytes, ` +
@@ -416,12 +456,14 @@ function parseEnvelope(envelope: unknown): ParsedEnvelope {
     );
   }
 
-  // An empty payload authenticates fine under a tag forged for the
-  // empty string and would decrypt to "". Rejected here so the empty
-  // string can never travel any further toward a response body.
-  if (ciphertext.length === 0) {
-    throw new PinEnvelopeEncodingError("PIN envelope ciphertext is empty");
-  }
+  // No empty-ciphertext check here on purpose. HEX_FIELD is
+  // /^(?:[0-9a-f]{2})+$/, one-or-more, so an empty ciphertext field has
+  // already failed the hex check a block above and never reaches this
+  // point. A guard that cannot fire reads as a live defence and is not
+  // one, which is worse than its absence: the next person changing
+  // HEX_FIELD would not know this depended on it. The dependency is
+  // stated instead. If HEX_FIELD is ever loosened to allow an empty
+  // match, restore an explicit length check here.
 
   return { iv, authTag, ciphertext };
 }
