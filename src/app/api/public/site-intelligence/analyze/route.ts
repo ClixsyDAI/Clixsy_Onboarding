@@ -581,14 +581,13 @@ export async function POST(request: NextRequest) {
     // and no log line explaining either. It also loses scan dedup: the FK that
     // makes an in-flight scan discoverable is the second of these two calls.
     //
-    // WHAT THE BOUND DOES AND DOES NOT DO, stated rather than implied. Neither
-    // helper takes an AbortSignal, so `withDeadline` bounds the WAITING and
-    // does not CANCEL the underlying request the way the signal-aware reads
-    // above are cancelled. That is the honest difference between this bound
-    // and those; it is still the difference between a report at 5s and a
-    // gateway kill at 300s. Threading a signal into these two helpers is a
-    // change to src/lib/siteIntelligence/analyze.ts and is deliberately not
-    // made here.
+    // BOTH HELPERS NOW TAKE THE SIGNAL, so these are CANCELLED rather than
+    // abandoned, like the signal-aware reads above. The previous revision
+    // bounded only the WAITING and said so, and the cost of that was
+    // measurable rather than theoretical: a stalled `attach_pending_scan` left
+    // its read in flight against the peer for as long as the peer chose to
+    // hold it, which is a socket and a server-side handler leaked per attempt
+    // on a route a client can call five times an hour.
     // A failure here is deliberately left to the TERMINAL CATCH rather than
     // answered locally: that catch is now tagged, coded and slot-aware
     // (AUD-1), and it is the one place that knows how to say "a slot was
@@ -596,7 +595,7 @@ export async function POST(request: NextRequest) {
     const recordId = await withDeadline(
       'record_create',
       UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED,
-      () => createSiteIntelligenceRecord(websiteUrl),
+      (signal) => createSiteIntelligenceRecord(websiteUrl, { signal }),
     );
 
     // Make the in-flight scan discoverable so a reload (or an AM clicking
@@ -612,8 +611,8 @@ export async function POST(request: NextRequest) {
     // is the same one the helper's own internal error handling already chose,
     // now with a line an operator can grep instead of a console.warn.
     try {
-      await withDeadline('attach_pending_scan', UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED, () =>
-        attachPendingScanToSession(session!.id, recordId, priorLinkedId),
+      await withDeadline('attach_pending_scan', UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED, (signal) =>
+        attachPendingScanToSession(session!.id, recordId, priorLinkedId, { signal }),
       );
     } catch (err) {
       logUpstreamFailure(

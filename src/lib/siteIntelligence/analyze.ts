@@ -1,8 +1,12 @@
 import {
   createServiceRoleClient,
   logSupabaseFailure,
+  logUpstreamFailure,
   normaliseAuditFault,
+  normaliseThrownFault,
+  BOUNDED_STAGE_FAILURE_TAG,
   SUPABASE_READ_FAILURE_TAG,
+  SUPABASE_WRITE_FAILURE_TAG,
   SUPABASE_READ_TIMEOUT_MS_AFTER,
 } from '@/lib/supabase/server';
 import { hasFirecrawlKey, hasWappalyzerKey, hasBuiltWithKey, hasPageSpeedKey } from './config';
@@ -107,21 +111,53 @@ export async function attachPendingScanToSession(
   sessionId: string,
   recordId: string,
   priorLinkedId: string | null | undefined,
+  /**
+   * Threaded from the analyze route's `withDeadline`. Optional so the admin
+   * route is unchanged. BOTH round trips take it — this helper is a read and
+   * then a write, so bounding only the read would leave the write able to
+   * outlive the caller's deadline on its own.
+   */
+  opts?: { signal?: AbortSignal },
 ): Promise<void> {
   if (priorLinkedId) {
-    const prior = await getSiteIntelligence(priorLinkedId);
+    const prior = await getSiteIntelligence(priorLinkedId, opts);
     if (prior && prior.status === 'completed') return; // preserve good data
   }
+  // ONE SENTENCE PER CONDITION. If we are here because the caller's deadline
+  // already fired, the caller has ALREADY emitted its own
+  // `attach_pending_scan` line; issuing the update on an aborted signal purely
+  // to report that it was aborted would be a second line for one event.
+  if (opts?.signal?.aborted) return;
   const supabase = createServiceRoleClient();
-  const { error } = await supabase
+  let update = supabase
     .from('onboarding_sessions')
     .update({ site_intelligence_id: recordId })
     .eq('id', sessionId);
+  if (opts?.signal) update = update.abortSignal(opts.signal);
+  const { error, status } = await update;
   if (error) {
     // Non-fatal: dedup/resume degrades to the prior behaviour (the
     // wizard polls by the recordId returned to the caller, and a reload
     // mid-scan falls back to the manual button). Don't fail the analyze.
-    console.warn('[attachPendingScanToSession] failed to attach FK:', error.message);
+    //
+    // TAGGED, not concatenated. This was the third untagged emitter that
+    // pasted remote text into a template — the same class as the two D5 named
+    // in sheet-export.ts, in a file the D5 note did not cover. Routed through
+    // the shared emitter so a newline in the refusal cannot fragment it and so
+    // the fault kind, status and SQLSTATE are all present.
+    logSupabaseFailure(
+      SUPABASE_WRITE_FAILURE_TAG,
+      {
+        route: 'attachPendingScanToSession',
+        table: 'onboarding_sessions',
+        eventType: 'attach_pending_scan_fk',
+        sessionId,
+        clientId: null,
+        succeeded:
+          'the analysis record exists and the scan still runs; only the dedup FK was not set, so a reload or a second Analyze click may start a duplicate scan',
+      },
+      normaliseAuditFault(status, error, 'the FK attach was refused with no error body'),
+    );
   }
 }
 
@@ -238,20 +274,30 @@ function mergeProviderResults(results: ProviderResult[]): {
 // Create a site intelligence record
 // =============================================
 
-export async function createSiteIntelligenceRecord(websiteUrl: string): Promise<string> {
+export async function createSiteIntelligenceRecord(
+  websiteUrl: string,
+  /**
+   * Threaded from the analyze route's `withDeadline`. Optional so the admin
+   * route is unchanged. Without it the route's bound stopped us WAITING but
+   * left the INSERT in flight against a stub that never answers — the
+   * documented abandonment cost, paid here rather than merely named.
+   */
+  opts?: { signal?: AbortSignal },
+): Promise<string> {
   const supabase = createServiceRoleClient();
   const url = normalizeUrl(websiteUrl);
   const domain = extractDomain(url);
 
-  const { data, error } = await supabase
+  let insert = supabase
     .from('onboarding_site_intelligence')
     .insert({
       website_url: url,
       domain,
       status: 'queued',
     })
-    .select('id')
-    .single();
+    .select('id');
+  if (opts?.signal) insert = insert.abortSignal(opts.signal);
+  const { data, error } = await insert.single();
 
   if (error || !data) {
     throw new Error(`Failed to create site intelligence record: ${error?.message}`);
@@ -506,12 +552,43 @@ export async function runSiteAnalysis(
 
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Unknown analysis error';
-    console.error('Site analysis failed:', errorMessage);
+
+    // D4 — THE MOST COMMON BACKGROUND-SCAN FAILURE WAS THE UNTAGGED ONE.
+    //
+    // This catch is where a scan failure actually lands. Every provider
+    // failing, an unusable-content discard, an Anthropic error, a Firecrawl
+    // timeout: all of them are thrown above and caught HERE, the record is
+    // marked failed, and nothing is rethrown. So the analyze route's own
+    // `[bounded-stage][FAILURE]` line — which only fires when `runSiteAnalysis`
+    // REJECTS — never fired for the ordinary case, and the only trace was
+    // `console.error('Site analysis failed:', errorMessage)`: untagged, two
+    // arguments (so a log table splits it), no session, no record id, no fault
+    // kind, and CONCATENATING a message that may have come from a remote.
+    //
+    // Routed through the same emitter as everything else. `target` names the
+    // record rather than a URL, which is the field's documented second meaning
+    // (a bounded stage's name); `normaliseThrownFault` gives the same fault
+    // vocabulary, so a Firecrawl abort here reads 'timeout' exactly as a
+    // stalled Supabase read does.
+    logUpstreamFailure(
+      BOUNDED_STAGE_FAILURE_TAG,
+      {
+        route: `runSiteAnalysis(record ${recordId})`,
+        target: `site_analysis (onboarding_site_intelligence ${recordId})`,
+        eventType: 'site_analysis_failed',
+        sessionId: opts?.sessionId ?? '',
+        clientId: null,
+        succeeded:
+          'nothing from this scan: no branding, insights, tech stack or prefill was written. The record is marked failed below, so the wizard shows its retry affordance rather than polling forever',
+      },
+      normaliseThrownFault(err),
+    );
 
     // SURVIVING SILENT WRITE (3 of 3). The failure-marking write is itself
     // silent, so a refused update leaves the record stuck at 'running' and the
-    // wizard polling a scan that has already failed. The console.error above
-    // is the only trace, and it does not say the STATUS never landed.
+    // wizard polling a scan that has already failed. The tagged line above is
+    // now the trace, and it is explicit that the retry affordance depends on
+    // THIS write landing — which this write still does not report.
     // NOT CHANGED IN THIS PR (not an audit write, outside the seven sites).
     // Primitives available for the fix: see the note in runSiteAnalysis above.
     await supabase

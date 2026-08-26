@@ -103,8 +103,37 @@
  * ORIGINAL `fs.writeSync` captured before this file patched anything, so it
  * sits underneath both the stream patch and the fd patch.
  *
- * SEVEN THINGS THE MATRIX ALONE CANNOT SEE (11c, 11d, 11e, 11n, 11o, 11p, 11q)
+ * TEN THINGS THE MATRIX ALONE CANNOT SEE
+ * (11c, 11d, 11e, 11n, 11n-ii, 11n-iii, 11o, 11p, 11q, 11r)
  * ---------------------------------------------------------------------------
+ *   11n-ii THE DEGRADED PATH'S OWN CATCH HANDLER, and the harness gap that
+ *       hid it. 11n drives all three emitters with `fault.status = BigInt(1)`,
+ *       which breaks only the FULL-record path — every field READ on the
+ *       degraded path still succeeds. So `safeField`'s CATCH was never entered
+ *       by any assertion, and it was itself unguarded: it built
+ *       `<unreadable: ${err instanceof Error ? err.name : 'throw'}>`, which
+ *       walks a hostile prototype chain AND reads a hostile property, throws a
+ *       second time, and leaves the shared floor emitting ZERO LINES. Each
+ *       emitter is now driven with a field whose GETTER THROWS a Proxy that is
+ *       hostile to both, and must still emit exactly one tagged line.
+ *   11n-iii A `message` THAT IS NOT A STRING. `boundFaultMessage` called
+ *       `.slice` on the strength of a TypeScript annotation over a value that
+ *       is JSON.parse'd out of a REMOTE RESPONSE BODY. Because the normaliser
+ *       is evaluated in ARGUMENT POSITION —
+ *       `logSupabaseFailure(tag, ctx, normaliseAuditFault(...))` — the
+ *       TypeError escaped one frame BELOW the logger, so nothing was emitted
+ *       at all and the floors above could not help. Four normalisers x five
+ *       message shapes (array, object, number, null, undefined), plus the
+ *       same defect in `code`, which is declared `string | null` and used to
+ *       receive whatever the remote sent.
+ *   11r THE OTHER THREE ROUTES' UNBOUNDED UPSTREAM AWAITS. 11h proved the
+ *       bound for the ANALYZE route only, so the claim "bounds every await
+ *       upstream of a failure-reporting write" was false for save-step,
+ *       session and submit — which carry five of the seven sites, four of them
+ *       in `after()` callbacks that a stall above the registration point stops
+ *       being registered at all. Both dispositions are driven: fail-closed on
+ *       the session lookups, and a DEGRADE case that asserts the after() task
+ *       is still registered and both of its writes still land.
  *   11n THE REPORTING LAYER'S OWN SILENT FAILURE. Of the three emitters,
  *       `logSupabaseFailure` — the one six of the seven reporting sites go
  *       through — had a bare `catch {}` where the other two had a degraded
@@ -489,6 +518,26 @@
  *   the session route's after() split into two    12 failed (sites 2 and 7)
  *   the submit route's two after() calls swapped   9 failed (sites 5 and 6)
  *
+ * And the five reverted in the final revision, each measured the same way
+ * (single env pass, 488 base assertions):
+ *   safeField's catch handler restored             6 failed — and the evidence
+ *                                                  is `tagged=0 total=0 []`,
+ *                                                  i.e. the floor emitted
+ *                                                  NOTHING, which is the bug
+ *   boundFaultMessage's `message: string`          15 failed — `TypeError:
+ *                                                  text.slice is not a
+ *                                                  function`, again with
+ *                                                  `tagged=0 total=0`
+ *   `error.code || null` uncoerced                  3 failed (pg_code carried a
+ *                                                  JSON array/object/number)
+ *   runSiteAnalysis's catch untagged again          1 failed (11k's D4 case)
+ *   the sheet-export outer catch concatenating      3 failed (11g's three
+ *                                                  Google stalls)
+ *   save-step's session_lookup unbounded            the harness's own 300s
+ *                                                  BAIL fired: the handler
+ *                                                  froze and never returned,
+ *                                                  which is the defect itself
+ *
  * See also the ACCEPTED LIMITATIONS L1-L3 below, which are separate and
  * were already known.
  *
@@ -563,6 +612,29 @@
  *   the invocation for that long behind an already-delivered 200. Every stage
  *   still REPORTS, which is what this branch is about; the budget is a
  *   separate concern and it is not addressed here.
+ *
+ * AUD-10 — THE BOUNDING CLAIM IS NARROWED, NOT UNIVERSAL.
+ *   The source used to claim this change "bounds every await upstream of a
+ *   failure-reporting write". It did not, and the claim in server.ts is now
+ *   the narrower one that is true: every await on the REQUEST or after() path
+ *   of the seven reporting sites, OTHER than the platform-owned request-body
+ *   read, has a deadline. Three things are deliberately outside it and are
+ *   NOT measured here:
+ *     - `await request.json()`. The body read is bounded by the platform, not
+ *       by this app, and bounding it would mean writing against a stream
+ *       rather than a promise.
+ *     - The three discarded-result WRITES inside `runSiteAnalysis`. Their
+ *       WAITING is bounded by SITE_ANALYSIS_DEADLINE_MS; they take no signal,
+ *       so the losing promise is abandoned, and their own error handling is
+ *       unchanged and still silent. (`createSiteIntelligenceRecord` and
+ *       `attachPendingScanToSession` WERE in this list and are not any more:
+ *       both now take the analyze route's signal, so both are cancelled, and
+ *       the second one's `console.warn` is now a tagged line.)
+ *     - Every OTHER caller of the bounded primitives — the admin routes,
+ *       `admin-actions`, `gbp/actions`, `mark-welcome-seen`,
+ *       `submit-feedback`. They are unbounded exactly as before, on purpose:
+ *       they are not on a path to one of the seven sites, and each would need
+ *       its own ruled disposition.
  *
  * AUD-6 — THE ADMIN TWIN IS THE SAME CLASS AND IS NOT ONE OF THE SEVEN.
  *   src/app/api/admin/site-intelligence/analyze/route.ts still holds
@@ -4717,12 +4789,31 @@ async function run(): Promise<void> {
         `[${label}] and the Google stall STILL REACHES the sheet_export_failed audit write downstream of it: bounding is worth nothing if the failure-reporting write is still never issued`,
         `auditRows=${JSON.stringify(auditEventTypes(r.auditRows))} window=${label}`,
       );
-      const failedLine = allLines(r.captured).find((l) => l.includes('[sheet-export] failed'));
+      // D5. This used to look for `[sheet-export] failed session=…: …`, an
+      // UNTAGGED line that CONCATENATED the rethrown Google message. It is now
+      // the shared emitter's line, so the assertion tests the same fact — the
+      // label travels out of googleRequest into the outer report — against the
+      // structured record instead of a substring of a raw string.
+      const stageVerdict = verifyUpstreamLine(
+        failureLines(r.captured, BOUNDED_STAGE_FAILURE_TAG),
+        {
+          tag: BOUNDED_STAGE_FAILURE_TAG,
+          target: 'sheet_export (google sheets roster)',
+          eventType: 'sheet_export_failed',
+          sessionId: SESSION_ID,
+          clientId: CLIENT_ID,
+          fault: 'timeout',
+          status: 0,
+          code: null,
+        },
+      );
+      const stageLine = failureLines(r.captured, BOUNDED_STAGE_FAILURE_TAG)[0];
       assert(
-        typeof failedLine === 'string' &&
-          failedLine.includes(c.target.replace('google:', 'google ')),
-        `[${label}] and the existing [sheet-export] failed line names the stalled call too, so the label travels into the audit payload rather than stopping at the tagged line`,
-        `line=${JSON.stringify(failedLine ?? null)}`,
+        stageVerdict.ok &&
+          typeof stageLine?.parsed?.message === 'string' &&
+          (stageLine.parsed.message as string).includes(c.target.replace('google:', 'google ')),
+        `[${label}] and the OUTER report is a tagged ${BOUNDED_STAGE_FAILURE_TAG} record naming the stalled call: it used to be an untagged [sheet-export] failed line that CONCATENATED the remote's text, with no fault kind, no status and no statement of what survived`,
+        `${stageVerdict.reason} :: message=${JSON.stringify(stageLine?.parsed?.message ?? null)}`,
       );
     }
 
@@ -5034,6 +5125,15 @@ async function run(): Promise<void> {
       code: string | null;
       /** A second tag this case must ALSO produce, or null. */
       alsoTag: string | null;
+      /**
+       * D4. `runSiteAnalysis` CATCHES its own failure, marks the record failed
+       * and does NOT rethrow — so the ordinary scan failure never reached the
+       * stage line above and reported only through an untagged
+       * `console.error('Site analysis failed:', …)`. It now emits its own
+       * BOUNDED_STAGE line with this event_type. Set where the analysis
+       * actually reaches that catch; null where it throws before the try.
+       */
+      alsoStageEvent: string | null;
     }
 
     const afterStageCases: AfterStageCase[] = [
@@ -5050,6 +5150,9 @@ async function run(): Promise<void> {
         fault: 'unknown',
         code: null,
         alsoTag: READ_FAILURE_TAG,
+        // `if (!record) throw` sits OUTSIDE runSiteAnalysis's try, so this
+        // case rejects before the D4 catch is reachable.
+        alsoStageEvent: null,
       },
       {
         key: 'getSiteIntelligence status read',
@@ -5063,6 +5166,11 @@ async function run(): Promise<void> {
         fault: 'timeout',
         code: 'DEADLINE_EXCEEDED',
         alsoTag: null,
+        // Here the record read IS served, the analysis runs, no providers are
+        // configured in the harness, and the resulting throw lands in
+        // runSiteAnalysis's own catch — i.e. the most common background-scan
+        // failure there is, and the one that used to report untagged.
+        alsoStageEvent: 'site_analysis_failed',
       },
     ];
 
@@ -5097,10 +5205,16 @@ async function run(): Promise<void> {
       stub.stallReadTables = [];
       stub.stallReadSkip = {};
 
-      const lines = failureLines(outcome.captured, BOUNDED_STAGE_FAILURE_TAG);
+      // TWO event types now share this tag on this path, so the stage line is
+      // selected by event_type rather than by "the only one". Counting alone
+      // would make D4's new line look like a duplicate of the stage's.
+      const stageLines = failureLines(outcome.captured, BOUNDED_STAGE_FAILURE_TAG);
+      const lines = stageLines.filter(
+        (l) => l.parsed?.event_type === 'site_intelligence_background_analysis',
+      );
       out(
         `    ${pad(c.key, 40)} reads=${stub.readsSeen[c.stallTable] ?? 0} ` +
-          `elapsed=${elapsedMs}ms lines=${lines.length}`,
+          `elapsed=${elapsedMs}ms lines=${lines.length} stageTagged=${stageLines.length}`,
       );
       rows.push({
         site: `12 analyze after ${c.key}`,
@@ -5149,6 +5263,31 @@ async function run(): Promise<void> {
           `lines=${JSON.stringify(also.map((l) => l.raw))}`,
         );
       }
+      // D4 — the failure runSiteAnalysis SWALLOWS.
+      const d4Lines = stageLines.filter((l) => l.parsed?.event_type === 'site_analysis_failed');
+      const d4 = d4Lines[0]?.parsed ?? null;
+      assert(
+        c.alsoStageEvent === null
+          ? d4Lines.length === 0
+          : d4Lines.length === 1 &&
+              d4 !== null &&
+              d4.session_id === SESSION_ID &&
+              typeof d4.target === 'string' &&
+              (d4.target as string).startsWith('site_analysis (') &&
+              typeof d4.message === 'string' &&
+              (d4.message as string).length > 0 &&
+              typeof d4.succeeded === 'string' &&
+              (d4.succeeded as string).length > 0 &&
+              d4Lines[0]!.raw.indexOf('\n') === -1,
+        `[${label}] and runSiteAnalysis's OWN catch — the one that marks the record failed and does NOT rethrow, i.e. where the most common scan failure actually lands — ${
+          c.alsoStageEvent === null
+            ? 'is correctly NOT reached here, because this case throws before the try'
+            : 'now emits its own tagged single-line record instead of the untagged two-argument console.error that used to be its only trace'
+        }`,
+        `d4Lines=${JSON.stringify(d4Lines.map((l) => l.raw))} expected=${
+          c.alsoStageEvent === null ? 'none' : 'exactly 1'
+        }`,
+      );
     }
 
     // -----------------------------------------------------------------------
@@ -5515,6 +5654,332 @@ async function run(): Promise<void> {
     }
 
     // -----------------------------------------------------------------------
+    // 11n-ii. D1 — THE DEGRADED PATH'S OWN CATCH HANDLER.
+    // -----------------------------------------------------------------------
+    //
+    // THE HARNESS GAP THIS CLOSES, stated first, because it is the finding.
+    // 11n above drives all three emitters with `fault.status = BigInt(1)`.
+    // That breaks the FULL-record path only: every field READ on the degraded
+    // path still succeeds, so `safeField`'s CATCH HANDLER was never entered by
+    // any of the 424 assertions. Nothing anywhere drove the floor with a field
+    // whose READ throws.
+    //
+    // And the catch handler was itself unguarded. It built
+    // `<unreadable: ${err instanceof Error ? err.name : 'throw'}>`:
+    //
+    //   - `err instanceof Error` walks the PROTOTYPE CHAIN, so a Proxy with a
+    //     throwing `getPrototypeOf` trap throws a SECOND time, from inside the
+    //     handler whose only job is to absorb the first;
+    //   - `err.name` is a property read on that same value, and `${…}` coerces
+    //     it, so a throwing `get` trap gets there by two more routes.
+    //
+    // The second throw escapes `safeField`, escapes `parts.map(...)`, and
+    // lands in `emitDegradedLine`'s outer `catch {}` — which is empty, because
+    // a total function has to end somewhere. So the shared floor under ALL
+    // THREE emitters produced ZERO LINES.
+    //
+    // The injection is therefore a field whose getter throws a value that is
+    // hostile in BOTH ways at once. Contract, per emitter: exactly one tagged
+    // record, on ONE physical line, parseable, marked degraded, still naming
+    // the session, with the unreadable field rendered as an encoded sentinel
+    // rather than dropped.
+    out('\n--- degraded path: a field whose READ throws a hostile value, per emitter ---');
+
+    /** Throws a value that is hostile to `instanceof` AND to every property read. */
+    const throwHostile = (): never => {
+      throw new Proxy(new TypeError('hostile field getter'), {
+        getPrototypeOf() {
+          throw new TypeError('hostile getPrototypeOf trap');
+        },
+        get() {
+          throw new TypeError('hostile get trap');
+        },
+      });
+    };
+
+    /** Give `target[key]` a getter that throws that value. */
+    const withThrowingGetter = <T extends object>(target: T, key: string): T => {
+      Object.defineProperty(target, key, { enumerable: true, get: throwHostile });
+      return target;
+    };
+
+    interface FloorCase {
+      key: string;
+      tag: string;
+      /** The field whose getter throws, which is also the one the floor prints. */
+      field: string;
+      emit: () => void;
+    }
+
+    const floorCases: FloorCase[] = [
+      {
+        key: 'logAuditWriteFailure',
+        tag: WRITE_FAILURE_TAG,
+        field: 'table',
+        emit: () => {
+          const err = withThrowingGetter(
+            {
+              fault: {
+                kind: 'postgrest',
+                status: 403,
+                code: '42501',
+                message: 'refused',
+              },
+              context: {
+                route: 'direct probe',
+                eventType: 'hostile_read_probe',
+                sessionId: SESSION_ID,
+                clientId: CLIENT_ID,
+                succeeded: 'nothing',
+              },
+            },
+            'table',
+          );
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          serverMod.logAuditWriteFailure(err as any);
+        },
+      },
+      {
+        key: 'logSupabaseFailure',
+        tag: READ_FAILURE_TAG,
+        field: 'table',
+        emit: () => {
+          const ctx = withThrowingGetter(
+            {
+              route: 'direct probe',
+              eventType: 'hostile_read_probe',
+              sessionId: SESSION_ID,
+              clientId: CLIENT_ID,
+              succeeded: 'nothing',
+            },
+            'table',
+          );
+          serverMod.logSupabaseFailure(
+            READ_FAILURE_TAG,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ctx as any,
+            { kind: 'postgrest', status: 403, code: '42501', message: 'refused' },
+          );
+        },
+      },
+      {
+        key: 'logUpstreamFailure',
+        tag: UPSTREAM_HTTP_FAILURE_TAG,
+        field: 'target',
+        emit: () => {
+          const ctx = withThrowingGetter(
+            {
+              route: 'direct probe',
+              eventType: 'hostile_read_probe',
+              sessionId: SESSION_ID,
+              clientId: CLIENT_ID,
+              succeeded: 'nothing',
+            },
+            'target',
+          );
+          serverMod.logUpstreamFailure(
+            UPSTREAM_HTTP_FAILURE_TAG,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ctx as any,
+            { kind: 'transport', status: 0, code: null, message: 'refused' },
+          );
+        },
+      },
+    ];
+
+    for (const c of floorCases) {
+      const outcome = await withCapture(async () => {
+        c.emit();
+        return {};
+      });
+      const tagged = failureLines(outcome.captured, c.tag);
+      const every = allLines(outcome.captured);
+      const parsed = tagged[0]?.parsed ?? null;
+      out(
+        `    ${pad(c.key, 24)} threw=${outcome.threw} taggedLines=${tagged.length} ` +
+          `totalLines=${every.length} ${c.field}=${JSON.stringify(parsed?.[c.field] ?? null)}`,
+      );
+      assert(
+        outcome.threw === false && tagged.length === 1 && every.length === 1,
+        `[hostile field read | ${c.key}] a record whose "${c.field}" GETTER THROWS a hostile value still produces EXACTLY ONE tagged physical line: safeField's catch handler used to run instanceof and a property read on that value, throw a second time, and leave the shared floor emitting nothing at all`,
+        `threw=${outcome.threw} :: ${String(outcome.error)} tagged=${tagged.length} total=${every.length} :: ${JSON.stringify(every)}`,
+      );
+      assert(
+        parsed !== null &&
+          parsed.session_id === SESSION_ID &&
+          typeof parsed.degraded === 'string' &&
+          (parsed.degraded as string).length > 0 &&
+          typeof parsed[c.field] === 'string' &&
+          (parsed[c.field] as string).startsWith('<unreadable') &&
+          tagged[0]!.raw.indexOf('\n') === -1,
+        `[hostile field read | ${c.key}] and the floor is still PARSEABLE JSON on one physical line, naming the session, SAYING it is degraded, and rendering the unreadable field as an encoded sentinel rather than dropping it — so an operator can tell "this field could not be read" from "this field was not there"`,
+        `parsed=${JSON.stringify(parsed)} raw=${JSON.stringify(tagged[0]?.raw ?? null)}`,
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // 11n-iii. D2/D6 — A `message` THAT IS NOT A STRING.
+    // -----------------------------------------------------------------------
+    //
+    // THE OTHER HALF OF THE SAME HARNESS GAP. Nothing in the matrix ever drove
+    // a normaliser with a non-string `message`, because the stub always
+    // answers with a well-formed PostgREST body. `boundFaultMessage` called
+    // `.slice` on the parameter, on the strength of a TypeScript annotation
+    // over a value that is JSON.parse'd out of a REMOTE RESPONSE BODY — so
+    // `{"message":["a","b"]}` threw `TypeError: message.slice is not a
+    // function` out of every normaliser that routes through it.
+    //
+    // AND THE THROW HAPPENS IN ARGUMENT POSITION. Six of the seven reporting
+    // sites are written as
+    //
+    //     logSupabaseFailure(tag, ctx, normaliseAuditFault(status, error))
+    //
+    // and a JavaScript argument is evaluated BEFORE the call it is passed to.
+    // So the TypeError escaped one frame BELOW the logger, before its `try`
+    // was ever entered: no full record, no degraded line, NOTHING. The emitter
+    // floors proven in 11n and 11n-ii cannot help, because nothing reaches
+    // them. That is why these cases drive the normaliser INSIDE the argument
+    // list rather than normalising first and emitting second — the shape of
+    // the real call site is the bug.
+    //
+    // D6 is the same root seen from the other end: a value that is not a
+    // string but IS JSON-serialisable used to pass STRAIGHT THROUGH into a
+    // field the emitter declares as `string`, so the emitted record's type was
+    // a lie. Every case therefore also asserts the declared types.
+    out('\n--- non-string message: every normaliser must stay total, and stay type-true ---');
+
+    interface MessageShape {
+      key: string;
+      value: unknown;
+    }
+    const messageShapes: MessageShape[] = [
+      { key: 'array', value: ['a', 'b'] },
+      { key: 'object', value: { detail: 'refused', nested: { code: 42 } } },
+      { key: 'number', value: 42 },
+      { key: 'null', value: null },
+      { key: 'undefined', value: undefined },
+    ];
+
+    interface NormaliserCase {
+      key: string;
+      /** Build a fault from a `message` of the given shape. */
+      build: (message: unknown) => unknown;
+    }
+    const normaliserCases: NormaliserCase[] = [
+      {
+        key: 'normaliseAuditFault',
+        build: (message) =>
+          serverMod.normaliseAuditFault(
+            403,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            { message, code: '42501', details: null, hint: null } as any,
+            'the write was refused with no error body',
+          ),
+      },
+      {
+        key: 'normaliseReadFault',
+        build: (message) =>
+          serverMod.normaliseReadFault(
+            500,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            { message, code: '42501', details: null, hint: null } as any,
+            'the count query answered with a null count',
+            'the count query was refused with no error body',
+          ),
+      },
+      {
+        key: 'normaliseHttpResponseFault',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        build: (message) => serverMod.normaliseHttpResponseFault(502, message as any),
+      },
+      {
+        key: 'normaliseThrownFault',
+        build: (message) => serverMod.normaliseThrownFault({ name: 'Error', message }),
+      },
+    ];
+
+    interface NormalisedShape {
+      kind?: unknown;
+      status?: unknown;
+      code?: unknown;
+      message?: unknown;
+    }
+
+    for (const n of normaliserCases) {
+      for (const s of messageShapes) {
+        const label = `${n.key} | message=${s.key}`;
+        // A HOLDER, not a `let`: the assignment happens inside a closure, and
+        // TypeScript narrows a closure-assigned `let` to its initialiser at
+        // the use site. The holder keeps the declared type honest without
+        // moving the call out of argument position, which is the shape under
+        // test.
+        const holder: { fault: NormalisedShape | null } = { fault: null };
+        const outcome = await withCapture(async () => {
+          // THE REAL CALL SHAPE: the normaliser is evaluated as an ARGUMENT.
+          // If it throws, nothing is emitted — which is exactly what happened.
+          serverMod.logSupabaseFailure(
+            READ_FAILURE_TAG,
+            {
+              route: 'direct probe',
+              table: 'onboarding_audit_events',
+              eventType: 'non_string_message_probe',
+              sessionId: SESSION_ID,
+              clientId: CLIENT_ID,
+              succeeded: 'nothing: this probe writes no application data',
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (holder.fault = n.build(s.value) as NormalisedShape) as any,
+          );
+          return {};
+        });
+        const fault = holder.fault;
+        const tagged = failureLines(outcome.captured, READ_FAILURE_TAG);
+        const every = allLines(outcome.captured);
+        out(
+          `    ${pad(label, 46)} threw=${outcome.threw} lines=${tagged.length}/${every.length} ` +
+            `message=${JSON.stringify(fault?.message ?? null).slice(0, 60)}`,
+        );
+        assert(
+          outcome.threw === false && tagged.length === 1 && every.length === 1,
+          `[non-string message | ${label}] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely`,
+          `threw=${outcome.threw} :: ${String(outcome.error)} tagged=${tagged.length} total=${every.length} :: ${JSON.stringify(every)}`,
+        );
+        const line = tagged[0]?.parsed ?? null;
+        assert(
+          fault !== null &&
+            typeof fault.message === 'string' &&
+            (fault.message as string).length > 0 &&
+            (fault.code === null || typeof fault.code === 'string') &&
+            (fault.status === null || typeof fault.status === 'number') &&
+            line !== null &&
+            typeof line.message === 'string' &&
+            (line.pg_code === null || typeof line.pg_code === 'string') &&
+            (line.status === null || typeof line.status === 'number') &&
+            tagged[0]!.raw.indexOf('\n') === -1,
+          `[non-string message | ${label}] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on`,
+          `fault=${JSON.stringify(fault)} line=${JSON.stringify(line)}`,
+        );
+      }
+    }
+
+    // A non-string CODE, which is the same D6 defect in the field an operator
+    // greps by SQLSTATE. `error.code || null` copied whatever was there.
+    out('\n--- non-string code: pg_code must be a SQLSTATE-shaped string or null, never a structure ---');
+    for (const s of messageShapes.filter((m) => m.value !== null && m.value !== undefined)) {
+      const fault = serverMod.normaliseAuditFault(
+        403,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { message: 'refused', code: s.value, details: null, hint: null } as any,
+      ) as NormalisedShape;
+      out(`    ${pad(`code=${s.key}`, 46)} code=${JSON.stringify(fault.code)}`);
+      assert(
+        typeof fault.code === 'string' && (fault.code as string).length > 0,
+        `[non-string code | ${s.key}] a non-string \`code\` is COERCED to a bounded string rather than copied into a field declared string|null: an array in pg_code is emitted as a JSON array, which breaks the one field an operator filters on`,
+        `code=${JSON.stringify(fault.code)} fault=${JSON.stringify(fault)}`,
+      );
+    }
+
+    // -----------------------------------------------------------------------
     // 11o. AUD-4 — THE TOTALITY CLAIM, AGAINST A HOSTILE PROTOTYPE CHAIN.
     // -----------------------------------------------------------------------
     //
@@ -5767,6 +6232,301 @@ async function run(): Promise<void> {
       `[am-bypass | reusable scan stall] the SAME stall on a NON-bypass request still fails closed with 503 and the precondition code: the scoping narrows who the rule applies to, it does not weaken the rule`,
       `status=${scanBypassResults.plain.status} code=${JSON.stringify(scanBypassResults.plain.code)} lines=${JSON.stringify(scanBypassResults.plain.lines.map((l) => l.raw.slice(0, 200)))}`,
     );
+
+    // -----------------------------------------------------------------------
+    // 11r. D3 — THE OTHER THREE ROUTES' UNBOUNDED UPSTREAM AWAITS.
+    // -----------------------------------------------------------------------
+    //
+    // 11h proved this for the ANALYZE route and stopped there, and the claim
+    // written into the source — "bounds every await upstream of a
+    // failure-reporting write" — was therefore FALSE for save-step, session
+    // and submit, which between them carry five of the seven reporting sites.
+    //
+    // And the consequence there is worse than a slow request. On the session
+    // and submit routes the reporting sites live in `after()` callbacks, and
+    // `after()` REGISTRATION happens near the bottom of the handler — so a
+    // stall ANYWHERE above it means the callbacks are never registered, the
+    // audit and open-history writes are never attempted, and there is nothing
+    // for the emitters proven in 11n / 11n-ii to emit. Bounding the write
+    // while the read above it can hang forever buys nothing.
+    //
+    // TWO DISPOSITIONS ARE UNDER TEST, because the fix is not uniform:
+    //   - FAIL CLOSED where the stalled stage decides whether the request may
+    //     proceed at all (each route's session lookup);
+    //   - DEGRADE where it only enriches the payload — and the degrade case
+    //     asserts the thing that matters, that the after() task is still
+    //     REGISTERED and its writes still land.
+    out('\n--- D3: the reads upstream of save-step, session and submit ---');
+
+    interface PublicUpstreamCase {
+      key: string;
+      stallTable: string;
+      drive: () => Promise<Invocation>;
+      wantStatus: number;
+      wantCode: string;
+      target: string;
+      eventType: string;
+      /** '' where the stall happens before the session id is known. */
+      sessionId: string;
+      clientId: string | null;
+      /**
+       * Where the stalled helper ALSO reports the read in its own vocabulary,
+       * the event_type of that second line. Two lines for one event is
+       * deliberate and is the pairing 11k already pins: the STAGE line says a
+       * stage ran out of time, the READ line says WHICH await it was. The
+       * alternative is not one line, it is one tagged line plus an untagged
+       * `Error fetching answers:` stray from inside the helper.
+       */
+      alsoReadEvent: string | null;
+    }
+
+    const publicUpstreamCases: PublicUpstreamCase[] = [
+      {
+        key: 'save-step | session lookup',
+        stallTable: 'onboarding_sessions',
+        drive: driveSaveStep,
+        wantStatus: 503,
+        wantCode: 'save_step_unavailable',
+        target: 'session_lookup (onboarding_sessions)',
+        eventType: 'save_step_upstream_call',
+        sessionId: '',
+        clientId: null,
+        alsoReadEvent: null,
+      },
+      {
+        key: 'submit | session lookup',
+        stallTable: 'onboarding_sessions',
+        drive: driveSubmit,
+        wantStatus: 503,
+        wantCode: 'submit_unavailable',
+        target: 'session_lookup (onboarding_sessions)',
+        eventType: 'submit_upstream_call',
+        sessionId: '',
+        clientId: null,
+        alsoReadEvent: null,
+      },
+      {
+        key: 'session | session lookup',
+        stallTable: 'onboarding_sessions',
+        drive: async () => {
+          capturedAfterTasks = [];
+          const res: Response = await inRequestScope(() => routeSession.GET(sessionRequest()));
+          return { status: res.status, body: await readBody(res) };
+        },
+        wantStatus: 503,
+        wantCode: 'session_lookup_failed',
+        target: 'session_lookup (onboarding_sessions)',
+        eventType: 'session_load_upstream_call',
+        sessionId: '',
+        clientId: null,
+        alsoReadEvent: null,
+      },
+      // THE ANSWERS READ, on both routes that do one, because it is the stage
+      // whose DEGRADE would have been a lie. `getSessionAnswers` returns `[]`
+      // for a failed read exactly as it does for an empty session, so a
+      // degraded answer here means submit tells a client they have not
+      // completed steps they HAVE completed, and the session route serves the
+      // wizard with every field blank over answers that are perfectly fine.
+      // Both therefore fail CLOSED, which is only possible because
+      // `withDeadline` settles its race before it aborts.
+      {
+        key: 'submit | answers read',
+        stallTable: 'onboarding_answers',
+        drive: driveSubmit,
+        wantStatus: 503,
+        wantCode: 'submit_unavailable',
+        target: 'answers_read (onboarding_answers)',
+        eventType: 'submit_upstream_call',
+        sessionId: SESSION_ID,
+        clientId: CLIENT_ID,
+        alsoReadEvent: 'submit_answers_read',
+      },
+      {
+        key: 'session | answers read',
+        stallTable: 'onboarding_answers',
+        drive: async () => {
+          capturedAfterTasks = [];
+          const res: Response = await inRequestScope(() => routeSession.GET(sessionRequest()));
+          return { status: res.status, body: await readBody(res) };
+        },
+        wantStatus: 503,
+        wantCode: 'session_answers_unavailable',
+        target: 'answers_read (onboarding_answers)',
+        eventType: 'session_load_upstream_call',
+        sessionId: SESSION_ID,
+        clientId: CLIENT_ID,
+        alsoReadEvent: 'session_answers_read',
+      },
+    ];
+
+    for (const c of publicUpstreamCases) {
+      const label = `public upstream | ${c.key}`;
+      stub.readsSeen[c.stallTable] = 0;
+      stub.stallReadTables = [c.stallTable];
+      stub.stallReadSkip = {};
+      const opened = await openWriteWindow(label);
+      const startedAt = Date.now();
+      const outcome = await withCapture(() => c.drive());
+      const elapsedMs = Date.now() - startedAt;
+      closeWriteWindow();
+      stub.stallReadTables = [];
+
+      const lines = failureLines(outcome.captured, BOUNDED_STAGE_FAILURE_TAG);
+      const status = outcome.result?.status;
+      const code = (outcome.result?.body as { code?: string } | undefined)?.code;
+      const posts = stub.writes.filter((w) => w.window === label).length;
+      const afterTasks = capturedAfterTasks.filter(Boolean).length;
+      out(
+        `    ${pad(c.key, 40)} crossedWire=${stub.readsSeen[c.stallTable] ?? 0} ` +
+          `elapsed=${elapsedMs}ms status=${status} code=${code} lines=${lines.length} ` +
+          `afterTasks=${afterTasks} posts=${posts}`,
+      );
+      rows.push({
+        site: `13 public upstream ${c.key}`,
+        mode: 'stall',
+        threw: outcome.threw,
+        loggedLines: allLines(outcome.captured),
+        responseStatus: status,
+        reachedWrite: false,
+        writeCount: posts,
+        rowPersisted: 'n/a',
+      });
+
+      assert(
+        opened.empty && (stub.readsSeen[c.stallTable] ?? 0) >= 1,
+        `[${label}] the stalled read really CROSSED THE WIRE: the stub accepted it, read it in full, and never answered — so this measures a real non-terminating await and not a missing fixture`,
+        `windowEmpty=${opened.empty} (${opened.leftovers}) reads=${stub.readsSeen[c.stallTable] ?? 0}`,
+      );
+      assert(
+        outcome.threw === false && elapsedMs < TERMINATION_BUDGET_MS && status === c.wantStatus,
+        `[${label}] the handler TERMINATES and FAILS CLOSED with ${c.wantStatus}: unbounded, this await never settled, so the handler froze, the response never shipped and — on the two after() routes — the reporting callbacks were never even registered`,
+        `threw=${outcome.threw} :: ${String(outcome.error)} elapsed=${elapsedMs}ms status=${status}`,
+      );
+      assert(
+        code === c.wantCode && status !== 404,
+        `[${label}] and it answers with its OWN retryable machine code, never the 404 that "session not found" would give: getSessionByToken swallows every error and returns null, so a stall would read as "no such session" if withDeadline did not settle its race BEFORE aborting`,
+        `code=${JSON.stringify(code)} status=${status} body=${JSON.stringify(outcome.result?.body ?? null)}`,
+      );
+      const verdict = verifyUpstreamLine(lines, {
+        tag: BOUNDED_STAGE_FAILURE_TAG,
+        target: c.target,
+        eventType: c.eventType,
+        sessionId: c.sessionId,
+        clientId: c.clientId,
+        fault: 'timeout',
+        status: 0,
+        code: 'DEADLINE_EXCEEDED',
+      });
+      assert(
+        verdict.ok,
+        `[${label}] and it is LOUD: exactly one ${BOUNDED_STAGE_FAILURE_TAG} line naming the stage "${c.target}", fault=timeout code=DEADLINE_EXCEEDED, on one physical line — a route that gives up silently is the defect this branch exists to remove`,
+        verdict.reason,
+      );
+      assert(
+        posts === 0,
+        `[${label}] and NOTHING was written: the failure happened upstream of every write, which is what the line's succeeded field claims`,
+        `posts=${posts} windows=${JSON.stringify(stub.writes.filter((w) => w.window === label).map((w) => w.table))}`,
+      );
+      const readLines = failureLines(outcome.captured, READ_FAILURE_TAG);
+      const readLine = readLines[0]?.parsed ?? null;
+      assert(
+        c.alsoReadEvent === null
+          ? readLines.length === 0
+          : readLines.length === 1 &&
+              readLine !== null &&
+              readLine.event_type === c.alsoReadEvent &&
+              readLine.session_id === SESSION_ID &&
+              readLine.fault === 'timeout' &&
+              typeof readLine.succeeded === 'string' &&
+              (readLine.succeeded as string).length > 0 &&
+              readLines[0]!.raw.indexOf('\n') === -1,
+        `[${label}] and the helper itself ${
+          c.alsoReadEvent === null
+            ? 'says nothing extra: only the stage that ran out of time reports, because no helper-level read was involved'
+            : `reports the READ in the same vocabulary (${READ_FAILURE_TAG}), so an operator learns WHICH await stalled and not only that the stage did. Without this the abort still reached getSessionAnswers' own error branch and printed an UNTAGGED "Error fetching answers:" line beside the tagged one`
+        }`,
+        `readLines=${JSON.stringify(readLines.map((l) => l.raw.slice(0, 240)))} expected=${
+          c.alsoReadEvent ?? 'none'
+        }`,
+      );
+    }
+
+    // --- the DEGRADE half: a stall that must NOT cost the reporting sites ---
+    //
+    // The session route's client lookup only supplies a NAME for the gated
+    // screen. Answering 503 for it would throw away a page-load that can be
+    // served AND skip the after() registration — so the very stall that caused
+    // it would go unreported by the two sites that exist to report. This case
+    // is the proof that the degrade disposition keeps the callback alive: the
+    // task is registered, RUN, and its two writes land.
+    {
+      const label = 'public upstream | session | client lookup degrades';
+      stub.readsSeen['clients'] = 0;
+      stub.stallReadTables = ['clients'];
+      stub.stallReadSkip = {};
+      const opened = await openWriteWindow(label);
+      const startedAt = Date.now();
+      const outcome = await withCapture(async () => {
+        capturedAfterTasks = [];
+        const res: Response = await inRequestScope(() => routeSession.GET(sessionRequest()));
+        const invocation: Invocation = { status: res.status, body: await readBody(res) };
+        const tasks = capturedAfterTasks.filter(Boolean);
+        const task = tasks[0] ?? makeMissingTaskDriver('session tracking writes');
+        await task();
+        return invocation;
+      });
+      const elapsedMs = Date.now() - startedAt;
+      closeWriteWindow();
+      stub.stallReadTables = [];
+
+      const lines = failureLines(outcome.captured, BOUNDED_STAGE_FAILURE_TAG);
+      const status = outcome.result?.status;
+      const windowWrites = stub.writes.filter((w) => w.window === label).map((w) => w.table);
+      const afterTasks = capturedAfterTasks.filter(Boolean).length;
+      out(
+        `    ${pad('session | client lookup degrades', 40)} crossedWire=${stub.readsSeen['clients'] ?? 0} ` +
+          `elapsed=${elapsedMs}ms status=${status} lines=${lines.length} ` +
+          `afterTasks=${afterTasks} writes=${JSON.stringify(windowWrites)}`,
+      );
+      rows.push({
+        site: '13 public upstream session client-lookup degrade',
+        mode: 'stall',
+        threw: outcome.threw,
+        loggedLines: allLines(outcome.captured),
+        responseStatus: status,
+        reachedWrite: windowWrites.length > 0,
+        writeCount: windowWrites.length,
+        rowPersisted: 'n/a',
+      });
+
+      const verdict = verifyUpstreamLine(lines, {
+        tag: BOUNDED_STAGE_FAILURE_TAG,
+        target: 'client_lookup (clients)',
+        eventType: 'session_load_upstream_call',
+        sessionId: SESSION_ID,
+        clientId: CLIENT_ID,
+        fault: 'timeout',
+        status: 0,
+        code: 'DEADLINE_EXCEEDED',
+      });
+      assert(
+        opened.empty &&
+          (stub.readsSeen['clients'] ?? 0) >= 1 &&
+          outcome.threw === false &&
+          elapsedMs < TERMINATION_BUDGET_MS &&
+          status === 200 &&
+          verdict.ok,
+        `[${label}] a stall on a stage that only ENRICHES the payload is bounded, REPORTED and then degraded to a 200: refusing the page over a missing company name would cost the client their form and cost us the report`,
+        `windowEmpty=${opened.empty} reads=${stub.readsSeen['clients'] ?? 0} threw=${outcome.threw} :: ${String(outcome.error)} elapsed=${elapsedMs}ms status=${status} :: ${verdict.reason}`,
+      );
+      assert(
+        afterTasks === 1 &&
+          windowWrites.includes('onboarding_audit_events') &&
+          windowWrites.includes('onboarding_open_events'),
+        `[${label}] and BOTH reporting sites survive it: the after() task is still REGISTERED and both tracking writes still reach the wire. Unbounded, this stall froze the handler ABOVE the after(...) call, so session_accessed and the open-history row were never attempted and nothing said so`,
+        `afterTasks=${afterTasks} writes=${JSON.stringify(windowWrites)}`,
+      );
+    }
 
     // -----------------------------------------------------------------------
     // 12. Hermeticity — both transports.
@@ -6381,17 +7141,17 @@ const BASE_LABELS: readonly string[] = Object.freeze([
   "[google | token mint stall] exportSubmissionToSheet TERMINATES: unbounded this await never settled at all, because gaxios arms a signal only under if (opts.timeout) and node:http.ClientRequest has no default timeout — not even undici's 300s floor",
   "[google | token mint stall] and it is LOUD, naming WHICH of the four Google calls stalled: exactly one [upstream-http][REQUEST-FAILURE] line with target \"google:oauth2 token mint\", fault=timeout — the raw rejection says only \"The operation was aborted.\"",
   "[google | token mint stall] and the Google stall STILL REACHES the sheet_export_failed audit write downstream of it: bounding is worth nothing if the failure-reporting write is still never issued",
-  "[google | token mint stall] and the existing [sheet-export] failed line names the stalled call too, so the label travels into the audit payload rather than stopping at the tagged line",
+  "[google | token mint stall] and the OUTER report is a tagged [bounded-stage][FAILURE] record naming the stalled call: it used to be an untagged [sheet-export] failed line that CONCATENATED the remote's text, with no fault kind, no status and no statement of what survived",
   "[google | values read stall] the stalled Google call really CROSSED THE WIRE (valuesGet A1:O1 — the exact call measured as never settling): the stub accepted it, read it in full, and never answered",
   "[google | values read stall] exportSubmissionToSheet TERMINATES: unbounded this await never settled at all, because gaxios arms a signal only under if (opts.timeout) and node:http.ClientRequest has no default timeout — not even undici's 300s floor",
   "[google | values read stall] and it is LOUD, naming WHICH of the four Google calls stalled: exactly one [upstream-http][REQUEST-FAILURE] line with target \"google:values.get A1:O1\", fault=timeout — the raw rejection says only \"The operation was aborted.\"",
   "[google | values read stall] and the Google stall STILL REACHES the sheet_export_failed audit write downstream of it: bounding is worth nothing if the failure-reporting write is still never issued",
-  "[google | values read stall] and the existing [sheet-export] failed line names the stalled call too, so the label travels into the audit payload rather than stopping at the tagged line",
+  "[google | values read stall] and the OUTER report is a tagged [bounded-stage][FAILURE] record naming the stalled call: it used to be an untagged [sheet-export] failed line that CONCATENATED the remote's text, with no fault kind, no status and no statement of what survived",
   "[google | values write stall] the stalled Google call really CROSSED THE WIRE (valuesAppend — the roster row itself): the stub accepted it, read it in full, and never answered",
   "[google | values write stall] exportSubmissionToSheet TERMINATES: unbounded this await never settled at all, because gaxios arms a signal only under if (opts.timeout) and node:http.ClientRequest has no default timeout — not even undici's 300s floor",
   "[google | values write stall] and it is LOUD, naming WHICH of the four Google calls stalled: exactly one [upstream-http][REQUEST-FAILURE] line with target \"google:values.append A1:O\", fault=timeout — the raw rejection says only \"The operation was aborted.\"",
   "[google | values write stall] and the Google stall STILL REACHES the sheet_export_failed audit write downstream of it: bounding is worth nothing if the failure-reporting write is still never issued",
-  "[google | values write stall] and the existing [sheet-export] failed line names the stalled call too, so the label travels into the audit payload rather than stopping at the tagged line",
+  "[google | values write stall] and the OUTER report is a tagged [bounded-stage][FAILURE] record naming the stalled call: it used to be an untagged [sheet-export] failed line that CONCATENATED the remote's text, with no fault kind, no status and no statement of what survived",
   "[google | guard intact] with the rewrite DISARMED the very same export is blocked at the hermeticity guard: the stub is reachable because requests are REWRITTEN to loopback, not because the guard was opened",
   "[analyze upstream | session lookup] the stalled read really CROSSED THE WIRE: the stub accepted it, read it in full, and never answered",
   "[analyze upstream | session lookup] the handler FAILS CLOSED with the same 503 as any other fault instead of freezing: unbounded it never answered at all, and the 503 downstream of it was unreachable",
@@ -6414,10 +7174,12 @@ const BASE_LABELS: readonly string[] = Object.freeze([
   "[analyze after | runSiteAnalysis record read] the after() callback TERMINATES: unbounded it hung past the response with only a console.error for company, holding the invocation open until the platform killed it",
   "[analyze after | runSiteAnalysis record read] and the path that had NO failure-reporting write at all now emits one line in the same shape as every other tag, naming the stage that failed",
   "[analyze after | runSiteAnalysis record read] and the READ inside runSiteAnalysis reports itself too, so an operator learns WHICH await stalled rather than only that the stage did",
+  "[analyze after | runSiteAnalysis record read] and runSiteAnalysis's OWN catch — the one that marks the record failed and does NOT rethrow, i.e. where the most common scan failure actually lands — is correctly NOT reached here, because this case throws before the try",
   "[analyze after | getSiteIntelligence status read] the analyze route registered exactly 1 after() task and returned a record id — the route-to-after() wiring IS the driver, so deleting the after(...) must fail this",
   "[analyze after | getSiteIntelligence status read] the stalled read really CROSSED THE WIRE past the 1 read(s) served normally, so this case faults the call it names and not an earlier one on the same table",
   "[analyze after | getSiteIntelligence status read] the after() callback TERMINATES: unbounded it hung past the response with only a console.error for company, holding the invocation open until the platform killed it",
   "[analyze after | getSiteIntelligence status read] and the path that had NO failure-reporting write at all now emits one line in the same shape as every other tag, naming the stage that failed",
+  "[analyze after | getSiteIntelligence status read] and runSiteAnalysis's OWN catch — the one that marks the record failed and does NOT rethrow, i.e. where the most common scan failure actually lands — now emits its own tagged single-line record instead of the untagged two-argument console.error that used to be its only trace",
   "[bridge | hostile body] the dashboard's non-2xx goes through the SAME emitter as everything else: ONE physical line, tag then JSON, with the multi-line remote body ESCAPED rather than concatenated — the old line fragmented here and stranded the tag",
   "[bridge | hostile body] and nothing is lost by routing it: the whole remote body still reaches the operator inside the record, and the hand-built concatenating line is GONE rather than duplicated alongside it",
   "[hostile opts | recordAuditEvent] a NULL options object no longer produces a raw TypeError from the spec builder: the call stays total and still emits one line, whose route and succeeded say plainly that the call site supplied neither",
@@ -6432,6 +7194,55 @@ const BASE_LABELS: readonly string[] = Object.freeze([
   "[unserialisable record | logSupabaseFailure] and the floor is still PARSEABLE JSON naming the table and the session, and SAYS it is degraded, so an operator reading it knows which fields were dropped rather than believing the record is complete",
   "[unserialisable record | logUpstreamFailure] a record JSON.stringify REFUSES still produces EXACTLY ONE tagged physical line: this emitter used to be the difference between a reporting layer and a reporting layer that gives up when the news is awkward",
   "[unserialisable record | logUpstreamFailure] and the floor is still PARSEABLE JSON naming the target and the session, and SAYS it is degraded, so an operator reading it knows which fields were dropped rather than believing the record is complete",
+  "[hostile field read | logAuditWriteFailure] a record whose \"table\" GETTER THROWS a hostile value still produces EXACTLY ONE tagged physical line: safeField's catch handler used to run instanceof and a property read on that value, throw a second time, and leave the shared floor emitting nothing at all",
+  "[hostile field read | logAuditWriteFailure] and the floor is still PARSEABLE JSON on one physical line, naming the session, SAYING it is degraded, and rendering the unreadable field as an encoded sentinel rather than dropping it — so an operator can tell \"this field could not be read\" from \"this field was not there\"",
+  "[hostile field read | logSupabaseFailure] a record whose \"table\" GETTER THROWS a hostile value still produces EXACTLY ONE tagged physical line: safeField's catch handler used to run instanceof and a property read on that value, throw a second time, and leave the shared floor emitting nothing at all",
+  "[hostile field read | logSupabaseFailure] and the floor is still PARSEABLE JSON on one physical line, naming the session, SAYING it is degraded, and rendering the unreadable field as an encoded sentinel rather than dropping it — so an operator can tell \"this field could not be read\" from \"this field was not there\"",
+  "[hostile field read | logUpstreamFailure] a record whose \"target\" GETTER THROWS a hostile value still produces EXACTLY ONE tagged physical line: safeField's catch handler used to run instanceof and a property read on that value, throw a second time, and leave the shared floor emitting nothing at all",
+  "[hostile field read | logUpstreamFailure] and the floor is still PARSEABLE JSON on one physical line, naming the session, SAYING it is degraded, and rendering the unreadable field as an encoded sentinel rather than dropping it — so an operator can tell \"this field could not be read\" from \"this field was not there\"",
+  "[non-string message | normaliseAuditFault | message=array] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseAuditFault | message=array] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseAuditFault | message=object] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseAuditFault | message=object] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseAuditFault | message=number] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseAuditFault | message=number] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseAuditFault | message=null] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseAuditFault | message=null] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseAuditFault | message=undefined] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseAuditFault | message=undefined] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseReadFault | message=array] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseReadFault | message=array] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseReadFault | message=object] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseReadFault | message=object] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseReadFault | message=number] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseReadFault | message=number] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseReadFault | message=null] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseReadFault | message=null] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseReadFault | message=undefined] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseReadFault | message=undefined] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseHttpResponseFault | message=array] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseHttpResponseFault | message=array] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseHttpResponseFault | message=object] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseHttpResponseFault | message=object] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseHttpResponseFault | message=number] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseHttpResponseFault | message=number] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseHttpResponseFault | message=null] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseHttpResponseFault | message=null] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseHttpResponseFault | message=undefined] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseHttpResponseFault | message=undefined] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseThrownFault | message=array] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseThrownFault | message=array] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseThrownFault | message=object] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseThrownFault | message=object] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseThrownFault | message=number] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseThrownFault | message=number] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseThrownFault | message=null] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseThrownFault | message=null] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string message | normaliseThrownFault | message=undefined] the normaliser is TOTAL and the site still emits EXACTLY ONE tagged line: boundFaultMessage assumed a string and called .slice, and because the normaliser runs in ARGUMENT POSITION the TypeError escaped below the logger — so a remote sending a non-string message silenced the report entirely",
+  "[non-string message | normaliseThrownFault | message=undefined] and the DECLARED TYPES are true of the value: AuditFault says message is a string and code is string|null, and a JSON-serialisable non-string used to pass straight through into both, so the emitted record's type was a lie an operator's parser would trip on",
+  "[non-string code | array] a non-string `code` is COERCED to a bounded string rather than copied into a field declared string|null: an array in pg_code is emitted as a JSON array, which breaks the one field an operator filters on",
+  "[non-string code | object] a non-string `code` is COERCED to a bounded string rather than copied into a field declared string|null: an array in pg_code is emitted as a JSON array, which breaks the one field an operator filters on",
+  "[non-string code | number] a non-string `code` is COERCED to a bounded string rather than copied into a field declared string|null: an array in pg_code is emitted as a JSON array, which breaks the one field an operator filters on",
   "[hostile proxy | hostile getPrototypeOf over a TypeError] normaliseThrownFault RETURNS a fault instead of throwing: an unguarded instanceof made the reporter itself the second failure, on the exact path a report is being built",
   "[hostile proxy | hostile getPrototypeOf over a TypeError] and the classification is still the RIGHT one, so guarding the instanceof cost no accuracy: a real deadline behind a hostile proxy is still recognised, by name, and still carries DEADLINE_EXCEEDED",
   "[hostile proxy | hostile getPrototypeOf + hostile get] normaliseThrownFault RETURNS a fault instead of throwing: an unguarded instanceof made the reporter itself the second failure, on the exact path a report is being built",
@@ -6445,6 +7256,38 @@ const BASE_LABELS: readonly string[] = Object.freeze([
   "[am-bypass | reusable scan stall] a BYPASS request is NOT 503'd when the dedup lookup stalls: the ruling is that a bypass caller is never refused over gating that does not apply to them, and a dedup lookup only ever SAVES a scan, so losing it costs one duplicate on a click an AM made deliberately",
   "[am-bypass | reusable scan stall] and it is still LOUD for the bypass caller: not being refused is not the same as not being reported, and an AM's analyze click is frequently the earliest evidence a session ever gets that Supabase is sick",
   "[am-bypass | reusable scan stall] the SAME stall on a NON-bypass request still fails closed with 503 and the precondition code: the scoping narrows who the rule applies to, it does not weaken the rule",
+  "[public upstream | save-step | session lookup] the stalled read really CROSSED THE WIRE: the stub accepted it, read it in full, and never answered — so this measures a real non-terminating await and not a missing fixture",
+  "[public upstream | save-step | session lookup] the handler TERMINATES and FAILS CLOSED with 503: unbounded, this await never settled, so the handler froze, the response never shipped and — on the two after() routes — the reporting callbacks were never even registered",
+  "[public upstream | save-step | session lookup] and it answers with its OWN retryable machine code, never the 404 that \"session not found\" would give: getSessionByToken swallows every error and returns null, so a stall would read as \"no such session\" if withDeadline did not settle its race BEFORE aborting",
+  "[public upstream | save-step | session lookup] and it is LOUD: exactly one [bounded-stage][FAILURE] line naming the stage \"session_lookup (onboarding_sessions)\", fault=timeout code=DEADLINE_EXCEEDED, on one physical line — a route that gives up silently is the defect this branch exists to remove",
+  "[public upstream | save-step | session lookup] and NOTHING was written: the failure happened upstream of every write, which is what the line's succeeded field claims",
+  "[public upstream | save-step | session lookup] and the helper itself says nothing extra: only the stage that ran out of time reports, because no helper-level read was involved",
+  "[public upstream | submit | session lookup] the stalled read really CROSSED THE WIRE: the stub accepted it, read it in full, and never answered — so this measures a real non-terminating await and not a missing fixture",
+  "[public upstream | submit | session lookup] the handler TERMINATES and FAILS CLOSED with 503: unbounded, this await never settled, so the handler froze, the response never shipped and — on the two after() routes — the reporting callbacks were never even registered",
+  "[public upstream | submit | session lookup] and it answers with its OWN retryable machine code, never the 404 that \"session not found\" would give: getSessionByToken swallows every error and returns null, so a stall would read as \"no such session\" if withDeadline did not settle its race BEFORE aborting",
+  "[public upstream | submit | session lookup] and it is LOUD: exactly one [bounded-stage][FAILURE] line naming the stage \"session_lookup (onboarding_sessions)\", fault=timeout code=DEADLINE_EXCEEDED, on one physical line — a route that gives up silently is the defect this branch exists to remove",
+  "[public upstream | submit | session lookup] and NOTHING was written: the failure happened upstream of every write, which is what the line's succeeded field claims",
+  "[public upstream | submit | session lookup] and the helper itself says nothing extra: only the stage that ran out of time reports, because no helper-level read was involved",
+  "[public upstream | session | session lookup] the stalled read really CROSSED THE WIRE: the stub accepted it, read it in full, and never answered — so this measures a real non-terminating await and not a missing fixture",
+  "[public upstream | session | session lookup] the handler TERMINATES and FAILS CLOSED with 503: unbounded, this await never settled, so the handler froze, the response never shipped and — on the two after() routes — the reporting callbacks were never even registered",
+  "[public upstream | session | session lookup] and it answers with its OWN retryable machine code, never the 404 that \"session not found\" would give: getSessionByToken swallows every error and returns null, so a stall would read as \"no such session\" if withDeadline did not settle its race BEFORE aborting",
+  "[public upstream | session | session lookup] and it is LOUD: exactly one [bounded-stage][FAILURE] line naming the stage \"session_lookup (onboarding_sessions)\", fault=timeout code=DEADLINE_EXCEEDED, on one physical line — a route that gives up silently is the defect this branch exists to remove",
+  "[public upstream | session | session lookup] and NOTHING was written: the failure happened upstream of every write, which is what the line's succeeded field claims",
+  "[public upstream | session | session lookup] and the helper itself says nothing extra: only the stage that ran out of time reports, because no helper-level read was involved",
+  "[public upstream | submit | answers read] the stalled read really CROSSED THE WIRE: the stub accepted it, read it in full, and never answered — so this measures a real non-terminating await and not a missing fixture",
+  "[public upstream | submit | answers read] the handler TERMINATES and FAILS CLOSED with 503: unbounded, this await never settled, so the handler froze, the response never shipped and — on the two after() routes — the reporting callbacks were never even registered",
+  "[public upstream | submit | answers read] and it answers with its OWN retryable machine code, never the 404 that \"session not found\" would give: getSessionByToken swallows every error and returns null, so a stall would read as \"no such session\" if withDeadline did not settle its race BEFORE aborting",
+  "[public upstream | submit | answers read] and it is LOUD: exactly one [bounded-stage][FAILURE] line naming the stage \"answers_read (onboarding_answers)\", fault=timeout code=DEADLINE_EXCEEDED, on one physical line — a route that gives up silently is the defect this branch exists to remove",
+  "[public upstream | submit | answers read] and NOTHING was written: the failure happened upstream of every write, which is what the line's succeeded field claims",
+  "[public upstream | submit | answers read] and the helper itself reports the READ in the same vocabulary ([supabase-read][READ-FAILURE]), so an operator learns WHICH await stalled and not only that the stage did. Without this the abort still reached getSessionAnswers' own error branch and printed an UNTAGGED \"Error fetching answers:\" line beside the tagged one",
+  "[public upstream | session | answers read] the stalled read really CROSSED THE WIRE: the stub accepted it, read it in full, and never answered — so this measures a real non-terminating await and not a missing fixture",
+  "[public upstream | session | answers read] the handler TERMINATES and FAILS CLOSED with 503: unbounded, this await never settled, so the handler froze, the response never shipped and — on the two after() routes — the reporting callbacks were never even registered",
+  "[public upstream | session | answers read] and it answers with its OWN retryable machine code, never the 404 that \"session not found\" would give: getSessionByToken swallows every error and returns null, so a stall would read as \"no such session\" if withDeadline did not settle its race BEFORE aborting",
+  "[public upstream | session | answers read] and it is LOUD: exactly one [bounded-stage][FAILURE] line naming the stage \"answers_read (onboarding_answers)\", fault=timeout code=DEADLINE_EXCEEDED, on one physical line — a route that gives up silently is the defect this branch exists to remove",
+  "[public upstream | session | answers read] and NOTHING was written: the failure happened upstream of every write, which is what the line's succeeded field claims",
+  "[public upstream | session | answers read] and the helper itself reports the READ in the same vocabulary ([supabase-read][READ-FAILURE]), so an operator learns WHICH await stalled and not only that the stage did. Without this the abort still reached getSessionAnswers' own error branch and printed an UNTAGGED \"Error fetching answers:\" line beside the tagged one",
+  "[public upstream | session | client lookup degrades] a stall on a stage that only ENRICHES the payload is bounded, REPORTED and then degraded to a 200: refusing the page over a missing company name would cost the client their form and cost us the report",
+  "[public upstream | session | client lookup degrades] and BOTH reporting sites survive it: the after() task is still REGISTERED and both tracking writes still reach the wire. Unbounded, this stall froze the handler ABOVE the after(...) call, so session_accessed and the open-history row were never attempted and nothing said so",
   "[hermeticity] no dependency attempted a non-loopback fetch()",
   "[hermeticity] no dependency attempted a non-loopback http(s).request (the gaxios/node-fetch path the fetch guard cannot see)",
   "[hermeticity] no dependency attempted a non-loopback net/tls/http2/dgram connection, including via net.Socket.prototype.connect (the raw socket floor under both guards above, and the one a destructured module reference cannot skip)",

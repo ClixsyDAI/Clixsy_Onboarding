@@ -43,6 +43,7 @@ import {
   SUPABASE_WRITE_FAILURE_TAG,
   SUPABASE_READ_TIMEOUT_MS_AFTER,
   UPSTREAM_HTTP_FAILURE_TAG,
+  BOUNDED_STAGE_FAILURE_TAG,
   type OnboardingSession,
 } from '@/lib/supabase/server';
 import { onboardingStepsV2 } from './steps-v2';
@@ -223,12 +224,13 @@ async function googleRequest<T>(
       fault,
     );
     // The rethrown message is the NORMALISED one, not the raw rejection.
-    // It flows into `[sheet-export] failed ...: ${message}` and into the
+    // It flows into the outer catch's tagged line and into the
     // sheet_export_failed audit payload, both of which are downstream of this
     // frame — so a Google error body arrives there already length-bounded
-    // rather than pasted in whole. (The pre-existing console.error line still
-    // CONCATENATES it; that line is outside this change's scope and is
-    // recorded as such rather than quietly rewritten.)
+    // rather than pasted in whole. (D5: the `[sheet-export] failed` line that
+    // used to CONCATENATE it — named here and left alone in the previous
+    // revision — now goes through `logUpstreamFailure` like everything else,
+    // so the text is escaped as well as bounded. See the outer catch.)
     throw new Error(`google ${label}: ${fault.message}`, { cause: err });
   }
 }
@@ -544,10 +546,29 @@ export async function exportSubmissionToSheet(
           );
         }
       } catch (seedErr) {
-        console.error(
-          `[sheet-export] pm_tracker_pushes seed threw session=${session.id}: ${
-            seedErr instanceof Error ? seedErr.message : String(seedErr)
-          }`,
+        // D5 (1 of 2). This was one of the two untagged emitters left in the
+        // file whose OWN comment at `googleRequest` admits the hazard: it
+        // CONCATENATED `seedErr.message` — text that reaches here from
+        // postgrest-js, i.e. from a remote — straight into a template, so a
+        // newline in it split the record and stranded the prefix on the half
+        // without the news. Same emitter as everything else now: escaped,
+        // bounded, classified, and carrying what DID survive.
+        //
+        // `logSupabaseFailure`, not `logUpstreamFailure`, because the subject
+        // really is one table — which is the documented rule for choosing
+        // between the two shapes.
+        logSupabaseFailure(
+          SUPABASE_WRITE_FAILURE_TAG,
+          {
+            route: SHEET_EXPORT_ROUTE,
+            table: 'pm_tracker_pushes',
+            eventType: 'pending_seed',
+            sessionId: session.id,
+            clientId: session.client_id,
+            succeeded:
+              'the submission itself is committed and the roster row is still written below; only the approve-and-push pending record is missing, so re-run the export for this session',
+          },
+          normaliseThrownFault(seedErr),
         );
       }
     }
@@ -622,8 +643,37 @@ export async function exportSubmissionToSheet(
       );
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[sheet-export] failed session=${session.id}: ${message}`);
+    // D5 (2 of 2). THE LINE `googleRequest`'s COMMENT NAMED AND LEFT ALONE.
+    //
+    // It CONCATENATED `message` — which, on the common path, is the string
+    // `googleRequest` rethrows, i.e. a normalised Google error body — into a
+    // bare template. Bounded, yes, because googleRequest bounds what it
+    // rethrows; ESCAPED, no. A newline anywhere in it (an HTML error page from
+    // a proxy in front of sheets.googleapis.com is the realistic one) split
+    // the record and left `[sheet-export] failed session=…` on the half
+    // without the reason. And it carried no fault kind, no status and no
+    // `succeeded`, so an operator could not tell a credential problem from a
+    // stall from a 404 spreadsheet id.
+    //
+    // Routed through the shared emitter. `normaliseThrownFault` classifies it,
+    // the message is escaped and bounded, and the sentence says plainly that
+    // the submission itself is safe — which is the fact that stops someone
+    // chasing data loss that did not happen.
+    const fault = normaliseThrownFault(err);
+    const message = fault.message;
+    logUpstreamFailure(
+      BOUNDED_STAGE_FAILURE_TAG,
+      {
+        route: SHEET_EXPORT_ROUTE,
+        target: 'sheet_export (google sheets roster)',
+        eventType: 'sheet_export_failed',
+        sessionId: session.id,
+        clientId: session.client_id,
+        succeeded:
+          'the submission itself is committed and the dashboard bridge is unaffected; only the roster sheet row is missing, so re-run the export for this session',
+      },
+      fault,
+    );
     await recordAuditEvent(
       session.id,
       'sheet_export_failed',

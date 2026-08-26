@@ -66,6 +66,15 @@ export interface Client {
 }
 
 // Helper functions for common operations
+/**
+ * UNBOUNDED, DELIBERATELY, AND IT IS LIMITATION L4 — see the D3 section below.
+ * The session route awaits this on its REQUEST path, upstream of that route's
+ * two after()-resident reporting sites, so a Supabase that accepts the
+ * connection and never answers freezes the handler ABOVE the `after(...)`
+ * registration: neither the audit row nor the open-history row is ever
+ * attempted and nothing anywhere says so. Bounding it would put a timeout on
+ * a request path, which is a behaviour change ruled out for this change.
+ */
 export async function getClientById(clientId: string): Promise<Client | null> {
   const supabase = createServiceRoleClient();
 
@@ -173,6 +182,7 @@ export async function getSessionAnswers(
   return (data || []) as OnboardingAnswer[];
 }
 
+/** UNBOUNDED, DELIBERATELY: limitation L4, exactly as `getClientById`. */
 export async function upsertAnswer(
   sessionId: string,
   stepKey: string,
@@ -206,6 +216,7 @@ export async function upsertAnswer(
   return data as OnboardingAnswer;
 }
 
+/** UNBOUNDED, DELIBERATELY: limitation L4, exactly as `getClientById`. */
 export async function updateSessionStep(
   sessionId: string,
   currentStep: number,
@@ -370,12 +381,29 @@ export class AuditWriteError extends Error {
   }
 }
 
-/** The shape postgrest-js resolves into `.error`, both synthesised and real. */
+/**
+ * The shape postgrest-js resolves into `.error`, both synthesised and real.
+ *
+ * EVERY FIELD IS `unknown`, AND THAT IS THE HONEST TYPE. The object is
+ * JSON.parse'd straight out of a response body (PostgrestBuilder.ts:182), so
+ * its field types are chosen by whatever answered the request, not by
+ * postgrest-js and not by this app. Declaring `message?: string` here was a
+ * claim about a remote's JSON, and the normalisers below then acted on it:
+ * `message.slice(...)` on a body whose `message` was an ARRAY threw a
+ * TypeError out of the normaliser — and because `normaliseAuditFault(...)` is
+ * evaluated as an ARGUMENT to the logger, the throw happened BEFORE the logger
+ * was entered, so nothing was emitted at all.
+ *
+ * `unknown` forces every read through a coercion, which is what
+ * `boundFaultMessage` / `boundFaultCode` are. See D6 at `AuditFault`: the
+ * emitted record declares these fields `string`, so they must BE strings by
+ * the time the fault leaves a normaliser.
+ */
 interface PostgrestErrorLike {
-  message?: string;
-  code?: string;
-  details?: string | null;
-  hint?: string | null;
+  message?: unknown;
+  code?: unknown;
+  details?: unknown;
+  hint?: unknown;
 }
 
 /**
@@ -406,12 +434,125 @@ export const MAX_FAULT_MESSAGE_CHARS = 300;
  * Applied to EVERY fault message, not just gateway bodies, so no path can
  * reintroduce an unbounded line later.
  */
-function boundFaultMessage(message: string): string {
-  if (message.length <= MAX_FAULT_MESSAGE_CHARS) return message;
+/**
+ * D2/D6 — RENDER A NON-STRING AS A BOUNDED, HONEST STRING.
+ *
+ * The one rule: this may not throw, whatever it is handed. Everything that
+ * could throw is either avoided or caught.
+ *
+ *   - `typeof` never traps, and `value === null` never traps, so the type
+ *     split itself is safe on a Proxy.
+ *   - `JSON.stringify` is the representation for an object or an array,
+ *     because it is the same encoding the log line itself uses, so an
+ *     operator reads one syntax rather than two. It can throw (a cycle, a
+ *     BigInt, a hostile `toJSON` or getter) and that is CAUGHT.
+ *   - `String(value)` is used only for the primitives, and is still wrapped:
+ *     a Symbol makes it throw, and a Symbol is a value a JSON body cannot
+ *     contain but a hand-built call site can.
+ *
+ * The `<non-string ...>` wrapper is deliberate. A bare `["a","b"]` in the
+ * `message` field reads as a message that happens to look like JSON; the
+ * wrapper says the REMOTE sent a non-string, which is itself the news.
+ */
+function describeNonString(value: unknown): string {
+  if (value === null) return '<non-string message (null)>';
+  const type = typeof value;
+  if (type === 'undefined') return '<non-string message (undefined)>';
+  if (type === 'object' || type === 'function') {
+    try {
+      const encoded = JSON.stringify(value);
+      if (typeof encoded === 'string') return `<non-string message (${type}): ${encoded}>`;
+    } catch {
+      /* a cycle, a BigInt, a throwing toJSON or getter — all expected here */
+    }
+    return `<non-string message (${type}): unserialisable>`;
+  }
+  try {
+    return `<non-string message (${type}): ${String(value)}>`;
+  } catch {
+    return `<non-string message (${type}): unreadable>`;
+  }
+}
+
+/**
+ * TOTAL OVER ANY INPUT, and it was NOT — this is D2.
+ *
+ * The parameter used to be typed `string`, and the body called `.slice` on it.
+ * The type is a compile-time claim about a value that is JSON.parse'd out of a
+ * REMOTE RESPONSE BODY, so it was never enforced at runtime: a PostgREST-ish
+ * body of `{"message":["a","b"]}` made `message.slice` throw
+ * `TypeError: message.slice is not a function` out of EVERY normaliser that
+ * routes through here.
+ *
+ * The consequence was the worst one available in this file. `logSupabaseFailure(
+ * tag, ctx, normaliseAuditFault(status, error))` evaluates the normaliser as an
+ * ARGUMENT, so the throw happened one frame BELOW the logger, before its try
+ * was ever entered — no full record, no degraded line, no output at all. The
+ * emitter floors added for AUD-2 could not help, because nothing reached them.
+ *
+ * So the input is `unknown` and the coercion is explicit. A non-string is
+ * rendered by `describeNonString` and then bounded exactly like a string,
+ * which also makes the D6 claim true: `AuditFault.message` is declared
+ * `string`, and now it always is one.
+ */
+function boundFaultMessage(message: unknown): string {
+  const text = typeof message === 'string' ? message : describeNonString(message);
+  if (text.length <= MAX_FAULT_MESSAGE_CHARS) return text;
   return (
-    message.slice(0, MAX_FAULT_MESSAGE_CHARS) +
-    `... [truncated: ${message.length} chars total, ${MAX_FAULT_MESSAGE_CHARS} shown]`
+    text.slice(0, MAX_FAULT_MESSAGE_CHARS) +
+    `... [truncated: ${text.length} chars total, ${MAX_FAULT_MESSAGE_CHARS} shown]`
   );
+}
+
+/**
+ * The same coercion for `AuditFault.code`, which is declared `string | null`
+ * and was filled straight from `error.code` — so an array or an object landed
+ * in `pg_code` and the emitted record's type was a lie there too (D6).
+ *
+ * The falsy branch preserves the documented `error.code || null` rule EXACTLY,
+ * including the reason it is `||` and not `??`: a transport fault carries
+ * `code: ''` (PostgrestBuilder.ts:259), and keeping the empty string prints
+ * `pg_code:""`, which reads like a real SQLSTATE that happens to be blank.
+ */
+function boundFaultCode(code: unknown): string | null {
+  if (!code) return null;
+  if (typeof code === 'string') return boundFaultMessage(code);
+  return boundFaultMessage(describeNonString(code));
+}
+
+/**
+ * `status` is declared `number | null` on AuditFault and is emitted as JSON.
+ * `typeof status === 'number'` alone lets NaN and Infinity through, and
+ * JSON.stringify renders both as the literal `null` — so the field would read
+ * as "no status" while the fault object said otherwise. One predicate, used by
+ * every normaliser, so the emitted `status` is a real number or genuinely
+ * absent.
+ */
+function boundFaultStatus(status: unknown): number | null {
+  return typeof status === 'number' && Number.isFinite(status) ? status : null;
+}
+
+/**
+ * Read `.message` off a thrown value without trusting it. Used by the two
+ * catch blocks in `attemptAuditWrite`, which both did
+ * `err instanceof Error ? err.message : String(err)` — an `instanceof` walks
+ * the PROTOTYPE CHAIN, so a hostile `getPrototypeOf` trap threw a second error
+ * out of a frame whose whole job was to turn the first one into a fault.
+ */
+function safeErrorText(err: unknown): string {
+  try {
+    if (err !== null && typeof err === 'object') {
+      const message = (err as Record<string, unknown>).message;
+      if (typeof message === 'string') return message;
+    }
+  } catch {
+    /* a hostile getter is not news here */
+  }
+  try {
+    return String(err);
+  } catch {
+    return '<unreadable thrown value>';
+  }
 }
 
 /** Own-property presence, safe against a null-prototype or exotic `error`. */
@@ -463,9 +604,17 @@ export function normaliseAuditFault(
    */
   noBodyMessage = 'the write was refused with no error body',
 ): AuditFault {
-  const message = boundFaultMessage(error?.message || noBodyMessage);
-  const code = error?.code || null;
-  const httpStatus = typeof status === 'number' ? status : null;
+  // D2/D6. Every one of the three fields the remote chooses goes through a
+  // coercion rather than a type assertion: `message` was `.slice`d on the
+  // assumption it was a string, `code` was copied into a `string | null` field
+  // whatever it was, and `status` accepted NaN into a field JSON renders as
+  // null. The ternary is deliberate over `||`: `rawMessage` is `unknown`, and
+  // the falsy branch has to mean exactly what `error.message || noBodyMessage`
+  // meant — an empty or absent message falls back to the sentence.
+  const rawMessage: unknown = error?.message;
+  const message = boundFaultMessage(rawMessage ? rawMessage : noBodyMessage);
+  const code = boundFaultCode(error?.code);
+  const httpStatus = boundFaultStatus(status);
 
   if (httpStatus === 0) {
     // A timeout is the SAME resolved shape as any other transport fault; only
@@ -474,8 +623,26 @@ export function normaliseAuditFault(
     // AbortSignal.timeout abort RESOLVES here rather than rejecting, because
     // :225's catch swallows the rejection like any other fetch failure —
     // verified empirically against a stalling server on the installed 2.89.0.
+    //
+    // 'AbortError' AND 'aborted' AS WELL AS 'TimeoutError', so the two
+    // normalisers speak ONE vocabulary. `AbortSignal.timeout` synthesises
+    // 'TimeoutError: The operation was aborted due to timeout', which the
+    // original test caught. A caller-owned `AbortController` — which is what
+    // `withDeadline` hands to a signal-aware callee — synthesises
+    // 'AbortError: This operation was aborted' instead, and that classified as
+    // 'transport': an operator reading it was told the NETWORK failed when in
+    // fact OUR OWN deadline ended it, and sent to look at Supabase's health
+    // rather than at the bound. Measured on the submit route's answers read,
+    // where the stage line correctly said timeout/DEADLINE_EXCEEDED while the
+    // read line beside it said transport about the same event.
+    //
+    // The reasoning is the one `normaliseThrownFault` already states for the
+    // rejection side: nothing in this app aborts a request for any reason
+    // other than a deadline, so treating an abort as a timeout is not a guess.
     return {
-      kind: /^TimeoutError\b/.test(message) ? 'timeout' : 'transport',
+      kind: /^(TimeoutError|AbortError)\b/.test(message) || /\baborted\b/i.test(message)
+        ? 'timeout'
+        : 'transport',
       status: 0,
       code,
       message,
@@ -512,7 +679,7 @@ export function normaliseReadFault(
   if (error === null || error === undefined) {
     return {
       kind: 'null_result',
-      status: typeof status === 'number' ? status : null,
+      status: boundFaultStatus(status),
       code: null,
       message: boundFaultMessage(nullResultMessage),
     };
@@ -599,7 +766,10 @@ export function normaliseThrownFault(err: unknown): AuditFault {
     message = '<unreadable error>';
   }
   const rawCode = read('code');
-  const code = typeof rawCode === 'string' && rawCode !== '' ? rawCode : null;
+  // BOUNDED like the message, and for the same reason: `code` is read off a
+  // value a dependency built, so nothing stops it being a 4KB string. The
+  // `typeof` guard already made the declared `string | null` true here.
+  const code = typeof rawCode === 'string' && rawCode !== '' ? boundFaultMessage(rawCode) : null;
   const bounded = boundFaultMessage(message || 'the call rejected with no message');
 
   // NAME as well as `instanceof`, and that is not belt-and-braces. `isInstance`
@@ -653,12 +823,16 @@ export function normaliseThrownFault(err: unknown): AuditFault {
  * into a console.error, unescaped, so a newline in the remote's body split the
  * record and stranded the tag on the half without the news.
  */
-export function normaliseHttpResponseFault(status: number, body: string): AuditFault {
+export function normaliseHttpResponseFault(status: number, body: unknown): AuditFault {
+  // `body` is `unknown` for the same reason PostgrestErrorLike's fields are:
+  // it is text a remote chose. Today every caller hands over `await
+  // res.text()`, which is a string; the type says the coercion below does not
+  // depend on that staying true.
   return {
     kind: 'gateway',
-    status,
+    status: boundFaultStatus(status),
     code: null,
-    message: boundFaultMessage(body || 'the remote answered with no body'),
+    message: boundFaultMessage(body ? body : 'the remote answered with no body'),
   };
 }
 
@@ -763,12 +937,46 @@ function emitFailureLine(tag: string, fields: FailureLineFields): void {
  * fallback path. JSON.stringify escapes the newline, so the record stays one
  * physical line whatever the message contains.
  */
+/**
+ * THE RULE THIS FUNCTION NOW OBEYS, stated so it can be applied to the rest of
+ * the emitter path: THE LAST-RESORT PATH MAY NOT TOUCH UNTRUSTED DATA IN ANY
+ * WAY THAT CAN THROW.
+ *
+ * D1. The CATCH HANDLER was itself unguarded. It built
+ * `<unreadable: ${err instanceof Error ? err.name : 'throw'}>`, which does two
+ * forbidden things to a value that has just proven itself hostile:
+ *
+ *   1. `err instanceof Error` walks `err`'s PROTOTYPE CHAIN, so a Proxy with a
+ *      throwing `getPrototypeOf` trap throws again — from inside the handler
+ *      that exists to absorb a throw.
+ *   2. `err.name` is a property read on that same value, and `${...}` then
+ *      coerces it, so a throwing getter or a hostile `Symbol.toPrimitive`
+ *      reaches the same end by two more routes.
+ *
+ * The second throw escapes `safeField`, escapes `parts.map(...)` in
+ * `emitDegradedLine`, and lands in ITS outer `catch {}` — which is empty,
+ * because a total function has to end somewhere. So the shared floor under all
+ * three emitters produced ZERO LINES, on the exact path that exists for when
+ * everything else has already failed.
+ *
+ * The replacement is a CONSTANT. It says less about the failure than the old
+ * string tried to, and that is the trade: a fixed literal cannot throw, and a
+ * field that reads `<unreadable>` next to nine fields that printed is still a
+ * complete, parseable record. The old string's extra detail was `err.name`,
+ * which is worth nothing when the alternative is no line at all.
+ */
+const UNREADABLE_FIELD = '"<unreadable: the field getter threw>"';
+
 function safeField(read: () => unknown): string {
   let value: unknown;
   try {
     value = read();
-  } catch (err) {
-    value = `<unreadable: ${err instanceof Error ? err.name : 'throw'}>`;
+  } catch {
+    // NOT `catch (err)`. There is deliberately no binding, because there is
+    // nothing safe to do with it: no instanceof, no property read, no
+    // interpolation. The constant is already JSON-encoded, so it is returned
+    // directly rather than run back through JSON.stringify.
+    return UNREADABLE_FIELD;
   }
   try {
     const encoded = JSON.stringify(value ?? null);
@@ -803,12 +1011,14 @@ function safeField(read: () => unknown): string {
  */
 function emitDegradedLine(tag: string, parts: Array<[string, () => unknown]>): void {
   try {
-    let safeTag: string;
-    try {
-      safeTag = typeof tag === 'string' ? tag : String(tag);
-    } catch {
-      safeTag = '[degraded][FAILURE]';
-    }
+    // THE SAME RULE AS safeField's CATCH: the last-resort path does not touch
+    // untrusted data in a way that can throw. `String(tag)` on a hostile
+    // object CAN throw (a `Symbol.toPrimitive` / `toString` that throws), and
+    // the previous version relied on catching it. A non-string tag is now
+    // simply not coerced at all — it is replaced. Nothing is lost: every
+    // caller passes one of the six exported literals, so the fallback only
+    // appears when the tag was never a tag.
+    const safeTag: string = typeof tag === 'string' ? tag : '[degraded][FAILURE]';
     const body = parts.map(([key, read]) => `${JSON.stringify(key)}:${safeField(read)}`).join(',');
     console.error(`${safeTag} {${body},"degraded":"the full record could not be serialised"}`);
   } catch {
@@ -1113,6 +1323,66 @@ export const SUPABASE_READ_TIMEOUT_MS_AFTER = 5_000;
 // already have committed. Abandoning is not free and it is not pretended to
 // be; it is strictly better than an await that never settles, because a
 // process that has given up can say so and one that is frozen cannot.
+//
+// ===========================================================================
+// D3 — THE CLAIM, RESTATED AS SOMETHING THAT IS ACTUALLY TRUE
+// ===========================================================================
+//
+// A previous revision of this section claimed the change "bounds every await
+// upstream of a failure-reporting write". THAT WAS FALSE, and it was false in
+// the way that matters: it was true of the ANALYZE route and of the two
+// after() libraries, and it was not true of the other three public routes,
+// which between them carry FIVE of the seven reporting sites. Six primitives
+// were unbounded and non-terminating on those request paths —
+// `getSessionByToken`, `getSessionAnswers`, `upsertAnswer`,
+// `updateSessionStep`, `getClientById`, `getSiteIntelligenceSnapshots` — plus
+// `getSignedLogoUrl` and `resolveSessionAccess`.
+//
+// That is not merely a slow request. On the session and submit routes the
+// reporting sites live in `after()` callbacks, and `after()` REGISTRATION
+// happens near the bottom of the handler, so a stall ANYWHERE above it means
+// the callbacks are never registered, the audit writes are never attempted,
+// and there is nothing for any emitter to emit.
+//
+// WHAT IS NOW BOUNDED, precisely:
+//   - analyze route: session_lookup, session_access, reusable_scan_lookup,
+//     the limiter's count read, the audit write, and the after() stages
+//     (site_analysis, si_record_read, link_scan).
+//   - save-step route: session_lookup, session_access, answer_upsert,
+//     session_step_update.
+//   - session route: session_lookup, session_access, client_lookup,
+//     answers_read, logo_signed_url, site_intelligence_snapshots,
+//     linked_scan_lookup.
+//   - submit route: session_lookup, session_guard, answers_read,
+//     submit_row_heal, submit_status_update.
+//   - dashboard-bridge: its Supabase read (5s) and its HTTP POST (15s).
+//   - sheet-export: its four Supabase calls (5s) and its five Google calls
+//     (8s).
+//
+// WHAT IS STILL NOT BOUNDED, stated rather than implied:
+//   - `await request.json()` at the top of every route. The body read is
+//     bounded by the PLATFORM, not by this app, and a bound of our own would
+//     have to be written against a stream rather than a promise. Named so the
+//     claim above is not read as covering it.
+//   - The three discarded-result WRITES inside `runSiteAnalysis`. Their
+//     WAITING is bounded by the analyze route's SITE_ANALYSIS_DEADLINE_MS, so
+//     nothing freezes; they take no signal, so the losing promise is
+//     ABANDONED rather than cancelled, and their own error handling is
+//     unchanged and still silent. (`createSiteIntelligenceRecord` and
+//     `attachPendingScanToSession` were in this bullet in the previous
+//     revision and are not any more: both now take the route's signal, so
+//     both are genuinely cancelled.)
+//   - Every OTHER caller of the primitives above — the admin routes,
+//     `admin-actions`, `gbp/actions`, `mark-welcome-seen`, `submit-feedback`.
+//     They are unbounded exactly as before, deliberately: they are not on a
+//     path to one of the seven sites, and widening the change to them would
+//     mean re-ruling a disposition for each.
+//   - The ADMIN site-intelligence analyze route (AUD-6), which is the public
+//     route's twin and is untouched.
+//
+// So the claim, in the form that is true: EVERY AWAIT ON THE REQUEST OR
+// after() PATH OF THE SEVEN REPORTING SITES, OTHER THAN THE PLATFORM-OWNED
+// REQUEST-BODY READ, NOW HAS A DEADLINE.
 
 /** The code the fault line carries when OUR deadline, not the peer, ended it. */
 export const DEADLINE_FAULT_CODE = 'DEADLINE_EXCEEDED';
@@ -1197,6 +1467,28 @@ export function withDeadline<T>(
 export const UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED = AUDIT_READ_TIMEOUT_MS_FAIL_CLOSED;
 
 /**
+ * D3 — THE SAME DEADLINE FOR THE OTHER THREE PUBLIC REQUEST PATHS.
+ *
+ * The claim this branch made was "bounds every await upstream of a
+ * failure-reporting write", and it was FALSE. Bounding the analyze route left
+ * save-step, session and submit unbounded, and those three carry five of the
+ * seven reporting sites. On the session and submit routes the reporting sites
+ * live in `after()` callbacks, so the consequence is worse than a slow
+ * request: `after()` REGISTRATION happens near the end of the handler, so an
+ * unbounded await ANYWHERE above it means the callbacks are never registered,
+ * the audit and open-history writes are never attempted, and there is nothing
+ * for the emitters to emit.
+ *
+ * An ALIAS rather than a fourth number, for the same reason
+ * AUDIT_READ_TIMEOUT_MS_FAIL_CLOSED is one: these reads freeze the identical
+ * kind of handler, and a second constant would only be a place for the two to
+ * drift apart. 5s is far above a healthy Supabase read from a Vercel function
+ * in the same region and far below any gateway timeout, so it bites only on a
+ * stall.
+ */
+export const PUBLIC_REQUEST_READ_TIMEOUT_MS = UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED;
+
+/**
  * The TABLE-AGNOSTIC CORE. Returns the fault, or null when the row landed.
  * Never throws: both entry points below are built on it, and the total one may
  * not depend on an internal detail staying true.
@@ -1216,7 +1508,12 @@ async function attemptAuditWrite(
       kind: 'client_init',
       status: null,
       code: null,
-      message: boundFaultMessage(err instanceof Error ? err.message : String(err)),
+      // `safeErrorText`, not `err instanceof Error ? … : String(err)` — see D1
+      // at `safeField`. Both halves of that expression can throw on a hostile
+      // value, and a throw HERE escapes into `insertAuditRowOrThrow`, which
+      // would then reject with a raw TypeError instead of the AuditWriteError
+      // its one caller branches on.
+      message: boundFaultMessage(safeErrorText(err)),
     };
   }
 
@@ -1252,7 +1549,7 @@ async function attemptAuditWrite(
       kind: 'unknown',
       status: null,
       code: null,
-      message: boundFaultMessage(err instanceof Error ? err.message : String(err)),
+      message: boundFaultMessage(safeErrorText(err)),
     };
   }
 }
@@ -1299,11 +1596,15 @@ export async function recordAuditRow(spec: AuditWriteSpec): Promise<void> {
       // Every value ENCODED, never concatenated: `spec` reached us from a
       // caller, so neither its fields nor the error's message are ours to
       // trust with the line's structure.
+      //
+      // D1. `safeErrorText(err)` rather than the `err instanceof Error ? … :
+      // String(err)` that used to sit inside that second reader. `safeField`
+      // would now absorb its throw anyway, but the rule for the last-resort
+      // path is that it does not touch untrusted data in a way that CAN throw
+      // — not that something downstream catches it when it does.
       console.error(
         `${AUDIT_WRITE_FAILURE_TAG} {"table":${safeField(() => spec.table)},` +
-          `"fault":"unknown","message":${safeField(() =>
-            err instanceof Error ? err.message : String(err),
-          )}}`,
+          `"fault":"unknown","message":${safeField(() => safeErrorText(err))}}`,
       );
     } catch {
       /* a total function stays total even if the console itself is broken */
@@ -1472,7 +1773,15 @@ export async function recordOpenEvent(
 }
 
 // Get site intelligence snapshots from session
-export async function getSiteIntelligenceSnapshots(sessionId: string): Promise<{
+/**
+ * `opts.signal`: see getClientById. BOTH round trips take it — this helper is
+ * two queries, so bounding only the first would leave the second able to hang
+ * the caller on its own, exactly as `linkSiteIntelligenceToSession` documents.
+ */
+export async function getSiteIntelligenceSnapshots(
+  sessionId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<{
   prefill_map: Record<string, unknown> | null;
   question_overrides: Record<string, unknown> | null;
   branding: Record<string, unknown> | null;
@@ -1480,11 +1789,12 @@ export async function getSiteIntelligenceSnapshots(sessionId: string): Promise<{
 } | null> {
   const supabase = createServiceRoleClient();
 
-  const { data, error } = await supabase
+  let sessionQuery = supabase
     .from('onboarding_sessions')
     .select('si_prefill_snapshot, si_overrides_snapshot, si_branding_snapshot, si_insights_snapshot, site_intelligence_id')
-    .eq('id', sessionId)
-    .single();
+    .eq('id', sessionId);
+  if (opts?.signal) sessionQuery = sessionQuery.abortSignal(opts.signal);
+  const { data, error } = await sessionQuery.single();
 
   if (error || !data) return null;
 
@@ -1500,12 +1810,13 @@ export async function getSiteIntelligenceSnapshots(sessionId: string): Promise<{
 
   // If no snapshots but we have a linked record, try to fetch from the record
   if (data.site_intelligence_id) {
-    const { data: si } = await supabase
+    let siQuery = supabase
       .from('onboarding_site_intelligence')
       .select('prefill_map, question_overrides, branding, insights')
       .eq('id', data.site_intelligence_id)
-      .eq('status', 'completed')
-      .single();
+      .eq('status', 'completed');
+    if (opts?.signal) siQuery = siQuery.abortSignal(opts.signal);
+    const { data: si } = await siQuery.single();
 
     if (si) {
       return {
@@ -1521,10 +1832,20 @@ export async function getSiteIntelligenceSnapshots(sessionId: string): Promise<{
 }
 
 // Generate signed URL for logo
-export async function getSignedLogoUrl(logoPath: string): Promise<string | null> {
+/**
+ * `opts.signal`: see getClientById. THE STORAGE CLIENT IS THE ONE THAT COULD
+ * NOT TAKE A SIGNAL DIRECTLY — `createSignedUrl` accepts only `download` and
+ * `transform` — so the bound is threaded through the CLIENT's fetch instead
+ * (see createServiceRoleClient). The effect is the same one `.abortSignal()`
+ * has on a PostgREST call: the request is genuinely cancelled, not abandoned.
+ */
+export async function getSignedLogoUrl(
+  logoPath: string,
+  opts?: { signal?: AbortSignal },
+): Promise<string | null> {
   if (!logoPath) return null;
 
-  const supabase = createServiceRoleClient();
+  const supabase = createServiceRoleClient(opts?.signal ? { signal: opts.signal } : undefined);
 
   const { data, error } = await supabase.storage
     .from('onboarding-logos')
