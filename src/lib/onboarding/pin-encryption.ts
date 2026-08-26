@@ -192,8 +192,20 @@ export function isPinEncryptionError(
  * Read from process.env on every call rather than captured at module
  * scope, because module-scope capture makes the value unsettable by
  * anything that imports this file first, tests included.
+ *
+ * MODULE-PRIVATE ON PURPOSE. This is the only function here that ever
+ * holds raw key material in its return value, so the narrower its
+ * reach the better. Nothing outside this file needs a key: callers
+ * need an envelope (encryptPin), a PIN (decryptPin), or a yes/no about
+ * the deployment (isPinEncryptionConfigured, below). Exporting it
+ * offered exactly one thing the module does not otherwise expose, "ask
+ * whether the key is usable by calling this and catching", which put
+ * the definition of a configuration fault in the caller. That is what
+ * isPinEncryptionConfigured now owns. If a future caller genuinely
+ * needs the bytes, that is a new function with a named purpose, not a
+ * re-export of this one.
  */
-export function loadPinEncryptionKey(): Buffer {
+function loadPinEncryptionKey(): Buffer {
   const raw = process.env.PIN_ENCRYPTION_KEY;
   if (!raw || raw.trim().length === 0) {
     throw new PinEncryptionConfigurationError(
@@ -228,6 +240,47 @@ export function loadPinEncryptionKey(): Buffer {
   }
 
   return key;
+}
+
+/**
+ * Can this deployment encrypt and decrypt a PIN at all?
+ *
+ * The read endpoint fails CLOSED on an unconfigured key: a 503
+ * configuration fault, distinct from "this session has no recoverable
+ * copy, regenerate to populate". It needs somewhere to hang that
+ * decision, and this is it.
+ *
+ * WHAT IT CHECKS, AND WHY IT IS NOT JUST PRESENCE. A set-but-unusable
+ * key is NOT configured. Presence of the env var is the tempting test
+ * and it is the wrong one: a base64url key, a half-pasted key or one
+ * with a stray quote is present, so a presence check reports true, the
+ * read endpoint then proceeds, and the caller gets a decrypt or
+ * integrity error about a row that is in fact fine. That misdirects
+ * whoever is debugging towards the data and away from the deployment.
+ * So this runs the same validation the encrypt and decrypt paths run,
+ * by attempting the load, and answers false for every configuration
+ * fault: unset, non-canonical base64, and wrong decoded length.
+ *
+ * It cannot throw. A configuration fault is the answer, not an
+ * exception, and an unexpected error is also answered as false, because
+ * a predicate that throws is a predicate a caller has to wrap, which is
+ * the pattern this function exists to remove.
+ *
+ * It returns no key material and logs nothing. The loaded key is
+ * discarded unread. The REASON for a false is deliberately not exposed:
+ * the three faults all mean the same thing to the endpoint, one 503,
+ * and keeping the distinction inside the module stops the response
+ * becoming a configuration oracle. An operator gets the specific reason
+ * from the encrypt path's own thrown message, which names which of the
+ * three it was.
+ */
+export function isPinEncryptionConfigured(): boolean {
+  try {
+    loadPinEncryptionKey();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // =============================================================
