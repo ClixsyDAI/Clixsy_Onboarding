@@ -546,11 +546,38 @@ export function normaliseReadFault(
  *               UND_ERR_*).
  *   'unknown'   anything else, so the kind is never silently wrong.
  *
- * TOTAL, like every other reader in this file: `err` came from a dependency,
- * so its `name`, `message` and `code` are read through guards. An exotic
- * object may not turn a failure report into a second failure.
+ * TOTAL, AND THE CLAIM IS NOW LITERAL. `err` came from a dependency, so every
+ * read of it is guarded: `name`, `message`, `code` and `cause` through `read`,
+ * and — this is the part that was NOT true and is the reason the claim is
+ * restated here — the `instanceof` checks too.
+ *
+ * `x instanceof C` is not a property read; it walks x's PROTOTYPE CHAIN, so a
+ * Proxy whose `getPrototypeOf` trap throws makes `err instanceof
+ * DeadlineExceededError` throw from inside the very function documented to
+ * turn any thrown value into a report. That is this file's own bug class — a
+ * failure report becoming a second failure — so both `instanceof` checks now
+ * go through `isInstance`, which answers false rather than throwing.
+ *
+ * SCOPE, stated precisely rather than generously: this sentence is about THIS
+ * function. `normaliseAuditFault` above reads `error?.message` / `error?.code`
+ * with plain dots, because its input is a postgrest-js RESOLVED result — a
+ * plain object this app's own dependency built — not an arbitrary thrown
+ * value. "Like every other reader in this file" was the overclaim; this is
+ * what is actually guaranteed.
  */
 export function normaliseThrownFault(err: unknown): AuditFault {
+  /**
+   * `instanceof` under a guard. A hostile prototype chain answers "no" instead
+   * of throwing; a genuine DeadlineExceededError hidden behind such a proxy is
+   * still recognised by NAME below, so the guard costs no classification.
+   */
+  const isInstance = (ctor: { new (...args: never[]): unknown }): boolean => {
+    try {
+      return err instanceof (ctor as unknown as new (...args: never[]) => unknown);
+    } catch {
+      return false;
+    }
+  };
   const read = (key: string): unknown => {
     try {
       if (err === null || typeof err !== 'object') return undefined;
@@ -567,7 +594,7 @@ export function normaliseThrownFault(err: unknown): AuditFault {
     name = '';
   }
   try {
-    message = err instanceof Error ? err.message : String(err);
+    message = isInstance(Error) ? String(read('message') ?? '') : String(err);
   } catch {
     message = '<unreadable error>';
   }
@@ -575,7 +602,13 @@ export function normaliseThrownFault(err: unknown): AuditFault {
   const code = typeof rawCode === 'string' && rawCode !== '' ? rawCode : null;
   const bounded = boundFaultMessage(message || 'the call rejected with no message');
 
-  if (err instanceof DeadlineExceededError) {
+  // NAME as well as `instanceof`, and that is not belt-and-braces. `isInstance`
+  // answers false for a hostile prototype chain, so without the name check a
+  // real deadline wearing a Proxy would classify as 'unknown' and lose the
+  // DEADLINE_EXCEEDED code an operator greps for. The class sets
+  // `this.name = 'DeadlineExceededError'` in its constructor, so the name is
+  // an own property the guarded `read` can still see.
+  if (isInstance(DeadlineExceededError) || name === 'DeadlineExceededError') {
     return { kind: 'timeout', status: 0, code: DEADLINE_FAULT_CODE, message: bounded };
   }
   if (name === 'TimeoutError' || name === 'AbortError' || /\baborted\b/i.test(message)) {
@@ -746,24 +779,52 @@ function safeField(read: () => unknown): string {
 }
 
 /**
- * The floor: the complete record could not be built, so print whatever can
- * still be read, one field at a time, each independently guarded and each
- * JSON-ENCODED. Losing the structure is acceptable; losing the news is not,
- * and so is losing the tag off the half of a fragmented line that mattered.
+ * THE FLOOR, AND IT IS NOW SHARED BY ALL THREE EMITTERS.
+ *
+ * The complete record could not be built, so print whatever can still be read,
+ * one field at a time, each independently guarded and each JSON-ENCODED.
+ * Losing the structure is acceptable; losing the news is not, and so is losing
+ * the tag off the half of a fragmented line that mattered.
+ *
+ * WHY IT IS A SHARED PRIMITIVE RATHER THAN A THIRD COPY. Two of the three
+ * emitters had a fallback and `logSupabaseFailure` — the one SIX of the seven
+ * reporting sites go through — had a bare `catch {}`, so an unserialisable
+ * record produced ZERO lines from it while its two siblings each produced a
+ * degraded one. Proven with `fault.status = 1n`: JSON.stringify refuses a
+ * BigInt, the full record throws, and the only emitter without a floor swallowed
+ * the news. A reporting layer that fails silently is the exact defect this
+ * change exists to remove, so there is now ONE floor and every emitter reaches
+ * it.
+ *
+ * THE TAG IS READ SAFELY TOO. Every caller passes one of the six exported
+ * literals, but `${tag}` on a hostile object throws — and it would throw in the
+ * full-record path FIRST, land here, and throw again, which is a path that ends
+ * without emitting. The fallback literal keeps the floor a floor.
  */
-function emitDegradedFailureLine(tag: string, err: AuditWriteError): void {
+function emitDegradedLine(tag: string, parts: Array<[string, () => unknown]>): void {
   try {
-    console.error(
-      `${tag} {"table":${safeField(() => err.table)},` +
-        `"event_type":${safeField(() => err.context.eventType)},` +
-        `"session_id":${safeField(() => err.context.sessionId)},` +
-        `"fault":${safeField(() => err.fault.kind)},` +
-        `"message":${safeField(() => err.fault.message)},` +
-        `"degraded":"the full record could not be serialised"}`,
-    );
+    let safeTag: string;
+    try {
+      safeTag = typeof tag === 'string' ? tag : String(tag);
+    } catch {
+      safeTag = '[degraded][FAILURE]';
+    }
+    const body = parts.map(([key, read]) => `${JSON.stringify(key)}:${safeField(read)}`).join(',');
+    console.error(`${safeTag} {${body},"degraded":"the full record could not be serialised"}`);
   } catch {
     /* a total function stays total even if the console itself is broken */
   }
+}
+
+/** The floor for the TABLE-shaped line (the audit write). */
+function emitDegradedFailureLine(tag: string, err: AuditWriteError): void {
+  emitDegradedLine(tag, [
+    ['table', () => err.table],
+    ['event_type', () => err.context.eventType],
+    ['session_id', () => err.context.sessionId],
+    ['fault', () => err.fault.kind],
+    ['message', () => err.fault.message],
+  ]);
 }
 
 /**
@@ -771,6 +832,13 @@ function emitDegradedFailureLine(tag: string, err: AuditWriteError): void {
  * read a code path depends on, or the pm_tracker_pushes seed. Same shape, same
  * bound (the fault arrives already normalised, and every normaliser above runs
  * boundFaultMessage), different tag.
+ *
+ * AND NOW THE SAME FLOOR. This was the one emitter of the three with a bare
+ * `catch {}`: when the record could not be serialised it emitted NOTHING, while
+ * `logUpstreamFailure` and `logAuditWriteFailure` each emitted a degraded line.
+ * Six of the seven reporting sites emit through this function, so "the failure
+ * is always visible" was false for most of the change that exists to make it
+ * true. It reaches `emitDegradedLine` like its two siblings now.
  */
 export function logSupabaseFailure(
   tag: string,
@@ -799,7 +867,15 @@ export function logSupabaseFailure(
       succeeded: ctx.succeeded,
     });
   } catch {
-    /* the logger is observability; it may never become the fault */
+    // The logger is observability; it may never become the fault — but it may
+    // not go SILENT either, which is what a bare catch here used to do.
+    emitDegradedLine(tag, [
+      ['table', () => ctx.table],
+      ['event_type', () => ctx.eventType],
+      ['session_id', () => ctx.sessionId],
+      ['fault', () => fault.kind],
+      ['message', () => fault.message],
+    ]);
   }
 }
 
@@ -845,20 +921,16 @@ export function logUpstreamFailure(
       succeeded: ctx.succeeded,
     });
   } catch {
-    // Same floor as the audit line: print what can still be read, each field
-    // independently guarded and JSON-ENCODED, never concatenated raw.
-    try {
-      console.error(
-        `${tag} {"target":${safeField(() => ctx.target)},` +
-          `"event_type":${safeField(() => ctx.eventType)},` +
-          `"session_id":${safeField(() => ctx.sessionId)},` +
-          `"fault":${safeField(() => fault.kind)},` +
-          `"message":${safeField(() => fault.message)},` +
-          `"degraded":"the full record could not be serialised"}`,
-      );
-    } catch {
-      /* the logger is observability; it may never become the fault */
-    }
+    // Same floor as the other two emitters, and now literally the SAME CODE:
+    // print what can still be read, each field independently guarded and
+    // JSON-ENCODED, never concatenated raw.
+    emitDegradedLine(tag, [
+      ['target', () => ctx.target],
+      ['event_type', () => ctx.eventType],
+      ['session_id', () => ctx.sessionId],
+      ['fault', () => fault.kind],
+      ['message', () => fault.message],
+    ]);
   }
 }
 

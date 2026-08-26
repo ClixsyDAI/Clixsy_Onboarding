@@ -89,8 +89,41 @@
  *                   document. It classified as 'postgrest' with a null
  *                   pg_code and put the whole page in `message`.
  *
- * THREE THINGS THE MATRIX ALONE CANNOT SEE (sections 11c, 11d, 11e)
+ * THE HARNESS'S OWN OUTPUT SURVIVES A HANG OR A CRASH (section 5a2)
  * -----------------------------------------------------------------
+ * `out()` writes through the real `console.log`, which writes through
+ * `process.stdout.write` — the exact function `patchStream` REPLACES while a
+ * capture is open, and deliberately does not call through. So the 300s bail
+ * and the top-level crash handler, which both printed that way, printed
+ * NOTHING whenever the hang or crash happened inside a driver, which is where
+ * hangs and crashes happen. A non-zero exit with an empty transcript is the
+ * least useful pair of facts a harness can produce, and it is the same defect
+ * class as the code under test: the report vanishes exactly when it is needed.
+ * Both paths now go through `emergencyOut`, which writes to fd 2 through the
+ * ORIGINAL `fs.writeSync` captured before this file patched anything, so it
+ * sits underneath both the stream patch and the fd patch.
+ *
+ * SEVEN THINGS THE MATRIX ALONE CANNOT SEE (11c, 11d, 11e, 11n, 11o, 11p, 11q)
+ * ---------------------------------------------------------------------------
+ *   11n THE REPORTING LAYER'S OWN SILENT FAILURE. Of the three emitters,
+ *       `logSupabaseFailure` — the one six of the seven reporting sites go
+ *       through — had a bare `catch {}` where the other two had a degraded
+ *       fallback, so a record JSON.stringify refused produced ZERO lines from
+ *       it. Each emitter is now driven with an unserialisable record (a
+ *       BigInt `status`) and must still produce exactly one tagged line.
+ *   11o THE TOTALITY CLAIM, AGAINST A HOSTILE PROTOTYPE CHAIN.
+ *       `normaliseThrownFault` guarded every property read but not its
+ *       `instanceof` checks, which walk the prototype chain — so a Proxy with
+ *       a throwing `getPrototypeOf` trap made the reporter the second failure.
+ *   11p THE TERMINAL CATCH ON THE ANALYZE ROUTE. Once the fail-closed audit
+ *       write SUCCEEDS a rate-limit slot is spent, and every later failure
+ *       fell into an untagged, session-less, multi-line console.error and an
+ *       opaque 500. Driven with a healthy audit table and a refused
+ *       onboarding_site_intelligence, so the slot really is spent.
+ *   11q AM-BYPASS AT reusable_scan_lookup. That stage 503'd a bypass caller
+ *       under the LIMITER's machine code, which is the one thing the bypass
+ *       ruling forbids. Driven both ways, like every other bypass rule here.
+ *
  *   11c INDEPENDENCE. Each site filters the stub's traffic to its OWN table,
  *       so no site could see that the session route's two tracking writes,
  *       once folded into one after() callback, had been SEQUENCED — making a
@@ -493,17 +526,66 @@
  *   file is for. Stating it plainly beats implying a protection that does
  *   not exist.
  *
- * L3 (was D10) — process.exit() WOULD MASK A LEAKED HANDLE.
- *   The run ends with `process.exit(code)`, which tears the process down
- *   whether or not the event loop still has work in it. If some future
- *   change leaked a socket, timer or server handle, this file would exit 0
- *   rather than hanging, and the leak would be invisible here.
- *   MEASURED: no active leak today — the stub server is closed (with
- *   closeAllConnections) in run()'s finally, the bail timer is cleared,
- *   and the child process is spawned synchronously. So this is LATENT, not
- *   live. WHY NOT CLOSED: dropping process.exit() would make an unrelated
- *   dangling handle turn a clean failure into a CI hang, which is a worse
- *   trade for a repo whose test convention is exit-code based.
+ * L3 (was D10) — CLOSED, AND IT WAS NOT MERELY LATENT. See section 14b.
+ *   The run used to end with `process.exit(code)`, which tears the process
+ *   down whether or not the event loop still has work in it. That was
+ *   documented here as a latent blind spot; it was also a live FLAKE. One run
+ *   in four ended with the dev child aborting at 0xC0000409 — Windows's code
+ *   for a libuv `abort()`, the assertion libuv raises when exit() runs with
+ *   handles still open — so the parent failed the child's `exit=0` assertion
+ *   for a reason unrelated to anything under test.
+ *   NOW: `finish()` sets `process.exitCode`, unrefs whatever handles a
+ *   dependency left behind (never stdio, so pending output still flushes) and
+ *   lets Node end the process on its own. The CI-hang risk L3 named is kept
+ *   covered by an UNREF'D grace timer that hard-exits after 5s and SAYS so, so
+ *   a real leak is still a loud finding rather than a silent hang.
+ *
+ * ===========================================================================
+ * NOT FIXED IN THIS BRANCH — REAL, NAMED, AND DELIBERATELY OUT OF SCOPE
+ * ===========================================================================
+ * These are findings against this change that were reviewed and left alone.
+ * They are written down here so the next reader does not mistake this file's
+ * green number for coverage of them.
+ *
+ * AUD-3 — THE SUBMIT ROUTE'S after() BUDGET IS UNBUDGETED IN AGGREGATE.
+ *   Every individual await on both submit-route callbacks is bounded, and the
+ *   per-call bounds COMPOSE. Both callbacks are registered with `after()` and
+ *   run CONCURRENTLY (Next queues them on p-queue with concurrency Infinity),
+ *   so the aggregate is the LONGER CHAIN, not the sum of the two:
+ *     dashboard bridge  5s Supabase read + 15s HTTP + 2s audit write ~= 22s
+ *     sheet export      up to 4 bounded Supabase calls at
+ *                       SUPABASE_READ_TIMEOUT_MS_AFTER (5s) + up to 5 bounded
+ *                       Google calls at GOOGLE_HTTP_TIMEOUT_MS (8s) + a 2s
+ *                       audit write ~= 62s worst case, ~30s on the common
+ *                       path (one header read, one append).
+ *   THERE IS NO AGGREGATE DEADLINE over either callback or over the pair.
+ *   Nothing caps the whole background stage, so a maximally unlucky run holds
+ *   the invocation for that long behind an already-delivered 200. Every stage
+ *   still REPORTS, which is what this branch is about; the budget is a
+ *   separate concern and it is not addressed here.
+ *
+ * AUD-6 — THE ADMIN TWIN IS THE SAME CLASS AND IS NOT ONE OF THE SEVEN.
+ *   src/app/api/admin/site-intelligence/analyze/route.ts still holds
+ *   `runSiteAnalysis`, `getSiteIntelligence` and `linkSiteIntelligenceToSession`
+ *   inside `after()` with NO deadline on any of them and a bare
+ *   `console.error` when one throws — which is exactly the shape D3 fixed on
+ *   the PUBLIC route. It is a different route, it is admin-authenticated, and
+ *   it is not among the seven sites this branch scoped itself to, so it is
+ *   untouched and unmeasured here. The fix is the public route's, verbatim.
+ *
+ * AUD-9 — TRANSMIT-BUT-NOT-PERSIST IS OUT OF REACH BY CONSTRUCTION.
+ *   Say it plainly rather than letting the harness imply coverage it does not
+ *   have. Every call site in this change treats a 2xx with no error body as
+ *   success: none requests `Prefer: return=representation`, none reads back an
+ *   affected-row count, and PostgREST answers 201/204 for an insert that
+ *   matched no rows just as it does for one that wrote them. So a Supabase
+ *   that ACCEPTS a write and does not persist it is indistinguishable from a
+ *   healthy write to this code — and therefore to this harness, whose row
+ *   evidence is taken from the POST BODY the stub received, not from anything
+ *   the database confirms. The stub's schema validator narrows the gap (a row
+ *   that could not have persisted is rejected) but does not close it. Closing
+ *   it needs a representation-returning write or a row-count check at each
+ *   site, which is a change to every call site rather than to this file.
  */
 
 // ---------------------------------------------------------------------------
@@ -2195,6 +2277,51 @@ const realFsWritev = fs.writev;
 };
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+// ---------------------------------------------------------------------------
+// 5a2. AUD-7 — THE ONE CHANNEL A CAPTURE CANNOT SWALLOW.
+// ---------------------------------------------------------------------------
+//
+// `out()` writes through `realConsoleLog`, which is `console.log` bound at
+// module scope. That is the REAL console.log, so it writes through
+// `process.stdout.write` — which `patchStream` REPLACES for the duration of a
+// capture and deliberately does NOT call through (that is how a byte is
+// counted on exactly one channel and never two).
+//
+// Consequence, and it is the worst possible one: the 300s BAIL and the
+// top-level CRASH handler both printed through `realConsoleLog`, so a hang or
+// a crash that happened WHILE A CAPTURE WAS OPEN printed NOTHING. The harness
+// would exit 1 with an empty transcript and the parent would report a child
+// that "exited non-zero" with no reason in it — a diagnostic that disappears
+// exactly when it is needed, which is the same defect class this whole branch
+// is about.
+//
+// The fix is to write to a channel that is never patched. `realFsWriteSync` is
+// the ORIGINAL `fs.writeSync` captured above, before this file replaced it, so
+// a call through it goes straight to fd 2 underneath BOTH the stream patch and
+// the fd patch. Two independent fallbacks after it, because an emergency
+// printer that can itself fail is not an emergency printer.
+function emergencyOut(line: string): void {
+  const text = `${line}\n`;
+  try {
+    (realFsWriteSync as unknown as (fd: number, s: string) => number).call(fs, 2, text);
+    return;
+  } catch {
+    /* fall through */
+  }
+  try {
+    // The captured original, not the patched property.
+    realConsoleLog(line);
+    return;
+  } catch {
+    /* fall through */
+  }
+  try {
+    process.stderr.write?.(text);
+  } catch {
+    /* nothing left to try */
+  }
+}
+
 async function withCapture<T>(fn: () => Promise<T>): Promise<CaptureOutcome<T>> {
   const captured = emptyCaptured();
   const folders = {
@@ -3108,8 +3235,14 @@ async function run(): Promise<void> {
   // harness now injects. Each Supabase stall costs its 5s bound, each Google
   // stall its 8s bound, and there are enough of both that a 120s ceiling would
   // start failing runs for being thorough rather than for being broken.
+  //
+  // AUD-7: `emergencyOut`, not `out`/`realConsoleLog`. A hang almost always
+  // happens INSIDE a driver, i.e. inside `withCapture`, and a capture replaces
+  // process.stdout.write without calling through — so the old bail message was
+  // swallowed by the very mechanism that was supposed to be recording the
+  // failure, and the run exited 1 with an empty transcript.
   const bail = setTimeout(() => {
-    realConsoleLog('\nTIMEOUT: harness exceeded 300s — failing loudly rather than hanging.');
+    emergencyOut('\nTIMEOUT: harness exceeded 300s — failing loudly rather than hanging.');
     process.exit(1);
   }, 300_000);
 
@@ -4715,9 +4848,19 @@ async function run(): Promise<void> {
         `[${label}] the handler FAILS CLOSED with the same 503 as any other fault instead of freezing: unbounded it never answered at all, and the 503 downstream of it was unreachable`,
         `threw=${outcome.threw} elapsed=${elapsedMs}ms status=${status}`,
       );
+      // AUD-5(a). These stages used to answer with the LIMITER's code and the
+      // limiter's sentence ("We could not check your analysis limit just
+      // now"), which is false of all three of them: one loads the session, one
+      // decides access, one looks for a scan to reuse. One code for conditions
+      // that want identical handling is right; one SENTENCE for conditions
+      // that are not the same condition is not. Both halves are asserted, so a
+      // future edit cannot restore the limiter wording without failing here.
+      const body = outcome.result?.body as { code?: string; error?: string } | undefined;
       assert(
-        code === 'rate_limit_state_unavailable',
-        `[${label}] and it carries the SAME machine code as every other "cannot establish whether you may run this" answer, so a caller branches on one code rather than three`,
+        code === 'analyze_precondition_unavailable' &&
+          typeof body?.error === 'string' &&
+          !/analysis limit/i.test(body.error),
+        `[${label}] and it carries the PRECONDITION machine code with a sentence that is TRUE of this stage, not the limiter's code and the limiter's "we could not check your analysis limit" wording, which named a component that was never consulted`,
         `code=${JSON.stringify(code)} body=${JSON.stringify(outcome.result?.body ?? null)}`,
       );
       const verdict = verifyUpstreamLine(lines, {
@@ -5237,6 +5380,392 @@ async function run(): Promise<void> {
         degradedLines[0]?.parsed?.session_id === SESSION_ID,
       `[degraded line] and it is still JSON an operator can parse: the newline is ESCAPED rather than emitted, so the whole message survives on the tagged line alongside the table and session`,
       `parsed=${JSON.stringify(degradedLines[0]?.parsed ?? null)} raw=${JSON.stringify(degradedLines[0]?.raw ?? null)}`,
+    );
+
+    // -----------------------------------------------------------------------
+    // 11n. AUD-2 — AN UNSERIALISABLE RECORD, THROUGH EACH OF THE THREE
+    //      EMITTERS. THE REPORTING LAYER'S OWN SILENT-FAILURE BUG.
+    // -----------------------------------------------------------------------
+    //
+    // This branch exists to remove silent failure. Its own reporting layer had
+    // it: of the three emitters, `logSupabaseFailure` — the one SIX of the
+    // seven reporting sites go through — had a bare `catch {}` where the other
+    // two had a degraded fallback. When the record could not be serialised it
+    // emitted ZERO lines.
+    //
+    // THE INJECTION IS A BIGINT, and it is not a contrivance. `JSON.stringify`
+    // REFUSES a BigInt with a TypeError, so `fault.status = 1n` makes the
+    // full-record path throw at exactly the point the fallback exists for,
+    // without needing a hostile getter — the same class as a status field that
+    // some future normaliser hands over as an exotic value.
+    //
+    // The contract is the same for all three: EXACTLY ONE physical line,
+    // carrying the emitter's own tag, parseable as JSON, and marked degraded
+    // so an operator knows they are reading the floor rather than the record.
+    out('\n--- unserialisable record: every emitter must still produce exactly one tagged line ---');
+
+    interface EmitterCase {
+      key: string;
+      tag: string;
+      /** The subject field this shape carries: 'table' or 'target'. */
+      subjectField: 'table' | 'target';
+      subject: string;
+      emit: () => void;
+    }
+
+    // A BigInt anywhere in the record makes JSON.stringify throw.
+    const unserialisableFault = {
+      kind: 'postgrest',
+      // BigInt(1) rather than a 1n literal: this repo's tsconfig target is
+      // below ES2020, so the literal will not compile. Same value, same refusal
+      // from JSON.stringify.
+      status: BigInt(1) as unknown as number,
+      code: '42501',
+      message: 'the write was refused and the record cannot be serialised',
+    };
+
+    const emitterCases: EmitterCase[] = [
+      {
+        key: 'logAuditWriteFailure',
+        tag: WRITE_FAILURE_TAG,
+        subjectField: 'table',
+        subject: 'onboarding_audit_events',
+        emit: () =>
+          serverMod.logAuditWriteFailure({
+            table: 'onboarding_audit_events',
+            fault: unserialisableFault,
+            context: {
+              route: 'direct probe',
+              eventType: 'unserialisable_probe',
+              sessionId: SESSION_ID,
+              clientId: CLIENT_ID,
+              succeeded: 'nothing',
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any),
+      },
+      {
+        key: 'logSupabaseFailure',
+        tag: READ_FAILURE_TAG,
+        subjectField: 'table',
+        subject: 'onboarding_sessions',
+        emit: () =>
+          serverMod.logSupabaseFailure(
+            READ_FAILURE_TAG,
+            {
+              route: 'direct probe',
+              table: 'onboarding_sessions',
+              eventType: 'unserialisable_probe',
+              sessionId: SESSION_ID,
+              clientId: CLIENT_ID,
+              succeeded: 'nothing',
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            unserialisableFault as any,
+          ),
+      },
+      {
+        key: 'logUpstreamFailure',
+        tag: UPSTREAM_HTTP_FAILURE_TAG,
+        subjectField: 'target',
+        subject: 'https://dashboard.invalid/api/clients',
+        emit: () =>
+          serverMod.logUpstreamFailure(
+            UPSTREAM_HTTP_FAILURE_TAG,
+            {
+              route: 'direct probe',
+              target: 'https://dashboard.invalid/api/clients',
+              eventType: 'unserialisable_probe',
+              sessionId: SESSION_ID,
+              clientId: CLIENT_ID,
+              succeeded: 'nothing',
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            unserialisableFault as any,
+          ),
+      },
+    ];
+
+    for (const c of emitterCases) {
+      const outcome = await withCapture(async () => {
+        c.emit();
+        return {};
+      });
+      const tagged = failureLines(outcome.captured, c.tag);
+      const every = allLines(outcome.captured);
+      const parsed = tagged[0]?.parsed ?? null;
+      out(
+        `    ${pad(c.key, 24)} threw=${outcome.threw} taggedLines=${tagged.length} ` +
+          `totalLines=${every.length} degraded=${JSON.stringify(parsed?.degraded ?? null)}`,
+      );
+      assert(
+        outcome.threw === false && tagged.length === 1 && every.length === 1,
+        `[unserialisable record | ${c.key}] a record JSON.stringify REFUSES still produces EXACTLY ONE tagged physical line: this emitter used to be the difference between a reporting layer and a reporting layer that gives up when the news is awkward`,
+        `threw=${outcome.threw} :: ${String(outcome.error)} tagged=${tagged.length} total=${every.length} :: ${JSON.stringify(every)}`,
+      );
+      assert(
+        parsed !== null &&
+          parsed[c.subjectField] === c.subject &&
+          parsed.session_id === SESSION_ID &&
+          typeof parsed.degraded === 'string' &&
+          (parsed.degraded as string).length > 0,
+        `[unserialisable record | ${c.key}] and the floor is still PARSEABLE JSON naming the ${c.subjectField} and the session, and SAYS it is degraded, so an operator reading it knows which fields were dropped rather than believing the record is complete`,
+        `parsed=${JSON.stringify(parsed)} raw=${JSON.stringify(tagged[0]?.raw ?? null)}`,
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // 11o. AUD-4 — THE TOTALITY CLAIM, AGAINST A HOSTILE PROTOTYPE CHAIN.
+    // -----------------------------------------------------------------------
+    //
+    // `normaliseThrownFault` is documented as TOTAL: an exotic object may not
+    // turn a failure report into a second failure. It was not. Every PROPERTY
+    // read was guarded, but `err instanceof DeadlineExceededError` is not a
+    // property read — it walks the prototype chain — so a Proxy with a hostile
+    // `getPrototypeOf` trap threw straight out of the normaliser, from inside
+    // the one function whose entire job is to make a thrown value reportable.
+    //
+    // Three shapes, because the traps are independent: a hostile prototype
+    // alone, a hostile prototype PLUS hostile property gets, and a hostile
+    // prototype over a REAL DeadlineExceededError (which must still classify
+    // as a deadline, since the guard answers "not an instance" and only the
+    // name is left to recognise it by).
+    out('\n--- hostile Proxy: an exotic thrown value may not become a second failure ---');
+
+    const hostileProto = (target: object): unknown =>
+      new Proxy(target, {
+        getPrototypeOf() {
+          throw new TypeError('hostile getPrototypeOf trap');
+        },
+      });
+    const hostileProtoAndGets = (target: object): unknown =>
+      new Proxy(target, {
+        getPrototypeOf() {
+          throw new TypeError('hostile getPrototypeOf trap');
+        },
+        get() {
+          throw new TypeError('hostile get trap');
+        },
+      });
+
+    interface NormalisedProbeFault {
+      kind?: string;
+      code?: string | null;
+      message?: string;
+    }
+    interface ProxyCase {
+      key: string;
+      build: () => unknown;
+      wantKind: string;
+      wantCode: string | null;
+    }
+    const proxyCases: ProxyCase[] = [
+      {
+        key: 'hostile getPrototypeOf over a TypeError',
+        build: () => hostileProto(new TypeError('fetch failed')),
+        wantKind: 'transport',
+        wantCode: null,
+      },
+      {
+        key: 'hostile getPrototypeOf + hostile get',
+        build: () => hostileProtoAndGets(new Error('unreadable')),
+        wantKind: 'unknown',
+        wantCode: null,
+      },
+      {
+        key: 'hostile getPrototypeOf over a real deadline',
+        build: () => hostileProto(new serverMod.DeadlineExceededError('probe_stage', 5000)),
+        wantKind: 'timeout',
+        wantCode: 'DEADLINE_EXCEEDED',
+      },
+    ];
+
+    for (const c of proxyCases) {
+      let threw = false;
+      let error: unknown = null;
+      let fault: NormalisedProbeFault | null = null;
+      try {
+        fault = serverMod.normaliseThrownFault(c.build()) as NormalisedProbeFault;
+      } catch (err) {
+        threw = true;
+        error = err;
+      }
+      out(
+        `    ${pad(c.key, 44)} threw=${threw} kind=${JSON.stringify(fault?.kind ?? null)} ` +
+          `code=${JSON.stringify(fault?.code ?? null)}`,
+      );
+      assert(
+        threw === false && fault !== null,
+        `[hostile proxy | ${c.key}] normaliseThrownFault RETURNS a fault instead of throwing: an unguarded instanceof made the reporter itself the second failure, on the exact path a report is being built`,
+        `threw=${threw} :: ${String(error)}`,
+      );
+      assert(
+        fault?.kind === c.wantKind &&
+          (fault?.code ?? null) === c.wantCode &&
+          typeof fault?.message === 'string' &&
+          (fault.message as string).length > 0,
+        `[hostile proxy | ${c.key}] and the classification is still the RIGHT one, so guarding the instanceof cost no accuracy: a real deadline behind a hostile proxy is still recognised, by name, and still carries DEADLINE_EXCEEDED`,
+        `kind=${JSON.stringify(fault?.kind)} code=${JSON.stringify(fault?.code)} message=${JSON.stringify(fault?.message)}`,
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // 11p. AUD-1 — THE TERMINAL CATCH: TAGGED, CODED AND SLOT-AWARE.
+    // -----------------------------------------------------------------------
+    //
+    // Once the fail-closed audit write SUCCEEDS a rate-limit slot is spent.
+    // Every remaining request-path failure then fell into the one untagged,
+    // session-less, multi-line `console.error` left in the change, and the
+    // caller got `500 {"error":"Internal server error"}` — no code, no session,
+    // and no hint that a retry was no longer free.
+    //
+    // Driven exactly as it was driven live: the audit table is HEALTHY (so the
+    // slot really is spent, 201) and `onboarding_site_intelligence` is refused
+    // with a real 42501, which is what `createSiteIntelligenceRecord` hits
+    // immediately after.
+    out('\n--- analyze route: a failure AFTER the rate-limit slot has been spent ---');
+    stub.mode = 'rls_denied';
+    stub.faultTable = 'onboarding_site_intelligence';
+    stub.faultCountRead = false;
+    const spentLabel = 'aud1 | post-slot failure';
+    const spentWindow = await openWriteWindow(spentLabel);
+    const postSlot = await withCapture(() => driveAnalyze());
+    closeWriteWindow();
+    stub.mode = 'ok';
+    stub.faultTable = 'onboarding_audit_events';
+
+    const spentAuditPosts = stub.writes.filter(
+      (w) => w.table === 'onboarding_audit_events' && w.window === spentLabel,
+    ).length;
+    const spentLines = failureLines(postSlot.captured, BOUNDED_STAGE_FAILURE_TAG);
+    const spentBody = postSlot.result?.body as
+      | { code?: string; error?: string; slotSpent?: boolean }
+      | undefined;
+    out(
+      `    post-slot failure: status=${postSlot.result?.status} auditPosts=${spentAuditPosts} ` +
+        `code=${JSON.stringify(spentBody?.code)} slotSpent=${JSON.stringify(spentBody?.slotSpent)} ` +
+        `lines=${spentLines.length}`,
+    );
+    rows.push({
+      site: '11 analyze terminal catch',
+      mode: 'rls_denied',
+      threw: postSlot.threw,
+      loggedLines: allLines(postSlot.captured),
+      responseStatus: postSlot.result?.status,
+      reachedWrite: true,
+      writeCount: spentAuditPosts,
+      rowPersisted: 'n/a',
+    });
+
+    assert(
+      spentWindow.empty && spentAuditPosts === 1,
+      `[aud1 terminal catch] the SLOT REALLY WAS SPENT before the failure: the analyze-requested row landed on a healthy audit table, so this measures the branch that matters rather than an early bail`,
+      `windowEmpty=${spentWindow.empty} (${spentWindow.leftovers}) auditPosts=${spentAuditPosts}`,
+    );
+    const spentVerdict = verifyUpstreamLine(spentLines, {
+      tag: BOUNDED_STAGE_FAILURE_TAG,
+      target: 'request_handler (unhandled)',
+      eventType: 'analyze_request_handler',
+      sessionId: SESSION_ID,
+      clientId: CLIENT_ID,
+      fault: 'unknown',
+      status: null,
+      code: null,
+    });
+    assert(
+      spentVerdict.ok,
+      `[aud1 terminal catch] the handler's last-resort failure is now ONE tagged line of JSON naming the session and the client, on the same emitter as every other failure on this route, instead of an untagged multi-line console.error nobody can grep alongside the rest`,
+      spentVerdict.reason,
+    );
+    assert(
+      typeof spentLines[0]?.parsed?.succeeded === 'string' &&
+        /RATE-LIMIT SLOT WAS SPENT/.test(spentLines[0]?.parsed?.succeeded as string),
+      `[aud1 terminal catch] and its succeeded field STATES that a slot was spent, so an operator does not tell a client to "just try again" and silently burn the rest of their five hourly attempts`,
+      `succeeded=${JSON.stringify(spentLines[0]?.parsed?.succeeded ?? null)}`,
+    );
+    assert(
+      postSlot.threw === false &&
+        postSlot.result?.status === 500 &&
+        spentBody?.code === 'analyze_request_failed' &&
+        spentBody?.slotSpent === true &&
+        spentBody?.error !== 'Internal server error',
+      `[aud1 terminal catch] and the CALLER gets a machine code and the slot fact, not an opaque "Internal server error" that leaves both the client and their retry budget in the dark`,
+      `threw=${postSlot.threw} status=${postSlot.result?.status} body=${JSON.stringify(spentBody ?? null)}`,
+    );
+
+    // -----------------------------------------------------------------------
+    // 11q. AUD-5(b) — A BYPASS CALLER IS NOT REFUSED AT reusable_scan_lookup.
+    // -----------------------------------------------------------------------
+    //
+    // The ruling on this route is that an AM-bypass caller is never 503'd by
+    // limiter state they are exempt from. `reusable_scan_lookup` 503'd them
+    // anyway, under the LIMITER's own machine code — so a stalled DEDUP lookup
+    // told an AM their analysis limit was in doubt when they have no limit.
+    //
+    // BOTH DIRECTIONS, as every other bypass rule on this route is driven:
+    // the same injected stall, the only variable being the signature. A fix
+    // that simply stopped 503ing everyone would satisfy the bypass half and
+    // break the rule it is scoped by, so the non-bypass half is asserted in
+    // the same breath.
+    out('\n--- AM-bypass scoping at reusable_scan_lookup: the same stall, driven both ways ---');
+    SESSION_ROW.site_intelligence_id = 'si-record-1';
+    const scanBypassResults: Record<'bypass' | 'plain', {
+      status?: number;
+      code?: string;
+      lines: FailureLine[];
+      threw: boolean;
+      elapsedMs: number;
+    }> = {
+      bypass: { lines: [], threw: false, elapsedMs: 0 },
+      plain: { lines: [], threw: false, elapsedMs: 0 },
+    };
+    for (const bypass of [true, false]) {
+      const key = bypass ? 'bypass' : 'plain';
+      stub.readsSeen['onboarding_site_intelligence'] = 0;
+      stub.stallReadTables = ['onboarding_site_intelligence'];
+      stub.stallReadSkip = {};
+      await openWriteWindow(`aud5 | reusable scan stall | ${key}`);
+      const startedAt = Date.now();
+      const outcome = await withCapture(() => driveAnalyzeAs(bypass));
+      const elapsedMs = Date.now() - startedAt;
+      closeWriteWindow();
+      stub.stallReadTables = [];
+      scanBypassResults[key] = {
+        status: outcome.result?.status,
+        code: (outcome.result?.body as { code?: string } | undefined)?.code,
+        lines: failureLines(outcome.captured, BOUNDED_STAGE_FAILURE_TAG),
+        threw: outcome.threw,
+        elapsedMs,
+      };
+      out(
+        `    ${pad(key, 8)} status=${outcome.result?.status} elapsed=${elapsedMs}ms ` +
+          `code=${JSON.stringify(scanBypassResults[key].code)} lines=${scanBypassResults[key].lines.length}`,
+      );
+    }
+    SESSION_ROW.site_intelligence_id = null;
+
+    const scanStageLine = (lines: FailureLine[]): FailureLine | undefined =>
+      lines.find((l) => l.parsed?.target === 'reusable_scan_lookup (onboarding_site_intelligence)');
+
+    assert(
+      scanBypassResults.bypass.threw === false &&
+        scanBypassResults.bypass.status !== 503 &&
+        scanBypassResults.bypass.elapsedMs < TERMINATION_BUDGET_MS,
+      `[am-bypass | reusable scan stall] a BYPASS request is NOT 503'd when the dedup lookup stalls: the ruling is that a bypass caller is never refused over gating that does not apply to them, and a dedup lookup only ever SAVES a scan, so losing it costs one duplicate on a click an AM made deliberately`,
+      `status=${scanBypassResults.bypass.status} code=${JSON.stringify(scanBypassResults.bypass.code)} elapsed=${scanBypassResults.bypass.elapsedMs}ms`,
+    );
+    assert(
+      scanStageLine(scanBypassResults.bypass.lines) !== undefined,
+      `[am-bypass | reusable scan stall] and it is still LOUD for the bypass caller: not being refused is not the same as not being reported, and an AM's analyze click is frequently the earliest evidence a session ever gets that Supabase is sick`,
+      `lines=${JSON.stringify(scanBypassResults.bypass.lines.map((l) => l.raw.slice(0, 200)))}`,
+    );
+    assert(
+      scanBypassResults.plain.threw === false &&
+        scanBypassResults.plain.status === 503 &&
+        scanBypassResults.plain.code === 'analyze_precondition_unavailable' &&
+        scanStageLine(scanBypassResults.plain.lines) !== undefined,
+      `[am-bypass | reusable scan stall] the SAME stall on a NON-bypass request still fails closed with 503 and the precondition code: the scoping narrows who the rule applies to, it does not weaken the rule`,
+      `status=${scanBypassResults.plain.status} code=${JSON.stringify(scanBypassResults.plain.code)} lines=${JSON.stringify(scanBypassResults.plain.lines.map((l) => l.raw.slice(0, 200)))}`,
     );
 
     // -----------------------------------------------------------------------
@@ -5866,12 +6395,12 @@ const BASE_LABELS: readonly string[] = Object.freeze([
   "[google | guard intact] with the rewrite DISARMED the very same export is blocked at the hermeticity guard: the stub is reachable because requests are REWRITTEN to loopback, not because the guard was opened",
   "[analyze upstream | session lookup] the stalled read really CROSSED THE WIRE: the stub accepted it, read it in full, and never answered",
   "[analyze upstream | session lookup] the handler FAILS CLOSED with the same 503 as any other fault instead of freezing: unbounded it never answered at all, and the 503 downstream of it was unreachable",
-  "[analyze upstream | session lookup] and it carries the SAME machine code as every other \"cannot establish whether you may run this\" answer, so a caller branches on one code rather than three",
+  "[analyze upstream | session lookup] and it carries the PRECONDITION machine code with a sentence that is TRUE of this stage, not the limiter's code and the limiter's \"we could not check your analysis limit\" wording, which named a component that was never consulted",
   "[analyze upstream | session lookup] and it is LOUD: exactly one [bounded-stage][FAILURE] line naming the stage \"session_lookup (onboarding_sessions)\", fault=timeout code=DEADLINE_EXCEEDED — a 503 with nothing in the log is a mystery, not a report",
   "[analyze upstream | session lookup] and NOTHING was started: no rate-limit row, no analysis record, no Anthropic spend — which is what the line's succeeded field claims",
   "[analyze upstream | reusable scan lookup] the stalled read really CROSSED THE WIRE: the stub accepted it, read it in full, and never answered",
   "[analyze upstream | reusable scan lookup] the handler FAILS CLOSED with the same 503 as any other fault instead of freezing: unbounded it never answered at all, and the 503 downstream of it was unreachable",
-  "[analyze upstream | reusable scan lookup] and it carries the SAME machine code as every other \"cannot establish whether you may run this\" answer, so a caller branches on one code rather than three",
+  "[analyze upstream | reusable scan lookup] and it carries the PRECONDITION machine code with a sentence that is TRUE of this stage, not the limiter's code and the limiter's \"we could not check your analysis limit\" wording, which named a component that was never consulted",
   "[analyze upstream | reusable scan lookup] and it is LOUD: exactly one [bounded-stage][FAILURE] line naming the stage \"reusable_scan_lookup (onboarding_site_intelligence)\", fault=timeout code=DEADLINE_EXCEEDED — a 503 with nothing in the log is a mystery, not a report",
   "[analyze upstream | reusable scan lookup] and NOTHING was started: no rate-limit row, no analysis record, no Anthropic spend — which is what the line's succeeded field claims",
   "[am-bypass counter | bypass] a stalled counter read is REPORTED, bypass or not: the log is not scoped to the branch the 503 is scoped to, because a degraded Supabase is degraded for everyone",
@@ -5897,6 +6426,25 @@ const BASE_LABELS: readonly string[] = Object.freeze([
   "[hostile opts | insertAuditEventOrThrow] the fail-closed entry point still throws the ONE error type its caller branches on, not a TypeError from the spec builder: a raw TypeError would have flattened into the analyze route's generic 500 and lost the machine-readable reason",
   "[degraded line] the fallback branch emits exactly ONE physical line: a message containing a newline used to fragment the record and leave the [audit-write][WRITE-FAILURE] tag on the half an operator does not need",
   "[degraded line] and it is still JSON an operator can parse: the newline is ESCAPED rather than emitted, so the whole message survives on the tagged line alongside the table and session",
+  "[unserialisable record | logAuditWriteFailure] a record JSON.stringify REFUSES still produces EXACTLY ONE tagged physical line: this emitter used to be the difference between a reporting layer and a reporting layer that gives up when the news is awkward",
+  "[unserialisable record | logAuditWriteFailure] and the floor is still PARSEABLE JSON naming the table and the session, and SAYS it is degraded, so an operator reading it knows which fields were dropped rather than believing the record is complete",
+  "[unserialisable record | logSupabaseFailure] a record JSON.stringify REFUSES still produces EXACTLY ONE tagged physical line: this emitter used to be the difference between a reporting layer and a reporting layer that gives up when the news is awkward",
+  "[unserialisable record | logSupabaseFailure] and the floor is still PARSEABLE JSON naming the table and the session, and SAYS it is degraded, so an operator reading it knows which fields were dropped rather than believing the record is complete",
+  "[unserialisable record | logUpstreamFailure] a record JSON.stringify REFUSES still produces EXACTLY ONE tagged physical line: this emitter used to be the difference between a reporting layer and a reporting layer that gives up when the news is awkward",
+  "[unserialisable record | logUpstreamFailure] and the floor is still PARSEABLE JSON naming the target and the session, and SAYS it is degraded, so an operator reading it knows which fields were dropped rather than believing the record is complete",
+  "[hostile proxy | hostile getPrototypeOf over a TypeError] normaliseThrownFault RETURNS a fault instead of throwing: an unguarded instanceof made the reporter itself the second failure, on the exact path a report is being built",
+  "[hostile proxy | hostile getPrototypeOf over a TypeError] and the classification is still the RIGHT one, so guarding the instanceof cost no accuracy: a real deadline behind a hostile proxy is still recognised, by name, and still carries DEADLINE_EXCEEDED",
+  "[hostile proxy | hostile getPrototypeOf + hostile get] normaliseThrownFault RETURNS a fault instead of throwing: an unguarded instanceof made the reporter itself the second failure, on the exact path a report is being built",
+  "[hostile proxy | hostile getPrototypeOf + hostile get] and the classification is still the RIGHT one, so guarding the instanceof cost no accuracy: a real deadline behind a hostile proxy is still recognised, by name, and still carries DEADLINE_EXCEEDED",
+  "[hostile proxy | hostile getPrototypeOf over a real deadline] normaliseThrownFault RETURNS a fault instead of throwing: an unguarded instanceof made the reporter itself the second failure, on the exact path a report is being built",
+  "[hostile proxy | hostile getPrototypeOf over a real deadline] and the classification is still the RIGHT one, so guarding the instanceof cost no accuracy: a real deadline behind a hostile proxy is still recognised, by name, and still carries DEADLINE_EXCEEDED",
+  "[aud1 terminal catch] the SLOT REALLY WAS SPENT before the failure: the analyze-requested row landed on a healthy audit table, so this measures the branch that matters rather than an early bail",
+  "[aud1 terminal catch] the handler's last-resort failure is now ONE tagged line of JSON naming the session and the client, on the same emitter as every other failure on this route, instead of an untagged multi-line console.error nobody can grep alongside the rest",
+  "[aud1 terminal catch] and its succeeded field STATES that a slot was spent, so an operator does not tell a client to \"just try again\" and silently burn the rest of their five hourly attempts",
+  "[aud1 terminal catch] and the CALLER gets a machine code and the slot fact, not an opaque \"Internal server error\" that leaves both the client and their retry budget in the dark",
+  "[am-bypass | reusable scan stall] a BYPASS request is NOT 503'd when the dedup lookup stalls: the ruling is that a bypass caller is never refused over gating that does not apply to them, and a dedup lookup only ever SAVES a scan, so losing it costs one duplicate on a click an AM made deliberately",
+  "[am-bypass | reusable scan stall] and it is still LOUD for the bypass caller: not being refused is not the same as not being reported, and an AM's analyze click is frequently the earliest evidence a session ever gets that Supabase is sick",
+  "[am-bypass | reusable scan stall] the SAME stall on a NON-bypass request still fails closed with 503 and the precondition code: the scoping narrows who the rule applies to, it does not weaken the rule",
   "[hermeticity] no dependency attempted a non-loopback fetch()",
   "[hermeticity] no dependency attempted a non-loopback http(s).request (the gaxios/node-fetch path the fetch guard cannot see)",
   "[hermeticity] no dependency attempted a non-loopback net/tls/http2/dgram connection, including via net.Socket.prototype.connect (the raw socket floor under both guards above, and the one a destructured module reference cannot skip)",
@@ -5947,6 +6495,78 @@ function checkLabelIdentity(): boolean {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// 14b. AUD-8 — MAKE THE EXIT DETERMINISTIC.
+// ---------------------------------------------------------------------------
+//
+// MEASURED: one run in four ended with the DEV CHILD aborting at 0xC0000409.
+// That is STATUS_STACK_BUFFER_OVERRUN, which is what Windows reports for a
+// libuv `abort()` — the assertion libuv raises when `process.exit()` tears the
+// loop down while handles are still live. The parent then failed the child's
+// `exit=0` assertion, so a green change failed one run in four for a reason
+// that had nothing to do with the code under test. A flaky harness in CI is
+// worse than a slow one: it trains everyone to re-run instead of to read.
+//
+// THE FIX IS TO STOP RACING THE LOOP. Set `process.exitCode`, release what is
+// still holding the loop open, and let Node end the process on its own — the
+// path that flushes stdio properly and never reaches the assertion. `run()`
+// already closes the stub server (with closeAllConnections) and clears the
+// bail timer in its finally, and the children are spawned SYNCHRONOUSLY, so
+// what remains is whatever a dependency left behind: an undici keep-alive
+// socket, an agent timer. Those are unref'd rather than destroyed, because
+// destroying a socket a dependency still holds is how you turn a clean exit
+// into an unhandled 'error' event.
+//
+// L3 SAID DROPPING process.exit() WOULD RISK A CI HANG, AND THAT IS STILL
+// TRUE, so it is not simply dropped: an UNREF'D grace timer keeps the hard
+// exit as a last resort. Unref'd, so it cannot itself be the thing holding the
+// process open. If it ever fires, that is real news — something leaked — and
+// the message says so instead of exiting silently.
+const EXIT_GRACE_MS = 5_000;
+
+/** Unref every active handle except stdio, so pending output still flushes. */
+function releaseLingeringHandles(): string[] {
+  const names: string[] = [];
+  const getHandles = (process as unknown as { _getActiveHandles?: () => unknown[] })
+    ._getActiveHandles;
+  if (typeof getHandles !== 'function') return names;
+  let handles: unknown[] = [];
+  try {
+    handles = getHandles.call(process) ?? [];
+  } catch {
+    return names;
+  }
+  for (const handle of handles) {
+    if (handle === process.stdout || handle === process.stderr || handle === process.stdin) {
+      continue;
+    }
+    try {
+      const h = handle as { unref?: () => void; constructor?: { name?: string } };
+      names.push(h?.constructor?.name ?? 'unknown');
+      h.unref?.();
+    } catch {
+      /* a handle that refuses to be unref'd is what the grace timer is for */
+    }
+  }
+  return names;
+}
+
+function finish(code: number): void {
+  process.exitCode = code;
+  const lingering = releaseLingeringHandles();
+  if (lingering.length > 0) {
+    out(`  (exit: unref'd ${lingering.length} lingering handle(s): ${lingering.join(', ')})`);
+  }
+  const grace = setTimeout(() => {
+    emergencyOut(
+      `\nEXIT: the event loop was still busy ${EXIT_GRACE_MS}ms after the run finished — ` +
+        `forcing exit(${code}). Something leaked a handle that could not be unref'd.`,
+    );
+    process.exit(code);
+  }, EXIT_GRACE_MS);
+  (grace as unknown as { unref?: () => void }).unref?.();
+}
+
 run()
   .then(() => {
     // D1/D2: the same matrix, again, under the two OTHER runtimes. Runs only
@@ -5965,9 +6585,13 @@ run()
     }
     const identityOk = checkLabelIdentity();
     out('=========================================');
-    process.exit(failed > 0 || !identityOk ? 1 : 0);
+    finish(failed > 0 || !identityOk ? 1 : 0);
   })
   .catch((err) => {
-    realConsoleLog(`\nTest harness crashed: ${err instanceof Error ? err.stack : String(err)}`);
-    process.exit(1);
+    // AUD-7: the crash path prints on the channel a capture cannot swallow. A
+    // crash inside a driver runs with process.stdout.write replaced, so this
+    // used to produce an EMPTY transcript alongside a non-zero exit — the
+    // least useful pair of facts a harness can hand you.
+    emergencyOut(`\nTest harness crashed: ${err instanceof Error ? err.stack : String(err)}`);
+    finish(1);
   });

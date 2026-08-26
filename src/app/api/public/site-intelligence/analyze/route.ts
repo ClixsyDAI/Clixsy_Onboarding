@@ -70,15 +70,42 @@ const RATE_LIMIT_PER_HOUR = 5;
 const ANALYZE_ROUTE = 'POST /api/public/site-intelligence/analyze';
 
 /**
- * What the caller is told when this route cannot maintain its own
- * preconditions. ONE code for every such condition, deliberately: from the
- * caller's side "the limiter cannot be maintained right now" and "the session
- * lookup in front of the limiter never answered" mean the same thing and want
- * the same handling, and one code to branch on beats two that need identical
- * treatment. The failure LINE is where the difference is recorded, and it
- * names the exact stage.
+ * THE LIMITER's code, and it now means ONLY the limiter.
+ *
+ * It used to be the one code for every precondition on this route, on the
+ * argument that a caller wants the same handling either way. The argument
+ * survives; the WORDING did not. `session_lookup`, `session_access` and
+ * `reusable_scan_lookup` are not the rate limiter, and the body attached to
+ * this code says "We could not check your analysis limit just now", which is a
+ * sentence that is FALSE for all three of them — it sends an operator reading
+ * a support ticket to the limiter, and it tells a client their limit is in
+ * doubt when the truth is that we could not load their session at all.
+ *
+ * So: two codes, split by whether the LIMITER is the thing that could not be
+ * established. Both still mean "retry in a few minutes" and both are still
+ * 503, so a caller that branches on either one keeps working; the difference
+ * is that each sentence is now true of the condition that produced it.
  */
 const UNAVAILABLE_CODE = 'rate_limit_state_unavailable';
+
+/**
+ * The code for the preconditions that are NOT the limiter: the session lookup,
+ * the PIN/bypass access decision and the reusable-scan (dedup) lookup. Named
+ * for what they are — the things that must hold before an analysis can be
+ * considered at all.
+ */
+const PRECONDITION_UNAVAILABLE_CODE = 'analyze_precondition_unavailable';
+
+/**
+ * AUD-1. The code for an UNEXPECTED failure anywhere else in the handler.
+ *
+ * Everything above is a condition this route anticipated. This one is the
+ * `catch` at the bottom, which used to answer an opaque 500 with no code, no
+ * tag, no session id and a multi-line `console.error(..., error)` — the single
+ * untagged emit left in the whole change, and the one an operator reaches
+ * exactly when they have the least to go on.
+ */
+const HANDLER_FAILED_CODE = 'analyze_request_failed';
 
 /**
  * Nothing had been started at the point the upstream reads run: no analysis
@@ -143,17 +170,21 @@ function normalizeUrl(url: string): string {
 }
 
 /**
- * ONE place that turns a failed upstream read into the route's fail-closed
- * answer, so the three call sites cannot drift into logging three different
- * shapes or returning three different statuses. Logs first, then answers:
- * the operator line must exist even if the response never reaches anyone.
+ * THE LOG AND THE ANSWER ARE TWO DECISIONS — the same split D5 already made
+ * for the limiter read, applied to the three upstream stages.
+ *
+ * They used to be ONE function that logged and then unconditionally 503'd, and
+ * that fused two rules together. ALWAYS LOG: a degraded Supabase is degraded
+ * for everyone, and an AM's analyze click is often the earliest evidence a
+ * session ever gets. The ANSWER is a separate question, and at
+ * `reusable_scan_lookup` it has a separate answer — see the call site.
  */
-function upstreamUnavailable(
+function reportUpstreamStageFailure(
   stage: string,
   target: string,
   sessionId: string | null,
   err: unknown,
-): NextResponse {
+): void {
   logUpstreamFailure(
     BOUNDED_STAGE_FAILURE_TAG,
     {
@@ -166,17 +197,39 @@ function upstreamUnavailable(
     },
     normaliseThrownFault(err),
   );
+}
+
+/**
+ * The 503 for a precondition that could not be established.
+ *
+ * AUD-5(a). The sentence no longer mentions the analysis limit, because none
+ * of the three stages this answers for IS the limit: one loads the session,
+ * one decides access, one looks for a scan to reuse. The limiter's own 503
+ * keeps its own sentence and its own code, below.
+ */
+function preconditionUnavailable(): NextResponse {
   return NextResponse.json(
     {
       error:
-        'We could not check your analysis limit just now. Please try again in a few minutes.',
-      code: UNAVAILABLE_CODE,
+        'We could not start your website analysis just now. Please try again in a few minutes.',
+      code: PRECONDITION_UNAVAILABLE_CODE,
     },
     { status: 503 },
   );
 }
 
 export async function POST(request: NextRequest) {
+  // AUD-1. Two facts the TERMINAL CATCH needs and could not previously have,
+  // because both were block-scoped inside the try: WHICH session this was, and
+  // whether a rate-limit slot had already been spent by the time it failed.
+  //
+  // The second is the one that matters. Once the fail-closed audit write
+  // SUCCEEDS, one of the client's five hourly attempts is gone. Every failure
+  // after that point fell into an opaque 500 that said nothing about it, so an
+  // operator (and the client) read a retry as free when it was not.
+  let handlerSessionId: string | null = null;
+  let handlerClientId: string | null = null;
+  let rateLimitSlotSpent = false;
   try {
     if (!isSiteIntelligenceEnabled()) {
       return NextResponse.json(
@@ -245,17 +298,29 @@ export async function POST(request: NextRequest) {
         getSessionByToken(token, { signal }),
       );
     } catch (err) {
-      return upstreamUnavailable('session_lookup', 'onboarding_sessions', null, err);
+      reportUpstreamStageFailure('session_lookup', 'onboarding_sessions', null, err);
+      return preconditionUnavailable();
     }
     if (!session) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 });
     }
+    handlerSessionId = session.id;
+    handlerClientId = session.client_id;
     try {
       access = await withDeadline('session_access', UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED, () =>
         resolveSessionAccess(session!, request),
       );
     } catch (err) {
-      return upstreamUnavailable('session_access', 'pin-cookie + am-bypass guard', session.id, err);
+      // No bypass scoping here, and that is not an oversight: this stage is the
+      // one that DECIDES whether the caller is an AM. There is no bypass state
+      // to scope by until it answers, so it fails closed for everyone.
+      reportUpstreamStageFailure(
+        'session_access',
+        'pin-cookie + am-bypass guard',
+        session.id,
+        err,
+      );
+      return preconditionUnavailable();
     }
     if (access.kind === 'locked') {
       return NextResponse.json(
@@ -285,12 +350,30 @@ export async function POST(request: NextRequest) {
         findReusableScan(priorLinkedId, websiteUrl, { signal }),
       );
     } catch (err) {
-      return upstreamUnavailable(
+      // AUD-5(b) — A DISPOSITION VIOLATION, FIXED BY SCOPING RATHER THAN BY
+      // SILENCE.
+      //
+      // The ruling on this route is that an AM-bypass caller is never refused
+      // over limiter state they are exempt from. This stage 503'd them anyway,
+      // and did it under the LIMITER's own machine code, so an AM whose dedup
+      // lookup stalled was told their analysis limit was in doubt when they
+      // have no limit at all.
+      //
+      // The fix is the same shape D5 used for the counter read: ALWAYS LOG,
+      // 503 only when the caller is actually subject to this route's gating.
+      // For a bypass caller the lookup is pure DEDUP — it only ever saves a
+      // scan — so losing it costs one duplicate scan on a click the AM made
+      // deliberately, which is strictly better than refusing them. The line
+      // above records that it happened, so the duplicate is explicable rather
+      // than mysterious.
+      reportUpstreamStageFailure(
         'reusable_scan_lookup',
         'onboarding_site_intelligence',
         session.id,
         err,
       );
+      if (!isAmBypass) return preconditionUnavailable();
+      reuse = null;
     }
     if (reuse) {
       return NextResponse.json({
@@ -444,6 +527,10 @@ export async function POST(request: NextRequest) {
             succeeded: UPSTREAM_SUCCEEDED,
           }
         );
+        // AUD-1. THE SLOT IS NOW SPENT. Everything below this line runs with
+        // one of the client's five hourly attempts already consumed, and the
+        // terminal catch has to be able to say so.
+        rateLimitSlotSpent = true;
       } catch (err) {
         // Caught HERE, above the generic catch below, which would flatten
         // this into an opaque 500 and lose the machine-readable reason.
@@ -484,24 +571,66 @@ export async function POST(request: NextRequest) {
     // /api/public/site-intelligence/status to know when the work
     // is done.
     //
-    // DELIBERATELY UNBOUNDED, STATED RATHER THAN OVERLOOKED. These two are on
-    // the REQUEST path and DOWNSTREAM of the fail-closed decision, which is
-    // the same line the rest of this codebase draws: a request-path stall is
-    // at least visible, because the request hangs and the platform kills it
-    // with a gateway timeout an operator can see, whereas an after()-path
-    // stall happens behind an already-delivered response. Nothing here is a
-    // precondition for the 503 above, so bounding them would change which
-    // error a caller sees without making any silent failure loud. If that
-    // trade is ever revisited, `withDeadline` is the primitive and
-    // `upstreamUnavailable` is the answer.
-    const recordId = await createSiteIntelligenceRecord(websiteUrl);
+    // AUD-1. NOW BOUNDED. The previous note argued these two could stay
+    // unbounded because a request-path stall is "at least visible" as a
+    // gateway timeout. That argument does not survive the line above it: by
+    // this point the fail-closed audit write has SUCCEEDED, so a rate-limit
+    // slot is already spent. A stall here holds the invocation to
+    // maxDuration = 300s, the platform kills it, the client sees a gateway
+    // error with no code, and they are one hourly attempt down with no scan
+    // and no log line explaining either. It also loses scan dedup: the FK that
+    // makes an in-flight scan discoverable is the second of these two calls.
+    //
+    // WHAT THE BOUND DOES AND DOES NOT DO, stated rather than implied. Neither
+    // helper takes an AbortSignal, so `withDeadline` bounds the WAITING and
+    // does not CANCEL the underlying request the way the signal-aware reads
+    // above are cancelled. That is the honest difference between this bound
+    // and those; it is still the difference between a report at 5s and a
+    // gateway kill at 300s. Threading a signal into these two helpers is a
+    // change to src/lib/siteIntelligence/analyze.ts and is deliberately not
+    // made here.
+    // A failure here is deliberately left to the TERMINAL CATCH rather than
+    // answered locally: that catch is now tagged, coded and slot-aware
+    // (AUD-1), and it is the one place that knows how to say "a slot was
+    // spent". A local answer would be a second sentence for one condition.
+    const recordId = await withDeadline(
+      'record_create',
+      UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED,
+      () => createSiteIntelligenceRecord(websiteUrl),
+    );
 
     // Make the in-flight scan discoverable so a reload (or an AM clicking
     // Analyze while it runs) resumes/dedups it instead of starting a
     // duplicate. Sets the FK only; snapshots are written on completion by
     // linkSiteIntelligenceToSession. Skips when a still-good completed
     // record is already linked (bug-#2 invariant — see the helper).
-    await attachPendingScanToSession(session.id, recordId, priorLinkedId);
+    //
+    // LOG AND CONTINUE, not fail. The record EXISTS at this point and the
+    // scan below is worth running; this call only makes it discoverable for
+    // dedup. Failing the caller here would waste a slot that has already been
+    // spent AND throw away a scan that can still succeed, so the disposition
+    // is the same one the helper's own internal error handling already chose,
+    // now with a line an operator can grep instead of a console.warn.
+    try {
+      await withDeadline('attach_pending_scan', UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED, () =>
+        attachPendingScanToSession(session!.id, recordId, priorLinkedId),
+      );
+    } catch (err) {
+      logUpstreamFailure(
+        BOUNDED_STAGE_FAILURE_TAG,
+        {
+          route: ANALYZE_ROUTE,
+          target: 'attach_pending_scan (onboarding_sessions)',
+          eventType: 'analyze_attach_pending_scan',
+          sessionId: session.id,
+          clientId: session.client_id,
+          succeeded:
+            'the rate-limit slot was spent and the analysis record EXISTS and is being scanned; ' +
+            'only the dedup FK was not set, so a reload or a second Analyze click may start a duplicate scan',
+        },
+        normaliseThrownFault(err),
+      );
+    }
 
     // -----------------------------------------------------------------------
     // D3 — THE AFTER() CALLBACK: three unbounded awaits and NO failure report.
@@ -602,9 +731,53 @@ export async function POST(request: NextRequest) {
       status: 'queued',
     });
   } catch (error) {
-    console.error('[public site-intel analyze] error:', error);
+    // -----------------------------------------------------------------------
+    // AUD-1 — THE LAST UNTAGGED EMIT IN THE CHANGE, AND THE WORST PLACE FOR IT
+    // -----------------------------------------------------------------------
+    //
+    // This was `console.error('[public site-intel analyze] error:', error)`:
+    // no tag to grep, no session id, no machine code on the response, and —
+    // because a caught Error is printed with its stack — SEVERAL physical
+    // lines, which is the exact fragmentation every other emitter in this
+    // change was written to avoid.
+    //
+    // It is also the branch reached AFTER the fail-closed audit write has
+    // succeeded, which is the part that made the silence expensive rather than
+    // merely untidy. Driven live: the rate-limit row landed 201,
+    // createSiteIntelligenceRecord was then refused with a real 42501, and the
+    // caller got `500 {"error":"Internal server error"}`. The client was one
+    // of five hourly attempts down and nothing anywhere said so, so the
+    // obvious advice — "just try again" — silently burned the rest.
+    //
+    // So the line now goes through the SAME emitter as every other failure on
+    // this route (one tag, one line of JSON, escaped, bounded, normalised
+    // fault vocabulary), names the session, and its `succeeded` field states
+    // the slot outcome as a FACT rather than leaving it to be inferred.
+    logUpstreamFailure(
+      BOUNDED_STAGE_FAILURE_TAG,
+      {
+        route: ANALYZE_ROUTE,
+        target: 'request_handler (unhandled)',
+        eventType: 'analyze_request_handler',
+        sessionId: handlerSessionId ?? '',
+        clientId: handlerClientId,
+        succeeded: rateLimitSlotSpent
+          ? 'A RATE-LIMIT SLOT WAS SPENT: the site_intelligence_analyze_requested row is committed, so this ' +
+            'client is one of their five hourly attempts down. No analysis record is guaranteed and no ' +
+            'Anthropic spend is guaranteed. Telling them to simply retry burns the remaining slots.'
+          : 'no rate-limit slot was spent, no analysis record was created and no Anthropic spend was incurred: ' +
+            'this failed before the analyze-requested row was written',
+      },
+      normaliseThrownFault(error),
+    );
     return NextResponse.json(
-      { error: 'Internal server error' },
+      {
+        error: 'We could not complete your request just now. Please try again in a few minutes.',
+        code: HANDLER_FAILED_CODE,
+        // The one fact a CLIENT can act on, and the reason it is in the body
+        // rather than only in the log: whether a retry is free.
+        slotSpent: rateLimitSlotSpent,
+      },
       { status: 500 }
     );
   }
