@@ -216,14 +216,29 @@ function loadPinEncryptionKey(): Buffer {
   const trimmed = raw.trim();
   const key = Buffer.from(trimmed, "base64");
 
-  // Buffer.from(x, "base64") silently discards anything outside the
-  // base64 alphabet, so a base64url key (containing - or _), a key
-  // with a stray quote, or a half-pasted key can still decode to
-  // some 32-byte value. That wrong-but-well-sized key would encrypt
-  // happily while every pre-existing row failed to decrypt, which
-  // reads as data corruption rather than as the misconfiguration it
-  // is. The re-encode round-trip is the only place that mistake can
-  // still be named accurately.
+  // THIS IS A CANONICALISATION GATE, NOT A WRONG-KEY DETECTOR, and an earlier
+  // version of this comment had the mechanism wrong. It claimed Buffer.from
+  // "silently discards anything outside the base64 alphabet" so a base64url key
+  // would decode to some DIFFERENT 32-byte value. Measured, that is false:
+  //
+  //   Buffer.from("-_", "base64").length === 1
+  //
+  // Node MAPS - and _ as base64url digits 62 and 63 rather than discarding them.
+  // Only genuinely invalid characters are dropped (Buffer.from("!@","base64") is
+  // empty). So a base64url key, an unpadded key, a newline-wrapped key and a key
+  // with a stray leading quote all decode to bytes IDENTICAL to the real key.
+  //
+  // Which means rejecting them is a STRICTNESS CHOICE, not a safety one. It is
+  // kept deliberately: one canonical spelling of the key is what makes "the value
+  // in Vercel is the value this code uses" checkable by eye, and accepting four
+  // spellings silently would make a genuine mismatch harder to spot later. But it
+  // is not protecting against a wrong key, and the error message must not imply
+  // that it is.
+  //
+  // The one variant that DOES decode to different bytes is non-canonical trailing
+  // bits, where the final character encodes bits beyond the 32nd byte. That is
+  // also caught here, and it is the only case where this check prevents a real
+  // wrong-key deployment rather than enforcing a spelling.
   // The message names the LIKELY CAUSES, not just the rule it broke.
   // This check fails closed on keys whose 32 bytes are perfectly correct
   // but whose encoding is not byte-identical after a round trip: a
@@ -236,11 +251,14 @@ function loadPinEncryptionKey(): Buffer {
   // break the paste introduced.
   if (key.toString("base64") !== trimmed) {
     throw new PinEncryptionConfigurationError(
-      "PIN_ENCRYPTION_KEY is not canonical base64. The bytes may well be " +
-        "correct: the usual causes are a line break or stray whitespace " +
-        "inside the value, base64url characters (- or _) instead of + and /, " +
-        "or missing '=' padding. Standard alphabet with padding, on one line. " +
-        "Generate one with " +
+      "PIN_ENCRYPTION_KEY decodes to the right number of bytes but is not " +
+        "canonical base64, so THE KEY ITSELF IS PROBABLY FINE and only its " +
+        "spelling is wrong. Do not go looking for a wrong or rotated key. The " +
+        "usual causes, in order: a line break or stray whitespace inside the " +
+        "value, base64url characters (- or _) where + and / belong, a missing " +
+        "'=' pad, or a quote picked up from a shell. Fix: re-encode the same " +
+        "bytes as standard base64 with padding, on one line. If you are minting " +
+        "a new key instead, use " +
         "require('crypto').randomBytes(32).toString('base64')",
     );
   }
@@ -287,6 +305,54 @@ function loadPinEncryptionKey(): Buffer {
  * from the encrypt path's own thrown message, which names which of the
  * three it was.
  */
+/**
+ * The three states a session's PIN can be in, from the caller's point of view.
+ *
+ * `no_gate`      no PIN protects this session at all. pin_hash is absent.
+ * `recoverable`  a PIN exists AND a decryptable copy is stored.
+ * `unrecoverable` a PIN exists but no recoverable copy: written before this
+ *                feature, or written while the key was unset or bad. The remedy
+ *                is to regenerate, which changes the PIN the client holds.
+ */
+export type PinState = "no_gate" | "recoverable" | "unrecoverable";
+
+/**
+ * Classify a session row's PIN state in ONE place.
+ *
+ * Extracted because keeping these three apart needs BOTH columns and got
+ * hand-rolled at every call site, which is how two of them end up disagreeing.
+ * A caller that tests only `pin_envelope` cannot tell `no_gate` from
+ * `unrecoverable`, and those have opposite remedies: one is "this session was
+ * never gated", the other is "regenerate and tell the client their PIN changed".
+ *
+ * THE INTERFACE IS KNOWN-STALE AND THAT IS WHY THIS TAKES A LOOSE SHAPE.
+ * `OnboardingSession` is hand-maintained and has lagged the real schema since
+ * before this feature; the standing instruction on this repo is to trust
+ * supabase/migrations over the interface. Concretely: against a database where
+ * migration 011 has not been applied, `pin_envelope` is ABSENT from the row, so
+ * it arrives as `undefined` while the declared type promises `string | null`.
+ *
+ * So the parameter is deliberately widened to `string | null | undefined` rather
+ * than narrowed to match the interface, and undefined and null are treated
+ * IDENTICALLY: both mean "no recoverable copy here". DO NOT narrow this back to
+ * `string | null` to match `OnboardingSession`. The looser type is the accurate
+ * one, and narrowing it reintroduces the `!== null` bug that reports an
+ * unmigrated row as recoverable.
+ *
+ * Structural only. It does NOT decrypt and does not touch the key, so it is safe
+ * to call before the configuration gate and says nothing about whether this
+ * deployment can actually read the envelope.
+ */
+export function classifyPinState(row: {
+  pin_hash?: string | null;
+  pin_envelope?: string | null;
+}): PinState {
+  const hash = typeof row?.pin_hash === "string" ? row.pin_hash.trim() : "";
+  if (hash.length === 0) return "no_gate";
+  // A positive test on the VALUE, never `!== null`: undefined must not pass.
+  return isPinEnvelope(row?.pin_envelope) ? "recoverable" : "unrecoverable";
+}
+
 export function isPinEncryptionConfigured(): boolean {
   try {
     loadPinEncryptionKey();
@@ -497,8 +563,28 @@ export function isPinEnvelope(value: unknown): boolean {
  * response, where a blank string reads as a blank PIN.
  */
 export function decryptPin(envelope: unknown): string {
-  const { iv, authTag, ciphertext } = parseEnvelope(envelope);
+  // THE KEY IS LOADED FIRST, BEFORE THE ROW IS JUDGED. The order matters and it
+  // used to be the other way round.
+  //
+  // With parseEnvelope first, an unconfigured deployment reported whatever the
+  // ROW happened to be wrong about: a malformed row came back as an `encoding`
+  // fault and a short-tag row as an `integrity` fault, when the actual fault was
+  // that nothing on this deployment can decrypt anything at all. That is a
+  // missing key masquerading as a state of the data, and a caller reading the
+  // error code would blame the row and go looking for corruption.
+  //
+  // Fixing it only at the read endpoint's gate would leave the trap armed for
+  // every future caller of this function, so it is fixed here. You cannot
+  // meaningfully judge a row when the deployment has no usable key: configuration
+  // is a strictly more fundamental fault and now always wins.
+  //
+  // The endpoint gates on isPinEncryptionConfigured() as well. Two independent
+  // checks is the point, not redundancy: this one guarantees the fault CODE is
+  // right for every caller, the endpoint's guarantees it never reaches a row it
+  // cannot read. A late env change between the gate and this call still surfaces
+  // as `configuration` rather than as a row problem.
   const key = loadPinEncryptionKey();
+  const { iv, authTag, ciphertext } = parseEnvelope(envelope);
 
   let plaintext: string;
   try {
