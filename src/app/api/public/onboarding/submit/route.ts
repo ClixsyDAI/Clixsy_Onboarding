@@ -5,7 +5,7 @@ import {
   getSessionByToken as realGetSessionByToken,
   getSessionAnswers as realGetSessionAnswers,
   updateSessionStep as realUpdateSessionStep,
-  createAuditEvent as realCreateAuditEvent,
+  recordAuditEvent as realRecordAuditEvent,
   upsertAnswer as realUpsertAnswer,
   type OnboardingSession,
   type OnboardingAnswer,
@@ -92,11 +92,11 @@ const updateSessionStep: typeof realUpdateSessionStep = TEST_MODE
     }
   : realUpdateSessionStep;
 
-const createAuditEvent: typeof realCreateAuditEvent = TEST_MODE
+const recordAuditEvent: typeof realRecordAuditEvent = TEST_MODE
   ? async (sessionId, eventType, payload) => {
       getTestState().audits.push({ sessionId, eventType, payload });
     }
-  : realCreateAuditEvent;
+  : realRecordAuditEvent;
 
 const checkSessionGuard: (s: SessionRow) => Promise<GuardResult> = TEST_MODE
   ? async () => getTestState().guard
@@ -202,26 +202,70 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create audit event — suppressed for AM-bypass submissions (#4).
-    if (!isAmBypass) {
-      await createAuditEvent(session.id, 'session_submitted', {
-        totalStepsCompleted: answeredSteps.size,
-        totalSteps: steps.length,
-      });
-    }
-
     // Onboarding→dashboard bridge: reconcile this client into the
     // dashboard's projects.json. Runs via after() AFTER the response is
     // sent, so it never blocks the client submit and never alters the
     // response shape below. Failures are logged + audited and safely
     // retryable (the dashboard endpoint is idempotent on workbook_id).
     // Skipped under the in-memory test-mode shim (no real network).
+    //
+    // REGISTERED BEFORE THE AUDIT WRITE, on purpose. The two sides are not
+    // symmetric. The audit row is bookkeeping and is reconstructable from the
+    // session row itself. The bridge and the sheet export are the ONLY things
+    // that carry this submission out of Supabase, and the already-submitted
+    // guard at :148-153 turns a re-submit into a 400 — so if an exception
+    // between here and the response ever skipped them, the loss would be
+    // permanent and unrecoverable behind that guard. Registering first is
+    // cheap insurance against that; `after` only schedules, so nothing runs
+    // any earlier than it did before.
+    //
+    // WHAT `after()` ACTUALLY GUARANTEES, corrected. Only REGISTRATION order
+    // is ordered. It does NOT sequence execution: AfterContext builds its
+    // queue as `new PQueue()` with no options
+    // (next/dist/server/after/after-context.js), i.e. the p-queue default of
+    // concurrency Infinity, so both callbacks below are started together and
+    // run CONCURRENTLY. Nothing here may assume the bridge finishes, starts,
+    // or even runs before the sheet export.
+    //
+    // THE ONE REAL DEPENDENCY, and why it holds anyway.
+    // exportSubmissionToSheet re-reads submitted_at from the database
+    // (sheet-export.ts:202-208, `select('submitted_at')`) rather than reading
+    // the stale `session` object in scope. That read is satisfied by DB STATE
+    // AT THE MOMENT IT RUNS, and `updateSessionStep(..., 'submitted')` above
+    // is awaited to completion before either registration happens — so the
+    // timestamp is already committed no matter which callback wins the race.
+    // The export depends on the UPDATE, not on the bridge; there is no
+    // ordering constraint between the two callbacks, and none is available.
     if (!TEST_MODE) {
       after(() => fireDashboardClientBridge(session));
       // Google Sheet roster export — same fire-and-forget contract as the
       // bridge: all failures are handled inside, nothing throws into the
       // submit path, and the two side effects stay independent.
       after(() => exportSubmissionToSheet(session));
+    }
+
+    // Create audit event — suppressed for AM-bypass submissions (#4).
+    //
+    // DEGRADE, LOUDLY. The submission itself is already committed and the two
+    // exports are already scheduled, so failing the caller here would report a
+    // failure that did not happen and invite a re-submit the 400 guard above
+    // would refuse. `recordAuditEvent` never throws and logs at ERROR, so the
+    // lost row is findable without the caller doing anything.
+    if (!isAmBypass) {
+      await recordAuditEvent(
+        session.id,
+        'session_submitted',
+        {
+          totalStepsCompleted: answeredSteps.size,
+          totalSteps: steps.length,
+        },
+        {
+          clientId: session.client_id,
+          route: 'POST /api/public/onboarding/submit',
+          succeeded:
+            'the session is marked submitted and the dashboard bridge and sheet export are scheduled; only the audit row was lost',
+        },
+      );
     }
 
     return NextResponse.json({

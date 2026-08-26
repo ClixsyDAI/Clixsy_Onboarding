@@ -1,4 +1,10 @@
-import { createServiceRoleClient } from '@/lib/supabase/server';
+import {
+  createServiceRoleClient,
+  logSupabaseFailure,
+  normaliseAuditFault,
+  SUPABASE_READ_FAILURE_TAG,
+  SUPABASE_READ_TIMEOUT_MS_AFTER,
+} from '@/lib/supabase/server';
 import { hasFirecrawlKey, hasWappalyzerKey, hasBuiltWithKey, hasPageSpeedKey } from './config';
 import type { SiteIntelligenceProvider, ProviderResult } from './providers/types';
 import type { Branding, SiteInsights, TechStack, Metrics, Evidence, SiteIntelligenceRecord } from './schemas';
@@ -56,9 +62,15 @@ const REUSABLE_STATUSES: ReadonlySet<string> = new Set([
 export async function findReusableScan(
   linkedRecordId: string | null | undefined,
   websiteUrl: string,
+  /**
+   * Threaded from the analyze route's `withDeadline`. Optional so the other
+   * callers are unchanged; when present the underlying read is genuinely
+   * CANCELLED at the deadline rather than merely abandoned.
+   */
+  opts?: { signal?: AbortSignal },
 ): Promise<{ recordId: string; status: SiteIntelligenceRecord['status'] } | null> {
   if (!linkedRecordId) return null;
-  const existing = await getSiteIntelligence(linkedRecordId);
+  const existing = await getSiteIntelligence(linkedRecordId, opts);
   if (!existing) return null;
   if (!REUSABLE_STATUSES.has(existing.status)) return null;
   if (canonicalUrl(existing.website_url) !== canonicalUrl(websiteUrl)) return null;
@@ -252,21 +264,80 @@ export async function createSiteIntelligenceRecord(websiteUrl: string): Promise<
 // Run the analysis pipeline
 // =============================================
 
-export async function runSiteAnalysis(recordId: string): Promise<void> {
+export async function runSiteAnalysis(
+  recordId: string,
+  /**
+   * Only so the failure line below can name the session an operator would
+   * search by. Optional because the admin route analyses a record that is not
+   * yet attached to any session, and a line that says `"session_id":null` is
+   * honest where a line that repeats the record id there would not be.
+   */
+  opts?: { sessionId?: string | null },
+): Promise<void> {
   const supabase = createServiceRoleClient();
 
   // Mark as running
+  //
+  // SURVIVING SILENT WRITE (1 of 3 in this file). `.error` is never read and
+  // the result is discarded, so an RLS refusal, a schema fault or a dead
+  // transport leaves this record stuck at 'queued' with nothing logged — the
+  // wizard then polls a status that will never change. postgrest-js RESOLVES
+  // all of those rather than throwing, which is why no try/catch above catches
+  // it (src/lib/supabase/server.ts documents the resolved-value contract).
+  // Out of scope for this PR: these are site-intelligence state writes, not
+  // audit writes, so they are not among the seven sites the audit-surfacing
+  // change covers, and their behaviour is deliberately UNCHANGED here.
+  // The primitives to reach for when fixing this: `normaliseAuditFault` +
+  // `AuditWriteError` + `logAuditWriteFailure`, or `recordAuditRow` /
+  // `insertAuditRowOrThrow` (both table-agnostic) in
+  // src/lib/supabase/server.ts, plus `.abortSignal(AbortSignal.timeout(ms))`,
+  // which nothing in this file has either.
   await supabase
     .from('onboarding_site_intelligence')
     .update({ status: 'running', started_at: new Date().toISOString() })
     .eq('id', recordId);
 
-  // Get the record
-  const { data: record } = await supabase
+  // Get the record.
+  //
+  // BOUNDED AND REPORTED, and it is a READ, so it is NOT one of the three
+  // discarded-result WRITES annotated in this file — those are deliberately
+  // unchanged. This read is the FIRST unbounded await inside the analyze
+  // route's after() callback, so under a PostgREST that accepts and never
+  // answers it froze the whole background task here: no analysis, no status
+  // change, no line, and the 200 already shipped. The outer deadline in the
+  // route would eventually end it, but only after SITE_ANALYSIS_DEADLINE_MS,
+  // and it could not say WHICH await had stalled. Five seconds is the same
+  // after()-path budget every other Supabase read on a background path uses.
+  const {
+    data: record,
+    error: recordErr,
+    status: recordStatus,
+  } = await supabase
     .from('onboarding_site_intelligence')
     .select('*')
     .eq('id', recordId)
+    .abortSignal(AbortSignal.timeout(SUPABASE_READ_TIMEOUT_MS_AFTER))
     .single();
+
+  if (recordErr) {
+    logSupabaseFailure(
+      SUPABASE_READ_FAILURE_TAG,
+      {
+        route: `runSiteAnalysis(record ${recordId})`,
+        table: 'onboarding_site_intelligence',
+        eventType: 'analysis_record_lookup',
+        sessionId: opts?.sessionId ?? '',
+        clientId: null,
+        succeeded:
+          'nothing: the analysis never started, and the record is left at whatever status it already had',
+      },
+      normaliseAuditFault(
+        recordStatus,
+        recordErr,
+        'the site-intelligence record read was refused with no error body',
+      ),
+    );
+  }
 
   if (!record) {
     throw new Error('Site intelligence record not found');
@@ -406,6 +477,16 @@ export async function runSiteAnalysis(recordId: string): Promise<void> {
     const questionOverrides = buildQuestionOverrides(merged.insights, merged.techStack.cms, merged.techStack);
 
     // Save results
+    //
+    // SURVIVING SILENT WRITE (2 of 3, and the worst of them). This is the
+    // write that PERSISTS A COMPLETED ANALYSIS: the branding, insights, tech
+    // stack, prefill map and question overrides the whole Anthropic spend just
+    // produced. `.error` is never read, so if it is refused the record stays
+    // 'running' forever, the paid-for result is dropped on the floor, and
+    // nothing anywhere says so. Same silent class as the audit writes; same
+    // reason (postgrest-js resolves faults instead of throwing).
+    // NOT CHANGED IN THIS PR (not an audit write, outside the seven sites).
+    // Primitives available for the fix: see the note in runSiteAnalysis above.
     await supabase
       .from('onboarding_site_intelligence')
       .update({
@@ -427,6 +508,12 @@ export async function runSiteAnalysis(recordId: string): Promise<void> {
     const errorMessage = err instanceof Error ? err.message : 'Unknown analysis error';
     console.error('Site analysis failed:', errorMessage);
 
+    // SURVIVING SILENT WRITE (3 of 3). The failure-marking write is itself
+    // silent, so a refused update leaves the record stuck at 'running' and the
+    // wizard polling a scan that has already failed. The console.error above
+    // is the only trace, and it does not say the STATUS never landed.
+    // NOT CHANGED IN THIS PR (not an audit write, outside the seven sites).
+    // Primitives available for the fix: see the note in runSiteAnalysis above.
     await supabase
       .from('onboarding_site_intelligence')
       .update({
@@ -442,14 +529,20 @@ export async function runSiteAnalysis(recordId: string): Promise<void> {
 // Get site intelligence record
 // =============================================
 
-export async function getSiteIntelligence(recordId: string): Promise<SiteIntelligenceRecord | null> {
+export async function getSiteIntelligence(
+  recordId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<SiteIntelligenceRecord | null> {
   const supabase = createServiceRoleClient();
 
-  const { data, error } = await supabase
+  // `.abortSignal` precedes `.single()`, which returns a PostgrestBuilder and
+  // does not carry it.
+  let query = supabase
     .from('onboarding_site_intelligence')
     .select('*')
-    .eq('id', recordId)
-    .single();
+    .eq('id', recordId);
+  if (opts?.signal) query = query.abortSignal(opts.signal);
+  const { data, error } = await query.single();
 
   if (error || !data) return null;
   return data as SiteIntelligenceRecord;
@@ -462,17 +555,20 @@ export async function getSiteIntelligence(recordId: string): Promise<SiteIntelli
 export async function linkSiteIntelligenceToSession(
   sessionId: string,
   siId: string,
+  opts?: { signal?: AbortSignal },
 ): Promise<void> {
   const supabase = createServiceRoleClient();
 
   // Get the intelligence record
-  const si = await getSiteIntelligence(siId);
+  const si = await getSiteIntelligence(siId, opts);
   if (!si || si.status !== 'completed') {
     throw new Error('Site intelligence record not found or not completed');
   }
 
-  // Update session with reference and snapshots
-  const { error } = await supabase
+  // Update session with reference and snapshots. BOTH halves take the signal:
+  // this helper is TWO round trips, so bounding only the read would leave the
+  // write able to hang the caller on its own.
+  let update = supabase
     .from('onboarding_sessions')
     .update({
       site_intelligence_id: siId,
@@ -482,6 +578,8 @@ export async function linkSiteIntelligenceToSession(
       si_insights_snapshot: si.insights,
     })
     .eq('id', sessionId);
+  if (opts?.signal) update = update.abortSignal(opts.signal);
+  const { error } = await update;
 
   if (error) {
     throw new Error(`Failed to link site intelligence: ${error.message}`);
