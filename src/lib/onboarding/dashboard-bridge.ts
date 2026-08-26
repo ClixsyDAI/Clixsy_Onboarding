@@ -23,13 +23,24 @@ import {
   createServiceRoleClient,
   recordAuditEvent,
   logSupabaseFailure,
+  logUpstreamFailure,
   normaliseAuditFault,
+  normaliseHttpResponseFault,
+  normaliseThrownFault,
   SUPABASE_READ_FAILURE_TAG,
   SUPABASE_READ_TIMEOUT_MS_AFTER,
+  UPSTREAM_HTTP_FAILURE_TAG,
   type OnboardingSession,
 } from "@/lib/supabase/server";
 
 const BRIDGE_ROUTE = "after(POST /api/public/onboarding/submit) → dashboard-bridge";
+
+/**
+ * What survived a bridge failure. One string, so the HTTP line and the audit
+ * line below cannot drift into saying different things about the same event.
+ */
+const BRIDGE_SUCCEEDED =
+  "the submission itself is committed; the dashboard sync did not land, so re-fire the bridge for this session";
 
 // The dashboard's canonical production origin. Bearer-authed, so it must
 // target the canonical domain directly (a cross-origin redirect would
@@ -176,8 +187,27 @@ export async function fireDashboardClientBridge(
       } catch {
         /* swallow */
       }
-      console.error(
-        `[dashboard-bridge] dashboard POST /api/clients failed status=${res.status} session=${session.id} body=${body.slice(0, 500)}`,
+      // D6. This used to be a hand-built console.error that CONCATENATED
+      // `body.slice(0, 500)` — remote text, unescaped — straight into the
+      // record. A single newline anywhere in the dashboard's answer (an HTML
+      // error page, a stack trace, a proxy interstitial) split the line in two
+      // and stranded the tag on the half without the news, which is the exact
+      // hazard the JSON emitter and safeField exist to remove. The 500-char
+      // hand-clip is gone too: `normaliseHttpResponseFault` applies the SAME
+      // 300-char bound with the SAME "[truncated: N chars total]" marker as
+      // every other message, so a clipped body reads as clipped instead of as
+      // a complete sentence that happens to stop.
+      logUpstreamFailure(
+        UPSTREAM_HTTP_FAILURE_TAG,
+        {
+          route: BRIDGE_ROUTE,
+          target: `${DASHBOARD_BASE_URL}/api/clients`,
+          eventType: "dashboard_client_sync",
+          sessionId: session.id,
+          clientId: session.client_id,
+          succeeded: BRIDGE_SUCCEEDED,
+        },
+        normaliseHttpResponseFault(res.status, body),
       );
       await recordAuditEvent(
         session.id,
@@ -202,8 +232,23 @@ export async function fireDashboardClientBridge(
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(
-      `[dashboard-bridge] error session=${session.id}: ${message}`,
+    // D6, the second half. `message` here is whatever fetch(), res.json() or
+    // an aborted AbortSignal.timeout(15000) produced — a value this code did
+    // not author — so it goes through the same emitter, the same bound and the
+    // same fault vocabulary as everything else rather than being concatenated.
+    // normaliseThrownFault is what makes the 15s abort report as fault
+    // 'timeout' instead of disappearing into an untyped string.
+    logUpstreamFailure(
+      UPSTREAM_HTTP_FAILURE_TAG,
+      {
+        route: BRIDGE_ROUTE,
+        target: `${DASHBOARD_BASE_URL}/api/clients`,
+        eventType: "dashboard_client_sync",
+        sessionId: session.id,
+        clientId: session.client_id,
+        succeeded: BRIDGE_SUCCEEDED,
+      },
+      normaliseThrownFault(err),
     );
     await recordAuditEvent(
       session.id,

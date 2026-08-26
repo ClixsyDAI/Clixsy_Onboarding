@@ -47,10 +47,15 @@ import {
   insertAuditEventOrThrow,
   logAuditWriteFailure,
   logSupabaseFailure,
+  logUpstreamFailure,
   normaliseReadFault,
+  normaliseThrownFault,
+  withDeadline,
   AuditWriteError,
   AUDIT_READ_TIMEOUT_MS_FAIL_CLOSED,
+  BOUNDED_STAGE_FAILURE_TAG,
   RATE_LIMIT_READ_FAILURE_TAG,
+  UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED,
 } from '@/lib/supabase/server';
 import { resolveSessionAccess } from '@/lib/onboarding/session-guard';
 import { isLikelyUrl } from '@/lib/onboarding/url-shape';
@@ -62,6 +67,72 @@ export const maxDuration = 300;
 
 const RATE_LIMIT_PER_HOUR = 5;
 
+const ANALYZE_ROUTE = 'POST /api/public/site-intelligence/analyze';
+
+/**
+ * What the caller is told when this route cannot maintain its own
+ * preconditions. ONE code for every such condition, deliberately: from the
+ * caller's side "the limiter cannot be maintained right now" and "the session
+ * lookup in front of the limiter never answered" mean the same thing and want
+ * the same handling, and one code to branch on beats two that need identical
+ * treatment. The failure LINE is where the difference is recorded, and it
+ * names the exact stage.
+ */
+const UNAVAILABLE_CODE = 'rate_limit_state_unavailable';
+
+/**
+ * Nothing had been started at the point the upstream reads run: no analysis
+ * record exists, no Anthropic call has been made, no rate-limit row has been
+ * written. Unlike the WRITE-side wording below, this sentence is true for
+ * EVERY fault kind including 'timeout', because no INSERT has been issued yet
+ * for PostgREST to have committed behind our back.
+ */
+const UPSTREAM_SUCCEEDED = 'nothing was started: no analysis record, no Anthropic spend';
+
+/**
+ * D4. The WRITE-side `succeeded` sentence cannot be a constant, because on a
+ * TIMEOUT it would be FALSE.
+ *
+ * `attemptAuditWrite` documents the reason at its abort site: aborting stops
+ * US waiting, it does NOT roll back an INSERT that PostgREST may already have
+ * COMMITTED server-side. So on kind 'timeout' the rate-limit row — which IS
+ * this route's limiter state — may or may not exist. Telling an operator
+ * "nothing was started" there is the one sentence in the whole line that could
+ * send them to the wrong conclusion: they would read a 503 as a no-op and tell
+ * a client to retry freely, while each attempt may in fact be spending one of
+ * five hourly slots.
+ *
+ * Every OTHER fault kind is genuinely a no-op: 'client_init' never reached the
+ * network, and 'postgrest' / 'gateway' / 'transport' all carry a definite
+ * refusal from a layer that answered.
+ */
+function writeSucceededFor(kind: string): string {
+  if (kind === 'timeout') {
+    return (
+      'no analysis was started and no Anthropic spend was incurred, but the rate-limit row is UNCERTAIN: ' +
+      'the insert was aborted at our deadline, which does not roll back a row PostgREST may already have ' +
+      'committed, so this attempt may or may not have spent one of the hourly slots'
+    );
+  }
+  return 'nothing was started: no analysis record, no Anthropic spend';
+}
+
+/**
+ * How long the analyze route's own after() callback may spend on the analysis
+ * stage. The route declares maxDuration = 300, so this terminates and REPORTS
+ * inside the platform's own window instead of being killed mid-await with only
+ * a console.error to show for it. It is deliberately generous: a real scan
+ * runs providers and an Anthropic call, and a bound that is too tight would
+ * throw away paid work on an ordinary latency spike.
+ *
+ * WHAT IT COVERS THAT NOTHING ELSE DOES, stated plainly: runSiteAnalysis holds
+ * three DISCARDED-RESULT WRITES that are annotated as out of scope and are NOT
+ * changed here. Their error handling is untouched. This deadline bounds the
+ * WAITING on them, which is not the same thing — without it, a stall on any of
+ * the three still freezes the callback with nothing said.
+ */
+const SITE_ANALYSIS_DEADLINE_MS = 240_000;
+
 /** Normalize a URL for idempotency comparison. */
 function normalizeUrl(url: string): string {
   let u = url.trim();
@@ -69,6 +140,40 @@ function normalizeUrl(url: string): string {
     u = 'https://' + u;
   }
   return u.replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * ONE place that turns a failed upstream read into the route's fail-closed
+ * answer, so the three call sites cannot drift into logging three different
+ * shapes or returning three different statuses. Logs first, then answers:
+ * the operator line must exist even if the response never reaches anyone.
+ */
+function upstreamUnavailable(
+  stage: string,
+  target: string,
+  sessionId: string | null,
+  err: unknown,
+): NextResponse {
+  logUpstreamFailure(
+    BOUNDED_STAGE_FAILURE_TAG,
+    {
+      route: ANALYZE_ROUTE,
+      target: `${stage} (${target})`,
+      eventType: 'analyze_upstream_read',
+      sessionId: sessionId ?? '',
+      clientId: null,
+      succeeded: UPSTREAM_SUCCEEDED,
+    },
+    normaliseThrownFault(err),
+  );
+  return NextResponse.json(
+    {
+      error:
+        'We could not check your analysis limit just now. Please try again in a few minutes.',
+      code: UNAVAILABLE_CODE,
+    },
+    { status: 503 },
+  );
 }
 
 export async function POST(request: NextRequest) {
@@ -106,11 +211,52 @@ export async function POST(request: NextRequest) {
     // form is the core reason the AM link exists. The analyze-requested
     // audit below is suppressed under bypass so the AM's prep doesn't
     // register as client activity (zero-tracking invariant).
-    const session = await getSessionByToken(token);
+    //
+    // D2 — THE FAIL-CLOSED 503 WAS ITSELF GUARDED BY UNBOUNDED READS.
+    //
+    // The counter read below is bounded and fails closed. The three awaits in
+    // FRONT of it were not, and they run FIRST: `getSessionByToken`,
+    // `resolveSessionAccess` and `findReusableScan`. Under a PostgREST that
+    // accepts the connection and never answers, the handler froze on the first
+    // of them — so the route neither failed closed nor reported anything, and
+    // the bounded counter read was never reached at all. Bounding the thing
+    // downstream of a hang is worth nothing.
+    //
+    // Each is wrapped in `withDeadline`, which does two things a bare race
+    // does not: it hands the callee an AbortSignal, so the Supabase read is
+    // genuinely CANCELLED rather than abandoned, and it rejects with a
+    // DeadlineExceededError that `normaliseThrownFault` turns into the same
+    // fault vocabulary as every other line.
+    //
+    // A stall must produce the SAME 503 as any other fault on this route:
+    // "we could not establish whether you may run this" is one answer however
+    // the establishing failed.
+    //
+    // `resolveSessionAccess` is wrapped too even though today it touches no
+    // network (cookies + an HMAC). The rule is about the SHAPE — an unbounded
+    // await upstream of a failure-reporting write — not about which awaits
+    // happen to be I/O this month, and a future PIN-state read inside it would
+    // otherwise reopen the hole silently.
+    let session: Awaited<ReturnType<typeof getSessionByToken>>;
+    let access: Awaited<ReturnType<typeof resolveSessionAccess>>;
+    let reuse: Awaited<ReturnType<typeof findReusableScan>>;
+    try {
+      session = await withDeadline('session_lookup', UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED, (signal) =>
+        getSessionByToken(token, { signal }),
+      );
+    } catch (err) {
+      return upstreamUnavailable('session_lookup', 'onboarding_sessions', null, err);
+    }
     if (!session) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 });
     }
-    const access = await resolveSessionAccess(session, request);
+    try {
+      access = await withDeadline('session_access', UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED, () =>
+        resolveSessionAccess(session!, request),
+      );
+    } catch (err) {
+      return upstreamUnavailable('session_access', 'pin-cookie + am-bypass guard', session.id, err);
+    }
     if (access.kind === 'locked') {
       return NextResponse.json(
         { error: 'Session is locked. Contact your Clixsy account manager.' },
@@ -134,7 +280,18 @@ export async function POST(request: NextRequest) {
     // site" click from double-charging: the AM's click finds the
     // in-flight auto-scan and the wizard just resumes polling it.
     const priorLinkedId = session.site_intelligence_id ?? null;
-    const reuse = await findReusableScan(priorLinkedId, websiteUrl);
+    try {
+      reuse = await withDeadline('reusable_scan_lookup', UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED, (signal) =>
+        findReusableScan(priorLinkedId, websiteUrl, { signal }),
+      );
+    } catch (err) {
+      return upstreamUnavailable(
+        'reusable_scan_lookup',
+        'onboarding_site_intelligence',
+        session.id,
+        err,
+      );
+    }
     if (reuse) {
       return NextResponse.json({
         success: true,
@@ -178,7 +335,22 @@ export async function POST(request: NextRequest) {
     // counted (the write below is suppressed for them), so an unknown counter
     // cannot fail an AM's limit open and must not 503 them.
     const rateLimitStateUnknown = countErr !== null || count === null;
-    if (rateLimitStateUnknown && !isAmBypass) {
+    //
+    // D5 — THE LOG AND THE 503 ARE TWO DECISIONS, NOT ONE.
+    //
+    // Both used to sit inside `if (rateLimitStateUnknown && !isAmBypass)`, so
+    // under AM bypass a failed or STALLED counter read was COMPLETELY SILENT:
+    // no line, no status, no trace anywhere. The ruling scoped the 503 to the
+    // non-bypass branch — an AM is never counted, so an unknown counter cannot
+    // fail their limit open and must not 503 them — and it said nothing about
+    // the log. Silence was an accident of where the braces fell.
+    //
+    // A degraded Supabase is degraded for everyone. An AM's analyze click is
+    // often the FIRST thing that touches a session, so it is frequently the
+    // earliest evidence available; throwing it away because the caller happens
+    // to be exempt from the limiter is throwing away the news, not the policy.
+    // So: ALWAYS log, 503 only when not bypassed.
+    if (rateLimitStateUnknown) {
       // ONE SHAPE FOR BOTH HALVES OF THE LIMITER. This line used to be built
       // by hand: it hard-coded `fault: countErr ? 'postgrest' : 'null_count'`,
       // carried no HTTP status at all, and applied neither the fault
@@ -198,12 +370,15 @@ export async function POST(request: NextRequest) {
       logSupabaseFailure(
         RATE_LIMIT_READ_FAILURE_TAG,
         {
-          route: 'POST /api/public/site-intelligence/analyze',
+          route: ANALYZE_ROUTE,
           table: 'onboarding_audit_events',
           eventType: 'site_intelligence_analyze_requested',
           sessionId: session.id,
           clientId: session.client_id,
-          succeeded: 'nothing was started: no analysis record, no Anthropic spend',
+          // TRUE FOR EVERY FAULT KIND on the READ side, timeout included: an
+          // aborted exact-count HEAD writes nothing, so unlike the write-side
+          // sentence below this one needs no fault-awareness.
+          succeeded: UPSTREAM_SUCCEEDED,
         },
         normaliseReadFault(
           countStatus,
@@ -212,14 +387,17 @@ export async function POST(request: NextRequest) {
           'the count query was refused with no error body (an HTTP HEAD carries none)'
         )
       );
-      return NextResponse.json(
-        {
-          error:
-            'We could not check your analysis limit just now. Please try again in a few minutes.',
-          code: 'rate_limit_state_unavailable',
-        },
-        { status: 503 }
-      );
+      // The 503, and ONLY the 503, is scoped to the non-bypass branch.
+      if (!isAmBypass) {
+        return NextResponse.json(
+          {
+            error:
+              'We could not check your analysis limit just now. Please try again in a few minutes.',
+            code: UNAVAILABLE_CODE,
+          },
+          { status: 503 }
+        );
+      }
     }
 
     if (!rateLimitStateUnknown && (count ?? 0) >= RATE_LIMIT_PER_HOUR) {
@@ -260,8 +438,10 @@ export async function POST(request: NextRequest) {
           },
           {
             clientId: session.client_id,
-            route: 'POST /api/public/site-intelligence/analyze',
-            succeeded: 'nothing was started: no analysis record, no Anthropic spend',
+            route: ANALYZE_ROUTE,
+            // The DEFAULT sentence. True for every fault kind except
+            // 'timeout', which the catch below overrides — see writeSucceededFor.
+            succeeded: UPSTREAM_SUCCEEDED,
           }
         );
       } catch (err) {
@@ -276,7 +456,12 @@ export async function POST(request: NextRequest) {
         // escape hatch: "we could not tell whether you are over your limit"
         // is the same answer whichever way Supabase failed to say so.
         if (err instanceof AuditWriteError) {
-          logAuditWriteFailure(err);
+          // D4. The `succeeded` sentence handed to the write below asserts
+          // "nothing was started", which is a claim about THIS write's effect
+          // and is not true for every way it can fail. On a timeout the row
+          // may already be committed, so the line says so instead of telling
+          // an operator a slot definitely was not spent. See writeSucceededFor.
+          logAuditWriteFailure(err, writeSucceededFor(err.fault.kind));
           // Same machine code as the read-side 503 above, deliberately: from
           // the caller's side both mean "your analysis limit cannot be
           // maintained right now, retry", and one code to branch on beats two
@@ -285,7 +470,7 @@ export async function POST(request: NextRequest) {
             {
               error:
                 'We could not start the analysis just now. Please try again in a few minutes.',
-              code: 'rate_limit_state_unavailable',
+              code: UNAVAILABLE_CODE,
             },
             { status: 503 }
           );
@@ -298,6 +483,17 @@ export async function POST(request: NextRequest) {
     // via after(), return immediately. The wizard polls
     // /api/public/site-intelligence/status to know when the work
     // is done.
+    //
+    // DELIBERATELY UNBOUNDED, STATED RATHER THAN OVERLOOKED. These two are on
+    // the REQUEST path and DOWNSTREAM of the fail-closed decision, which is
+    // the same line the rest of this codebase draws: a request-path stall is
+    // at least visible, because the request hangs and the platform kills it
+    // with a gateway timeout an operator can see, whereas an after()-path
+    // stall happens behind an already-delivered response. Nothing here is a
+    // precondition for the 503 above, so bounding them would change which
+    // error a caller sees without making any silent failure loud. If that
+    // trade is ever revisited, `withDeadline` is the primitive and
+    // `upstreamUnavailable` is the answer.
     const recordId = await createSiteIntelligenceRecord(websiteUrl);
 
     // Make the in-flight scan discoverable so a reload (or an AM clicking
@@ -307,26 +503,96 @@ export async function POST(request: NextRequest) {
     // record is already linked (bug-#2 invariant — see the helper).
     await attachPendingScanToSession(session.id, recordId, priorLinkedId);
 
+    // -----------------------------------------------------------------------
+    // D3 — THE AFTER() CALLBACK: three unbounded awaits and NO failure report.
+    // -----------------------------------------------------------------------
+    //
+    // This callback held `runSiteAnalysis`, `getSiteIntelligence` and
+    // `linkSiteIntelligenceToSession` with no bound on any of them and, when
+    // one of them threw, a bare `console.error(..., err)` — not a tagged line,
+    // not one line of JSON, no session id, no `succeeded`, nothing an operator
+    // could grep for alongside the other tags. Under a Supabase that accepts
+    // and never answers it did not even reach that: the callback simply hung
+    // past the response, holding the invocation open until the platform killed
+    // it, with the 200 already delivered and nothing said anywhere.
+    //
+    // EACH STAGE IS NOW BOUNDED SEPARATELY, so the line can name which one
+    // failed. The two Supabase-only stages get the ordinary 5s after()-path
+    // budget and a real AbortSignal, so their reads are CANCELLED. The
+    // analysis stage gets the long deadline, because it legitimately runs
+    // providers and an Anthropic call — see SITE_ANALYSIS_DEADLINE_MS,
+    // including what it does and does not cover.
+    const analysisSessionId = session.id;
     after(async () => {
-      try {
-        await runSiteAnalysis(recordId);
-        // Bug #2 fix: link to the session ONLY if the analysis
-        // actually succeeded. If we relinked unconditionally (or
-        // pre-linked on record creation), a failed re-analyze would
-        // overwrite a prior good record's link with a failed one —
-        // orphaning the good prefill data the session was already
-        // benefiting from. By gating on status='completed' here, a
-        // failed re-analyze leaves the session pointing at whatever
-        // last-good record it had (or NULL if none).
-        const record = await getSiteIntelligence(recordId);
-        if (record && record.status === 'completed') {
-          await linkSiteIntelligenceToSession(session.id, recordId);
-        }
-      } catch (err) {
-        console.error(
-          '[public site-intel analyze] background analysis failed:',
-          err
+      const report = (stage: string, target: string, err: unknown, succeeded: string): void => {
+        logUpstreamFailure(
+          BOUNDED_STAGE_FAILURE_TAG,
+          {
+            route: `after(${ANALYZE_ROUTE})`,
+            target: `${stage} (${target})`,
+            eventType: 'site_intelligence_background_analysis',
+            sessionId: analysisSessionId,
+            clientId: session.client_id,
+            succeeded,
+          },
+          normaliseThrownFault(err),
         );
+      };
+
+      try {
+        await withDeadline('site_analysis', SITE_ANALYSIS_DEADLINE_MS, () =>
+          runSiteAnalysis(recordId, { sessionId: analysisSessionId }),
+        );
+      } catch (err) {
+        report(
+          'site_analysis',
+          `runSiteAnalysis(${recordId})`,
+          err,
+          'the analyze request was answered and the queued record exists; the scan did not complete, so the session keeps whatever prefill it already had and the client can retry',
+        );
+        return;
+      }
+
+      // Bug #2 fix: link to the session ONLY if the analysis
+      // actually succeeded. If we relinked unconditionally (or
+      // pre-linked on record creation), a failed re-analyze would
+      // overwrite a prior good record's link with a failed one —
+      // orphaning the good prefill data the session was already
+      // benefiting from. By gating on status='completed' here, a
+      // failed re-analyze leaves the session pointing at whatever
+      // last-good record it had (or NULL if none).
+      let record: Awaited<ReturnType<typeof getSiteIntelligence>>;
+      try {
+        record = await withDeadline(
+          'analysis_status_read',
+          UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED,
+          (signal) => getSiteIntelligence(recordId, { signal }),
+        );
+      } catch (err) {
+        report(
+          'analysis_status_read',
+          'onboarding_site_intelligence',
+          err,
+          'the analysis itself ran and its own result write already happened; only the link-on-completion step was skipped, so the session may still be pointing at an older record',
+        );
+        return;
+      }
+
+      if (record && record.status === 'completed') {
+        try {
+          await withDeadline(
+            'link_to_session',
+            UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED,
+            (signal) => linkSiteIntelligenceToSession(analysisSessionId, recordId, { signal }),
+          );
+        } catch (err) {
+          report(
+            'link_to_session',
+            'onboarding_sessions',
+            err,
+            'the analysis COMPLETED and its record is intact; only the session link and prefill snapshots were not written, so re-run the link for this session rather than re-paying for the scan',
+          );
+        }
       }
     });
 

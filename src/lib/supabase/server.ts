@@ -82,14 +82,29 @@ export async function getClientById(clientId: string): Promise<Client | null> {
   return data as Client;
 }
 
-export async function getSessionByToken(token: string): Promise<OnboardingSession | null> {
+/**
+ * `opts.signal` exists for callers that must FAIL CLOSED on a stall, and it is
+ * OPTIONAL for the same reason `getSessionAnswers`' bound is: every other
+ * caller is on a request path where a stall is at least visible as a gateway
+ * timeout. Passing a signal genuinely CANCELS the underlying request rather
+ * than merely stopping the caller waiting, which is why `withDeadline` hands
+ * one to its `run` callback — see the note there.
+ *
+ * The return contract is unchanged (null on any failure), so the caller that
+ * needs to tell "no such session" apart from "Supabase never answered" must
+ * get that from `withDeadline` rejecting, not from this function.
+ */
+export async function getSessionByToken(
+  token: string,
+  opts?: { signal?: AbortSignal },
+): Promise<OnboardingSession | null> {
   const supabase = createServiceRoleClient();
 
-  const { data, error } = await supabase
-    .from('onboarding_sessions')
-    .select('*')
-    .eq('token', token)
-    .single();
+  // `.abortSignal` precedes `.single()`, which returns a PostgrestBuilder and
+  // does not carry it.
+  let query = supabase.from('onboarding_sessions').select('*').eq('token', token);
+  if (opts?.signal) query = query.abortSignal(opts.signal);
+  const { data, error } = await query.single();
 
   if (error || !data) {
     return null;
@@ -506,6 +521,115 @@ export function normaliseReadFault(
 }
 
 /**
+ * NORMALISE A REJECTION.
+ *
+ * Everything above is written against postgrest-js's RESOLVED-value contract.
+ * The calls this file now also has to bound do not honour it: `fetch()`, a
+ * gaxios/`node-fetch` Google request and `withDeadline` all REJECT. Without a
+ * normaliser of their own each site would invent its own vocabulary, and the
+ * `fault` field would stop meaning the same thing across tags — which is
+ * exactly the drift that produced the hand-built read-side line.
+ *
+ * The mapping, and why each spelling is here rather than assumed:
+ *   'timeout'   a `DeadlineExceededError` (ours); a `TimeoutError` DOMException
+ *               (undici's `AbortSignal.timeout` on the global `fetch`, used by
+ *               the dashboard bridge); an `AbortError` (node-fetch 3.3.2's
+ *               spelling for the SAME condition — verified empirically against
+ *               the installed gaxios 7.1.6 + node-fetch 3.3.2 stack, where a
+ *               `transporterOptions.timeout` abort surfaces as a plain Error
+ *               named 'Error' whose message is 'The operation was aborted.'
+ *               with `code === undefined`). Nothing in this app aborts a
+ *               request for any reason OTHER than a deadline, so treating an
+ *               abort as a timeout is not a guess.
+ *   'transport' a network-layer failure: `TypeError: fetch failed`, or an error
+ *               carrying a libuv/undici `code` (ECONNREFUSED, ENOTFOUND,
+ *               UND_ERR_*).
+ *   'unknown'   anything else, so the kind is never silently wrong.
+ *
+ * TOTAL, like every other reader in this file: `err` came from a dependency,
+ * so its `name`, `message` and `code` are read through guards. An exotic
+ * object may not turn a failure report into a second failure.
+ */
+export function normaliseThrownFault(err: unknown): AuditFault {
+  const read = (key: string): unknown => {
+    try {
+      if (err === null || typeof err !== 'object') return undefined;
+      return (err as Record<string, unknown>)[key];
+    } catch {
+      return undefined;
+    }
+  };
+  let name = '';
+  let message = '';
+  try {
+    name = typeof read('name') === 'string' ? String(read('name')) : '';
+  } catch {
+    name = '';
+  }
+  try {
+    message = err instanceof Error ? err.message : String(err);
+  } catch {
+    message = '<unreadable error>';
+  }
+  const rawCode = read('code');
+  const code = typeof rawCode === 'string' && rawCode !== '' ? rawCode : null;
+  const bounded = boundFaultMessage(message || 'the call rejected with no message');
+
+  if (err instanceof DeadlineExceededError) {
+    return { kind: 'timeout', status: 0, code: DEADLINE_FAULT_CODE, message: bounded };
+  }
+  if (name === 'TimeoutError' || name === 'AbortError' || /\baborted\b/i.test(message)) {
+    return { kind: 'timeout', status: 0, code, message: bounded };
+  }
+  const causeName = (() => {
+    try {
+      const cause = read('cause');
+      if (cause && typeof cause === 'object') {
+        const n = (cause as Record<string, unknown>).name;
+        return typeof n === 'string' ? n : '';
+      }
+    } catch {
+      /* a hostile cause getter is not news */
+    }
+    return '';
+  })();
+  if (causeName === 'TimeoutError' || causeName === 'AbortError') {
+    return { kind: 'timeout', status: 0, code, message: bounded };
+  }
+  if (
+    name === 'TypeError' ||
+    /^(E[A-Z]+|UND_ERR_)/.test(code ?? '') ||
+    /fetch failed/i.test(message)
+  ) {
+    return { kind: 'transport', status: 0, code, message: bounded };
+  }
+  return { kind: 'unknown', status: null, code, message: bounded };
+}
+
+/**
+ * NORMALISE A NON-2XX HTTP ANSWER from a non-Supabase dependency.
+ *
+ * Kind 'gateway' rather than a new kind: its documented meaning above is
+ * "status >= 400 whose body did NOT come from PostgREST", and a remote
+ * service's opaque error body is precisely that. Reusing it keeps the `fault`
+ * vocabulary closed, so an operator's grep for one kind keeps working.
+ *
+ * The body is the ONE field chosen by the remote, so it goes through
+ * `boundFaultMessage` like every other message. That is the whole of D6's
+ * complaint: the dashboard bridge used to CONCATENATE `body.slice(0, 500)`
+ * into a console.error, unescaped, so a newline in the remote's body split the
+ * record and stranded the tag on the half without the news.
+ */
+export function normaliseHttpResponseFault(status: number, body: string): AuditFault {
+  return {
+    kind: 'gateway',
+    status,
+    code: null,
+    message: boundFaultMessage(body || 'the remote answered with no body'),
+  };
+}
+
+/**
  * THE TAGS. Four conditions, ONE line shape (see emitFailureLine). A tag is a
  * fixed literal so it is greppable, and the tag is the ONLY thing that differs
  * between them: an operator who has learned to read one has learned to read
@@ -518,6 +642,34 @@ export const SUPABASE_READ_FAILURE_TAG = '[supabase-read][READ-FAILURE]';
 export const SUPABASE_WRITE_FAILURE_TAG = '[supabase-write][WRITE-FAILURE]';
 /** The analyze route could not read its own rate-limit counter. */
 export const RATE_LIMIT_READ_FAILURE_TAG = '[rate-limit][READ-FAILURE]';
+
+/**
+ * THE OTHER TWO TAGS, and why they are not simply five and six of the above.
+ *
+ * The four tags share one field set because all four describe a call to ONE
+ * dependency against ONE TABLE. The conditions below have no table: an
+ * outbound HTTP request has an ENDPOINT, and a bounded background stage has a
+ * STAGE NAME. Emitting `"table":"https://workbooks.clixsy.co/api/clients"`
+ * would keep the shape identical at the cost of making the field a lie, and a
+ * field an operator cannot trust is worse than a second shape they can.
+ *
+ * So: TWO shapes, ONE bar. Every common field (route, event_type, session_id,
+ * client_id, fault, status, message, succeeded) is the same field with the
+ * same meaning and the same bound; the subject is `target` instead of `table`,
+ * and the code is a transport code rather than a SQLSTATE, so it is `code`
+ * instead of `pg_code`. Both shapes go through the same `emitLine` primitive,
+ * the same `boundFaultMessage`, the same `AuditFaultKind` vocabulary and the
+ * same degraded fallback.
+ */
+/** An outbound HTTP call this app depends on refused, stalled or was unreachable. */
+export const UPSTREAM_HTTP_FAILURE_TAG = '[upstream-http][REQUEST-FAILURE]';
+/**
+ * A stage this app put a DEADLINE on failed or ran out of time. Covers both
+ * the analyze route's upstream reads (request path) and its after()-resident
+ * background stages, because the condition is the same one in both places: a
+ * bounded stage that did not deliver, named by `target`.
+ */
+export const BOUNDED_STAGE_FAILURE_TAG = '[bounded-stage][FAILURE]';
 
 /**
  * The field set EVERY failure line carries. Declared once, as a type, so a
@@ -537,9 +689,35 @@ interface FailureLineFields {
   succeeded: string;
 }
 
+/**
+ * The field set for the two NON-TABLE conditions. Identical to
+ * FailureLineFields except where the subject genuinely differs — see the note
+ * at UPSTREAM_HTTP_FAILURE_TAG for why that is two fields rather than a lie in
+ * one.
+ */
+interface UpstreamFailureLineFields {
+  route: string;
+  /** An endpoint URL, or the name of the bounded stage. */
+  target: string;
+  event_type: string;
+  session_id: string;
+  client_id: string | null;
+  fault: AuditFaultKind;
+  status: number | null;
+  /** A transport/deadline code (ECONNREFUSED, DEADLINE_EXCEEDED), never a SQLSTATE. */
+  code: string | null;
+  message: string;
+  succeeded: string;
+}
+
+/** Tag, then ONE line of JSON. The single place BOTH shapes are realised. */
+function emitLine(tag: string, fields: FailureLineFields | UpstreamFailureLineFields): void {
+  console.error(`${tag} ${JSON.stringify(fields)}`);
+}
+
 /** Tag, then ONE line of JSON. The single place the shape is realised. */
 function emitFailureLine(tag: string, fields: FailureLineFields): void {
-  console.error(`${tag} ${JSON.stringify(fields)}`);
+  emitLine(tag, fields);
 }
 
 /**
@@ -625,6 +803,65 @@ export function logSupabaseFailure(
   }
 }
 
+/** Everything the non-table line needs. Same required fields as its twin. */
+export interface UpstreamFailureContext {
+  route: string;
+  /** The endpoint that was called, or the name of the bounded stage. */
+  target: string;
+  /** Logical name of what the call was for, e.g. 'dashboard_client_sync'. */
+  eventType: string;
+  sessionId: string;
+  clientId?: string | null;
+  succeeded: string;
+}
+
+/**
+ * ONE failure line for an outbound HTTP call or a bounded background stage.
+ *
+ * D6 in one function. The dashboard bridge used to say this with two hand-built
+ * console.error lines that CONCATENATED remote text — `body.slice(0, 500)` and
+ * a caught `message` — so a newline anywhere in the remote's answer fragmented
+ * the record and stranded the tag on the half without the news, which is the
+ * exact hazard `emitFailureLine` and `safeField` were written to remove.
+ * Routing them here gets them the escaping, the message bound, the normalised
+ * fault vocabulary and the `succeeded` field in one move.
+ */
+export function logUpstreamFailure(
+  tag: string,
+  ctx: UpstreamFailureContext,
+  fault: AuditFault,
+): void {
+  try {
+    emitLine(tag, {
+      route: ctx.route,
+      target: ctx.target,
+      event_type: ctx.eventType,
+      session_id: ctx.sessionId,
+      client_id: ctx.clientId ?? null,
+      fault: fault.kind,
+      status: fault.status,
+      code: fault.code,
+      message: fault.message,
+      succeeded: ctx.succeeded,
+    });
+  } catch {
+    // Same floor as the audit line: print what can still be read, each field
+    // independently guarded and JSON-ENCODED, never concatenated raw.
+    try {
+      console.error(
+        `${tag} {"target":${safeField(() => ctx.target)},` +
+          `"event_type":${safeField(() => ctx.eventType)},` +
+          `"session_id":${safeField(() => ctx.sessionId)},` +
+          `"fault":${safeField(() => fault.kind)},` +
+          `"message":${safeField(() => fault.message)},` +
+          `"degraded":"the full record could not be serialised"}`,
+      );
+    } catch {
+      /* the logger is observability; it may never become the fault */
+    }
+  }
+}
+
 /**
  * THE LOG LINE.
  *
@@ -639,7 +876,25 @@ export function logSupabaseFailure(
  * inside a message, so this can never fragment into several lines and lose the
  * tag off the interesting one.
  */
-export function logAuditWriteFailure(err: AuditWriteError): void {
+export function logAuditWriteFailure(
+  err: AuditWriteError,
+  /**
+   * D4 — `succeeded` CAN BE FAULT-DEPENDENT, and on one path it must be.
+   *
+   * The sentence is chosen by the CALL SITE, before the call, so it cannot
+   * know how the write failed. That is fine everywhere the sentence is a
+   * fact about work already committed ("the answers are saved"), and wrong
+   * on the analyze route, where it asserts a NEGATIVE about the write that
+   * just failed: "nothing was started". On kind 'timeout' that can be false,
+   * because aborting does not roll back an INSERT PostgREST may already have
+   * committed (see the abort site in attemptAuditWrite).
+   *
+   * An override rather than a callback on AuditWriteContext, so the six sites
+   * whose sentence is fault-independent stay exactly as they are and the one
+   * that needs it states so at the point it decides.
+   */
+  succeededOverride?: string,
+): void {
   try {
     emitFailureLine(AUDIT_WRITE_FAILURE_TAG, {
       route: err.context.route,
@@ -651,7 +906,7 @@ export function logAuditWriteFailure(err: AuditWriteError): void {
       status: err.fault.status,
       pg_code: err.fault.code,
       message: err.fault.message,
-      succeeded: err.context.succeeded,
+      succeeded: succeededOverride ?? err.context.succeeded,
     });
   } catch {
     // Either JSON.stringify refused an exotic payload, or reading one of the
@@ -752,6 +1007,122 @@ export const AUDIT_READ_TIMEOUT_MS_FAIL_CLOSED = AUDIT_WRITE_TIMEOUT_MS_FAIL_CLO
  * callback terminates well inside any after() budget.
  */
 export const SUPABASE_READ_TIMEOUT_MS_AFTER = 5_000;
+
+// ===========================================================================
+// THE GENERAL CLOSE — bounding a call that takes no signal of its own
+// ===========================================================================
+//
+// Every bound above threads a real `AbortSignal` into the call, which is
+// strictly the better tool: it stops us waiting AND releases the socket. It is
+// only available where the callee accepts one. The same failure shape keeps
+// reappearing one layer further out at calls that do not:
+//
+//   - the analyze route's `getSessionByToken` / `resolveSessionAccess` /
+//     `findReusableScan`, all UPSTREAM of the fail-closed 503, so a stall
+//     froze the handler before the bounded counter read was ever reached and
+//     the route neither failed closed nor reported anything;
+//   - that route's own after() callback, which held `runSiteAnalysis`,
+//     `getSiteIntelligence` and `linkSiteIntelligenceToSession` with NO
+//     failure-reporting write at all;
+//   - sheet-export's four Google HTTP calls, upstream of its own
+//     `sheet_export_failed` audit write on the same after() path.
+//
+// So the rule is stated once, as a primitive, rather than re-derived per site:
+// AN AWAIT UPSTREAM OF A FAILURE-REPORTING WRITE MUST HAVE A DEADLINE. Where
+// the callee takes a signal, `withDeadline` hands it one and the work is
+// genuinely CANCELLED. Where it does not, the deadline still fires and the
+// CALLER terminates with a normalisable rejection — which is the half that
+// makes the report possible at all.
+//
+// THE HONEST LIMIT, named here rather than discovered later: for a callee that
+// takes no signal the losing promise is ABANDONED, not cancelled. It may still
+// be running, and it may still complete its side effects, exactly as
+// `attemptAuditWrite`'s abort does not roll back an INSERT PostgREST may
+// already have committed. Abandoning is not free and it is not pretended to
+// be; it is strictly better than an await that never settles, because a
+// process that has given up can say so and one that is frozen cannot.
+
+/** The code the fault line carries when OUR deadline, not the peer, ended it. */
+export const DEADLINE_FAULT_CODE = 'DEADLINE_EXCEEDED';
+
+export class DeadlineExceededError extends Error {
+  /** The stage that ran out of time, as it appears in the failure line's `target`. */
+  readonly label: string;
+  readonly timeoutMs: number;
+
+  constructor(label: string, timeoutMs: number) {
+    super(`${label} did not settle within ${timeoutMs}ms`);
+    this.name = 'DeadlineExceededError';
+    this.label = label;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
+ * Run `run` under a wall-clock deadline. Rejects with DeadlineExceededError if
+ * it has not settled in `timeoutMs`, and aborts the signal it handed in so a
+ * signal-aware callee is cancelled rather than merely abandoned.
+ *
+ * THREE DETAILS THAT ARE NOT DECORATION:
+ *
+ *   1. The loser gets a `.catch`. A `Promise.race` leaves the loser's eventual
+ *      rejection UNHANDLED, and an unhandled rejection terminates a Node
+ *      process by default — so the naive version of this function turns a
+ *      bounded stall into a crash, which is a worse outcome than the hang it
+ *      replaces.
+ *   2. The timer is cleared AND unref'd. A pending `setTimeout` keeps the
+ *      event loop alive; a deadline that outlives the work it bounded would
+ *      hold a serverless invocation open for exactly as long as the bound.
+ *   3. `run` is invoked inside a try. A callee that throws SYNCHRONOUSLY (an
+ *      env guard, a bad argument) would otherwise escape past the deadline's
+ *      own cleanup and leak the timer.
+ */
+export function withDeadline<T>(
+  label: string,
+  timeoutMs: number,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  let work: Promise<T>;
+  try {
+    work = Promise.resolve(run(controller.signal));
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  // Detail 1. This handler exists ONLY to keep an abandoned rejection from
+  // becoming an unhandled one; the race below still observes the real result.
+  work.catch(() => {});
+
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      // REJECT FIRST, THEN ABORT. Aborting can cause `work` to settle, and a
+      // callee that swallows its own abort (getSessionByToken returns null on
+      // any error) would then RESOLVE — turning "Supabase never answered" into
+      // "no such session", i.e. a 404 where the route must fail closed. The
+      // race is settled before the abort can produce that, so the outcome is
+      // deterministic rather than a microtask ordering accident.
+      reject(new DeadlineExceededError(label, timeoutMs));
+      controller.abort();
+    }, timeoutMs);
+    // Detail 2.
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+
+  return Promise.race([work, deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  }) as Promise<T>;
+}
+
+/**
+ * The deadline for the analyze route's three UPSTREAM reads. The same
+ * fail-closed budget as the counter read they sit in front of, because they
+ * freeze the identical handler just as completely and they happen FIRST — the
+ * same argument that made AUDIT_READ_TIMEOUT_MS_FAIL_CLOSED an alias rather
+ * than a second number.
+ */
+export const UPSTREAM_READ_TIMEOUT_MS_FAIL_CLOSED = AUDIT_READ_TIMEOUT_MS_FAIL_CLOSED;
 
 /**
  * The TABLE-AGNOSTIC CORE. Returns the fault, or null when the row landed.

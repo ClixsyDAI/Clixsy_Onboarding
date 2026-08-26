@@ -524,6 +524,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 
@@ -732,6 +733,125 @@ globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters
   return realFetch(input, init);
 }) as typeof fetch;
 
+// ---------------------------------------------------------------------------
+// 2a. D7 — MAKING GOOGLE-SIDE FAULTS REACHABLE AT ALL.
+// ---------------------------------------------------------------------------
+//
+// WHY EVERY GOOGLE FAULT WAS PREVIOUSLY UNTESTABLE, which is why D1 hid inside
+// a site that was already green. Site 6 drives exportSubmissionToSheet with
+// GOOGLE_SHEETS_PRIVATE_KEY set to a placeholder string, so google-auth-
+// library's jws sign REJECTS LOCALLY ('error:1E08010C:DECODER routines::
+// unsupported') before a socket is ever opened. The export therefore reached
+// its outer catch and its sheet_export_failed audit write by the shortest
+// possible route, and NO Google-side condition — a stalled token mint, a
+// stalled values read, a stalled values write — could be expressed at all.
+// The hermeticity guards then turned any real Google request into an immediate
+// throw, so even a correctly-signed key could not have got there.
+//
+// THE FIX, and what it does NOT do. It does not open the guard. A loopback
+// stub serves the Google endpoints, and requests to the Google hosts are
+// REWRITTEN to it before the guard's loopback check runs — so the destination
+// really is 127.0.0.1 and the invariant the guards enforce ("nothing leaves
+// loopback, by any transport") stays literally true. The rewrite is armed only
+// while `googleStub.enabled` is set, which is only inside the Google cases; at
+// every other moment a request to googleapis.com is blocked exactly as before,
+// and that is asserted.
+type GoogleStubMode = 'ok' | 'stall_token' | 'stall_read' | 'stall_write';
+
+const GOOGLE_HOSTS = new Set([
+  'oauth2.googleapis.com',
+  'sheets.googleapis.com',
+  'www.googleapis.com',
+  'accounts.google.com',
+]);
+
+/** Column A1:O1 as the roster sheet really carries it (sheet-export.ts HEADER). */
+const GOOGLE_STUB_HEADER_ROW: string[] = [
+  'Status',
+  'Client Code',
+  'Business Name',
+  'Primary Contact',
+  'Title/Role',
+  'Email',
+  'Phone',
+  'Website URL',
+  'Physical Address',
+  'Service Area',
+  'Primary Services',
+  '#1 Goal',
+  'Website Platform',
+  'Submitted Date',
+  'Workbook ID',
+];
+
+const googleStub = {
+  /** The rewrite is OFF by default: the guards behave exactly as they did. */
+  enabled: false,
+  mode: 'ok' as GoogleStubMode,
+  /** Every Google request the stub actually received. */
+  seen: [] as string[],
+  /** Responses deliberately never sent, destroyed at teardown. */
+  held: [] as http.ServerResponse[],
+  /** Requests that were rewritten to loopback, for the hermeticity report. */
+  redirected: [] as string[],
+};
+
+/** The real http.request, captured BEFORE guard B replaces the module's. */
+const realHttpRequestForRedirect = http.request;
+
+/**
+ * The key site 6 has always run with: syntactically a PEM, cryptographically
+ * nothing, so the sign REJECTS LOCALLY. That local rejection is exactly what
+ * made every Google-side condition unreachable, and it is preserved because
+ * site 6's contract is built on it.
+ */
+const BOGUS_GOOGLE_KEY = ['-----BEGIN PRIVATE KEY-----', 'not-a-real-key', '-----END PRIVATE KEY-----'].join(
+  String.fromCharCode(92) + 'n',
+);
+
+/**
+ * A REAL RSA key, generated per run rather than committed, so the JWT assertion
+ * genuinely signs and the request genuinely leaves google-auth-library. Nothing
+ * verifies the signature (the stub is not Google), which is the point: the
+ * signature only has to be well-formed enough to get PAST the local reject that
+ * was hiding every network-side fault.
+ */
+const SIGNABLE_GOOGLE_KEY = crypto.generateKeyPairSync('rsa', {
+  modulusLength: 2048,
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+}).privateKey;
+
+/**
+ * Rewrite a Google URL onto the loopback stub, or return null to leave the
+ * arguments alone. https is downgraded to http on purpose: the stub is a plain
+ * server, so tls.connect is never reached and guard C stays untouched.
+ */
+let googleStubOrigin = '';
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function rewriteGoogleUrl(args: any[]): any[] | null {
+  if (!googleStub.enabled || googleStubOrigin === '') return null;
+  const first = args[0];
+  let href = '';
+  if (typeof first === 'string') href = first;
+  else if (first instanceof URL) href = first.href;
+  if (href === '') return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(href);
+  } catch {
+    return null;
+  }
+  if (!GOOGLE_HOSTS.has(parsed.hostname)) return null;
+  const target = new URL(googleStubOrigin);
+  parsed.protocol = 'http:';
+  parsed.hostname = target.hostname;
+  parsed.port = target.port;
+  googleStub.redirected.push(`${parsed.pathname}`);
+  return [parsed.toString(), ...args.slice(1)];
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
 // --- guard B: http.request / https.request (node-fetch; gaxios fallback) ----
 // google-auth-library → gaxios → node-fetch uses node:http(s).request, which
 // never touches globalThis.fetch. Without this the sheet-export path could
@@ -754,6 +874,13 @@ function hostFromRequestArgs(args: any[]): string {
 
 function guardNodeRequest<T extends (...a: any[]) => any>(real: T, mod: unknown, label: string): T {
   return function guarded(this: unknown, ...args: any[]) {
+    // D7: a Google URL is rewritten onto the loopback stub FIRST, so what the
+    // check below sees — and what the socket actually connects to — is
+    // 127.0.0.1. Off unless googleStub.enabled, so this is not a hole.
+    const rewritten = rewriteGoogleUrl(args);
+    if (rewritten) {
+      return (realHttpRequestForRedirect as any).apply(http, rewritten);
+    }
     const host = hostFromRequestArgs(args);
     if (!isLoopbackHost(host)) {
       nonLoopbackNodeRequests.push(`${label} ${host}`);
@@ -1338,6 +1465,14 @@ const stub = {
   stallReadTables: [] as string[],
   /** table -> number of GETs the stub actually received. */
   readsSeen: {} as Record<string, number>,
+  /** table -> how many GETs to serve normally before the stall begins. */
+  stallReadSkip: {} as Record<string, number>,
+  /**
+   * Overrides the dashboard's 500 body. Exists for exactly one probe: a body
+   * carrying NEWLINES, which is what the bridge used to CONCATENATE straight
+   * into a console.error and thereby fragment the record.
+   */
+  dashboardBody: null as string | null,
 };
 
 /** Let the event loop settle so a straggler cannot slip in after the clear. */
@@ -1448,10 +1583,48 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse, body: strin
   const path = url.pathname;
   stub.requestLog.push(`${req.method} ${path}`);
 
+  // --- D7: the Google endpoints, served on loopback ------------------------
+  //
+  // Three fault points, one per bounded call in sheet-export: the OAuth2 token
+  // mint, a values READ and a values WRITE. Each `stall` is the same shape the
+  // PostgREST stall uses — accepted, read in full, and then NEVER ANSWERED —
+  // because that is the condition node:http.ClientRequest has no default
+  // timeout for, and the one the gaxios bound exists to end.
+  if (path === '/token' || path.startsWith('/v4/spreadsheets')) {
+    googleStub.seen.push(`${req.method} ${path}`);
+    const isToken = path === '/token';
+    const isRead = !isToken && req.method === 'GET';
+    const stall =
+      (isToken && googleStub.mode === 'stall_token') ||
+      (isRead && googleStub.mode === 'stall_read') ||
+      (!isToken && !isRead && googleStub.mode === 'stall_write');
+    if (stall) {
+      googleStub.held.push(res);
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    if (isToken) {
+      res.end(
+        JSON.stringify({ access_token: 'stub-access-token', expires_in: 3600, token_type: 'Bearer' }),
+      );
+      return;
+    }
+    if (isRead) {
+      // A1:O1 answers with a header row so the export does NOT take the
+      // header-write branch; A2:O answers empty so it takes the APPEND branch,
+      // which is the write the 'stall_write' mode faults.
+      const values = path.includes('A1%3AO1') ? [GOOGLE_STUB_HEADER_ROW] : [];
+      res.end(JSON.stringify({ values }));
+      return;
+    }
+    res.end('{}');
+    return;
+  }
+
   // --- the dashboard the bridge POSTs to (NOT PostgREST) -------------------
   if (path === '/api/clients') {
     res.writeHead(500, { 'content-type': 'text/plain' });
-    res.end('stub dashboard: forced failure so the bridge takes its audit path');
+    res.end(stub.dashboardBody ?? 'stub dashboard: forced failure so the bridge takes its audit path');
     return;
   }
 
@@ -1527,7 +1700,16 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse, body: strin
     // never destroy the socket. Before the reads were bounded, this froze the
     // whole after() callback BEFORE the audit write was ever issued, so the
     // write bound could not help and the operator saw nothing at all.
-    if (stub.stallReadTables.includes(table)) return;
+    if (stub.stallReadTables.includes(table)) {
+      // `stallReadSkip` serves the first N reads of a table normally and
+      // stalls from N+1 on. It exists because two DIFFERENT bounded calls read
+      // the SAME table on the analyze route's after() path — runSiteAnalysis's
+      // own record read, then getSiteIntelligence — so stalling the table
+      // outright can only ever fault the first of them, and the second would
+      // stay untested while looking covered.
+      const skip = stub.stallReadSkip[table] ?? 0;
+      if ((stub.readsSeen[table] ?? 0) > skip) return;
+    }
     res.writeHead(200, { 'content-type': 'application/json', 'content-range': '0-0/1' });
     res.end(JSON.stringify(serveRead(table, req)));
     return;
@@ -2122,6 +2304,13 @@ const WRITE_FAILURE_TAG = '[audit-write][WRITE-FAILURE]';
 const READ_FAILURE_TAG = '[supabase-read][READ-FAILURE]';
 const SUPABASE_WRITE_FAILURE_TAG = '[supabase-write][WRITE-FAILURE]';
 const RATE_LIMIT_READ_FAILURE_TAG = '[rate-limit][READ-FAILURE]';
+/**
+ * The two tags for the conditions that have no TABLE: an outbound HTTP call
+ * and a bounded stage. Mirrored as literals for the same reason as the other
+ * four — this file imports no values from the code under test.
+ */
+const UPSTREAM_HTTP_FAILURE_TAG = '[upstream-http][REQUEST-FAILURE]';
+const BOUNDED_STAGE_FAILURE_TAG = '[bounded-stage][FAILURE]';
 
 interface FailureLine {
   channel: string;
@@ -2280,6 +2469,91 @@ function verifyFailureLine(lines: FailureLine[], want: LineExpectation): RowVerd
   // GREPPABILITY: still exactly one physical line. JSON.stringify escapes any
   // newline inside the HTML body, so a multi-line body must not fragment the
   // record and strand the tag on the uninteresting half.
+  if (/[\r\n]/.test(line.raw)) {
+    return { ok: false, reason: `the ${want.tag} record spans more than one physical line` };
+  }
+  return { ok: true, reason: line.raw.slice(0, 300) };
+}
+
+/**
+ * THE SAME BAR, for the two tags whose subject is not a table.
+ *
+ * Deliberately NOT a looser check. Every structural requirement the four
+ * table-shaped tags are held to is repeated here — one physical line, one line
+ * of JSON, console.error, the 300-char message bound with its truncation
+ * marker, and non-empty route/message/succeeded — because the whole complaint
+ * that produced `verifyFailureLine` was that a second line shape had quietly
+ * shipped to a lower standard. Only the two fields that genuinely differ
+ * differ: `target` where the others say `table`, and `code` (a transport code)
+ * where the others say `pg_code` (a SQLSTATE).
+ */
+interface UpstreamLineExpectation {
+  tag: string;
+  target: string;
+  eventType: string;
+  sessionId: string;
+  clientId: string | null;
+  fault: string;
+  status: number | null;
+  code: string | null;
+}
+
+function verifyUpstreamLine(
+  lines: FailureLine[],
+  want: UpstreamLineExpectation,
+): RowVerdict {
+  if (lines.length !== 1) {
+    return { ok: false, reason: `expected exactly 1 ${want.tag} line, saw ${lines.length}` };
+  }
+  const line = lines[0]!;
+  if (line.channel !== 'error') {
+    return { ok: false, reason: `the line landed on channel "${line.channel}", not console.error` };
+  }
+  if (!line.parsed) {
+    return { ok: false, reason: `the tail after the tag is not ONE line of JSON: ${line.raw.slice(0, 200)}` };
+  }
+  const f = line.parsed;
+  if (Object.prototype.hasOwnProperty.call(f, 'pg_code')) {
+    return {
+      ok: false,
+      reason: `this shape must NOT carry pg_code: there is no Postgres in an HTTP call, and a field that is always null trains an operator to ignore it`,
+    };
+  }
+  const checks: Array<[string, unknown, unknown]> = [
+    ['target', f.target, want.target],
+    ['event_type', f.event_type, want.eventType],
+    ['session_id', f.session_id, want.sessionId],
+    ['client_id', f.client_id, want.clientId],
+    ['fault', f.fault, want.fault],
+    ['status', f.status, want.status],
+    ['code', f.code, want.code],
+  ];
+  for (const [field, actual, expected] of checks) {
+    if (actual !== expected) {
+      return {
+        ok: false,
+        reason: `field "${field}" is ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)} (line: ${line.raw.slice(0, 300)})`,
+      };
+    }
+  }
+  for (const field of ['route', 'message', 'succeeded'] as const) {
+    if (typeof f[field] !== 'string' || (f[field] as string).length === 0) {
+      return {
+        ok: false,
+        reason: `field "${field}" must be a non-empty string, got ${JSON.stringify(f[field])}`,
+      };
+    }
+  }
+  const msg = f.message as string;
+  if (msg.length > EXPECTED_MAX_FAULT_MESSAGE_CHARS + 64) {
+    return {
+      ok: false,
+      reason: `field "message" is ${msg.length} chars, over the ${EXPECTED_MAX_FAULT_MESSAGE_CHARS}-char bound (+ marker)`,
+    };
+  }
+  if (msg.length > EXPECTED_MAX_FAULT_MESSAGE_CHARS && !msg.includes(TRUNCATION_MARKER)) {
+    return { ok: false, reason: `field "message" was clipped with NO "${TRUNCATION_MARKER}" marker` };
+  }
   if (/[\r\n]/.test(line.raw)) {
     return { ok: false, reason: `the ${want.tag} record spans more than one physical line` };
   }
@@ -2821,13 +3095,23 @@ async function run(): Promise<void> {
   process.env.DASHBOARD_BASE_URL = origin;
   process.env.SHARED_INTEGRATION_BEARER_TOKEN = 'fault-injection-bearer';
   process.env.GOOGLE_SHEETS_CLIENT_EMAIL = 'fault@injector.invalid';
-  process.env.GOOGLE_SHEETS_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\\nnot-a-real-key\\n-----END PRIVATE KEY-----';
+  // THE DEFAULT KEY STAYS BOGUS. Site 6 is contracted on the LOCAL rejection
+  // it produces (google-auth-library's jws sign refuses it before a socket is
+  // opened), so swapping in a signable key globally would silently change what
+  // that site measures. The signable key below is installed only for the
+  // duration of the Google cases and removed again afterwards.
+  process.env.GOOGLE_SHEETS_PRIVATE_KEY = BOGUS_GOOGLE_KEY;
   process.env.EXPORT_SHEET_ID = 'fault-injection-sheet';
+  googleStubOrigin = origin;
 
+  // The bail is deliberately far above the sum of every deliberate stall this
+  // harness now injects. Each Supabase stall costs its 5s bound, each Google
+  // stall its 8s bound, and there are enough of both that a 120s ceiling would
+  // start failing runs for being thorough rather than for being broken.
   const bail = setTimeout(() => {
-    realConsoleLog('\nTIMEOUT: harness exceeded 120s — failing loudly rather than hanging.');
+    realConsoleLog('\nTIMEOUT: harness exceeded 300s — failing loudly rather than hanging.');
     process.exit(1);
-  }, 120_000);
+  }, 300_000);
 
   try {
     workAsyncStorage = (
@@ -3935,6 +4219,7 @@ async function run(): Promise<void> {
       stub.faultTable = 'onboarding_audit_events';
       stub.faultTableSecondary = null;
       stub.stallReadTables = [];
+      stub.stallReadSkip = {};
       stub.faultCountRead = false;
       labelWriteWindow(label);
       capturedAfterTasks = [];
@@ -4042,6 +4327,7 @@ async function run(): Promise<void> {
       ).length;
 
       stub.stallReadTables = [];
+      stub.stallReadSkip = {};
       stub.mode = 'ok';
       stub.faultTable = 'onboarding_audit_events';
       stub.faultTableSecondary = null;
@@ -4089,8 +4375,705 @@ async function run(): Promise<void> {
       );
     }
 
+
     // -----------------------------------------------------------------------
-    // 11g. R4 — the "NEVER throws, under any input" claim, made true.
+    // 11g. D7 — GOOGLE-SIDE FAULTS, REACHABLE FOR THE FIRST TIME.
+    // -----------------------------------------------------------------------
+    //
+    // WHY D1 HID INSIDE A GREEN SITE. Site 6 above drives the very same
+    // function, in five fault modes, and passes. It reaches the
+    // sheet_export_failed audit write by the SHORTEST possible route: the
+    // injected private key is a placeholder, so google-auth-library's jws sign
+    // rejects LOCALLY, before a socket exists. Every Google-side condition —
+    // a stalled token mint, a stalled values read, a stalled values write —
+    // was therefore INEXPRESSIBLE, and the hermeticity guards turned any real
+    // Google request into an immediate throw so a correctly-signed key could
+    // not have reached one either. A whole dependency was untested while
+    // looking covered.
+    //
+    // The stub now serves the Google endpoints on loopback, a per-run RSA key
+    // is installed for the duration of these cases so the assertion really
+    // signs, and Google URLs are REWRITTEN to the stub before the guard's
+    // loopback check runs. The guard is not opened: the socket really does go
+    // to 127.0.0.1, and the guard-intact probe below proves the rewrite is the
+    // ONLY reason the stub is reachable.
+    out('\n--- google-side faults: the calls that were previously unreachable ---');
+
+    const restoreGoogleEnv = (): void => {
+      process.env.GOOGLE_SHEETS_PRIVATE_KEY = BOGUS_GOOGLE_KEY;
+      googleStub.enabled = false;
+      googleStub.mode = 'ok';
+    };
+
+    interface GoogleRun {
+      captured: Captured;
+      threw: boolean;
+      elapsedMs: number;
+      auditRows: WriteRecord[];
+      opened: { empty: boolean; leftovers: string };
+      seen: string[];
+    }
+
+    /**
+     * One sheet-export, driven through the SUBMIT ROUTE'S OWN after()
+     * registration (task index 1), exactly as site 6 does — importing the
+     * library and calling it directly would say nothing about whether a
+     * submission still schedules it.
+     */
+    const driveExportWithGoogle = async (
+      label: string,
+      mode: GoogleStubMode,
+    ): Promise<GoogleRun> => {
+      const tasks = await prepareSubmitTasksQuietly(`setup: ${label}`);
+      const task = tasks[1] ?? makeMissingTaskDriver(`sheet export (${label})`);
+      process.env.GOOGLE_SHEETS_PRIVATE_KEY = SIGNABLE_GOOGLE_KEY;
+      googleStub.enabled = true;
+      googleStub.mode = mode;
+      googleStub.seen = [];
+      const opened = await openWriteWindow(label);
+      const startedAt = Date.now();
+      const outcome = await withCapture(async () => {
+        await task();
+        return {};
+      });
+      const elapsedMs = Date.now() - startedAt;
+      closeWriteWindow();
+      restoreGoogleEnv();
+      return {
+        captured: outcome.captured,
+        threw: outcome.threw,
+        elapsedMs,
+        auditRows: stub.writes.filter(
+          (w) => w.table === 'onboarding_audit_events' && w.window === label,
+        ),
+        opened,
+        seen: googleStub.seen.slice(),
+      };
+    };
+
+    /** The event_type a sheet-export audit row must carry, read off the body. */
+    const auditEventTypes = (recs: WriteRecord[]): string[] =>
+      recs.map((r) => {
+        const bodyRows = Array.isArray(r.parsed) ? r.parsed : [r.parsed];
+        const first = bodyRows[0];
+        return first !== null && typeof first === 'object'
+          ? String((first as Record<string, unknown>).event_type)
+          : '<unparseable>';
+      });
+
+    // --- the POSITIVE CONTROL, and it is not optional ----------------------
+    // Without it, three green stall assertions would be worthless: a stub that
+    // is never reached at all also produces "the call did not answer". This
+    // proves the whole chain works when Google behaves — the key signs, the
+    // token mints, three values calls round-trip, the roster row is appended,
+    // and NO sheet_export_failed row is written.
+    const gOk = await driveExportWithGoogle('google | healthy control', 'ok');
+    out(
+      `    ${pad('google healthy control', 40)} seen=${gOk.seen.length} ` +
+        `elapsed=${gOk.elapsedMs}ms auditRows=${gOk.auditRows.length}`,
+    );
+    rows.push({
+      site: '9 google healthy control',
+      mode: 'ok',
+      threw: gOk.threw,
+      loggedLines: allLines(gOk.captured),
+      responseStatus: undefined,
+      reachedWrite: false,
+      writeCount: gOk.seen.length,
+      rowPersisted: 'n/a',
+    });
+    assert(
+      gOk.threw === false &&
+        gOk.seen.length === 4 &&
+        gOk.seen[0] === 'POST /token' &&
+        gOk.seen.filter((r) => r.startsWith('GET /v4/spreadsheets')).length === 2 &&
+        gOk.seen.some((r) => r.includes(':append')),
+      `[google | control] the export really REACHES the Google endpoints: one OAuth2 token mint, two values reads and one values append, all on loopback — without this control the stall cases below could not tell "bounded correctly" from "never got there"`,
+      `threw=${gOk.threw} seen=${JSON.stringify(gOk.seen)}`,
+    );
+    assert(
+      gOk.auditRows.length === 0 &&
+        allLines(gOk.captured).some((l) => l.includes('[sheet-export] ok action=created')),
+      `[google | control] and a HEALTHY Google writes NO sheet_export_failed row: the bound does not manufacture failures out of a working dependency`,
+      `auditRows=${JSON.stringify(auditEventTypes(gOk.auditRows))} lines=${JSON.stringify(allLines(gOk.captured))}`,
+    );
+
+    // --- the three bounded calls, each stalled in turn ---------------------
+    interface GoogleCase {
+      key: string;
+      mode: GoogleStubMode;
+      /** The `target` the failure line must name. */
+      target: string;
+      /** A fragment of the stub request that must have crossed the wire. */
+      wire: string;
+      /** Which of sheet-export's four calls this is, for the transcript. */
+      where: string;
+    }
+
+    const googleCases: GoogleCase[] = [
+      {
+        key: 'token mint stall',
+        mode: 'stall_token',
+        target: 'google:oauth2 token mint',
+        wire: 'POST /token',
+        where: 'jwt.authorize() — gtoken/getToken.js GOOGLE_TOKEN_URL, which carries no timeout of its own',
+      },
+      {
+        key: 'values read stall',
+        mode: 'stall_read',
+        target: 'google:values.get A1:O1',
+        wire: 'GET /v4/spreadsheets',
+        where: 'valuesGet A1:O1 — the exact call measured as never settling',
+      },
+      {
+        key: 'values write stall',
+        mode: 'stall_write',
+        target: 'google:values.append A1:O',
+        wire: ':append',
+        where: 'valuesAppend — the roster row itself',
+      },
+    ];
+
+    for (const c of googleCases) {
+      const label = `google | ${c.key}`;
+      const r = await driveExportWithGoogle(label, c.mode);
+      const upstream = failureLines(r.captured, UPSTREAM_HTTP_FAILURE_TAG);
+      const crossed = r.seen.filter((x) => x.includes(c.wire)).length;
+      out(
+        `    ${pad(c.key, 40)} crossedWire=${crossed} elapsed=${r.elapsedMs}ms ` +
+          `lines=${upstream.length} auditRows=${r.auditRows.length}`,
+      );
+      rows.push({
+        site: `9 google ${c.key}`,
+        mode: 'stall',
+        threw: r.threw,
+        loggedLines: allLines(r.captured),
+        responseStatus: undefined,
+        reachedWrite: r.auditRows.length > 0,
+        writeCount: r.auditRows.length,
+        rowPersisted: 'n/a',
+      });
+
+      assert(
+        r.opened.empty && crossed >= 1,
+        `[${label}] the stalled Google call really CROSSED THE WIRE (${c.where}): the stub accepted it, read it in full, and never answered`,
+        `windowEmpty=${r.opened.empty} (${r.opened.leftovers}) crossed=${crossed} seen=${JSON.stringify(r.seen)}`,
+      );
+      assert(
+        r.threw === false && r.elapsedMs < TERMINATION_BUDGET_MS,
+        `[${label}] exportSubmissionToSheet TERMINATES: unbounded this await never settled at all, because gaxios arms a signal only under if (opts.timeout) and node:http.ClientRequest has no default timeout — not even undici's 300s floor`,
+        `threw=${r.threw} elapsed=${r.elapsedMs}ms budget=${TERMINATION_BUDGET_MS}ms`,
+      );
+      const verdict = verifyUpstreamLine(upstream, {
+        tag: UPSTREAM_HTTP_FAILURE_TAG,
+        target: c.target,
+        eventType: 'sheet_export_google_call',
+        sessionId: SESSION_ID,
+        clientId: CLIENT_ID,
+        fault: 'timeout',
+        status: 0,
+        code: null,
+      });
+      assert(
+        verdict.ok,
+        `[${label}] and it is LOUD, naming WHICH of the four Google calls stalled: exactly one ${UPSTREAM_HTTP_FAILURE_TAG} line with target "${c.target}", fault=timeout — the raw rejection says only "The operation was aborted."`,
+        verdict.reason,
+      );
+      assert(
+        r.auditRows.length === 1 && auditEventTypes(r.auditRows)[0] === 'sheet_export_failed',
+        `[${label}] and the Google stall STILL REACHES the sheet_export_failed audit write downstream of it: bounding is worth nothing if the failure-reporting write is still never issued`,
+        `auditRows=${JSON.stringify(auditEventTypes(r.auditRows))} window=${label}`,
+      );
+      const failedLine = allLines(r.captured).find((l) => l.includes('[sheet-export] failed'));
+      assert(
+        typeof failedLine === 'string' &&
+          failedLine.includes(c.target.replace('google:', 'google ')),
+        `[${label}] and the existing [sheet-export] failed line names the stalled call too, so the label travels into the audit payload rather than stopping at the tagged line`,
+        `line=${JSON.stringify(failedLine ?? null)}`,
+      );
+    }
+
+    // --- the rewrite is the ONLY reason the stub is reachable --------------
+    // The point of D7 was to make Google faults reachable WITHOUT opening the
+    // hermeticity guard. Proving that needs the negative: with a signable key
+    // and the rewrite DISARMED, the same export must be blocked at the guard.
+    {
+      const before = nonLoopbackNodeRequests.length;
+      const tasks = await prepareSubmitTasksQuietly('setup: google | guard intact');
+      const task = tasks[1] ?? makeMissingTaskDriver('sheet export (guard intact)');
+      process.env.GOOGLE_SHEETS_PRIVATE_KEY = SIGNABLE_GOOGLE_KEY;
+      googleStub.enabled = false;
+      const label = 'google | guard intact';
+      const opened = await openWriteWindow(label);
+      const outcome = await withCapture(async () => {
+        await task();
+        return {};
+      });
+      closeWriteWindow();
+      restoreGoogleEnv();
+      const blocked = nonLoopbackNodeRequests.slice(before);
+      // These are the probe's OWN deliberate blocks. They are removed so the
+      // hermeticity assertion at 12 keeps meaning "nothing tried to leave",
+      // and they are asserted here instead — the count is not swept under a
+      // rug, it is moved to the assertion that can interpret it.
+      nonLoopbackNodeRequests.length = before;
+      out(`    ${pad('guard intact (rewrite disarmed)', 40)} blocked=${JSON.stringify(blocked)}`);
+      assert(
+        opened.empty &&
+          blocked.length >= 1 &&
+          blocked.every((b) => /googleapis\.com|google\.com/.test(b)),
+        `[google | guard intact] with the rewrite DISARMED the very same export is blocked at the hermeticity guard: the stub is reachable because requests are REWRITTEN to loopback, not because the guard was opened`,
+        `blocked=${JSON.stringify(blocked)} windowEmpty=${opened.empty} threw=${outcome.threw}`,
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // 11h. D2 — the fail-closed 503 was itself guarded by UNBOUNDED reads.
+    // -----------------------------------------------------------------------
+    //
+    // The analyze route's counter read is bounded and fails closed. The awaits
+    // in FRONT of it were not, and they run FIRST. Under a PostgREST that
+    // accepts and never answers the handler froze on one of those, so the
+    // route neither failed closed nor reported anything and the bounded read
+    // was never reached at all. Bounding the thing downstream of a hang is
+    // worth nothing, which is the same lesson as 11f one layer further out.
+    out('\n--- analyze route: the reads UPSTREAM of the fail-closed 503 ---');
+
+    interface AnalyzeUpstreamCase {
+      key: string;
+      stallTable: string;
+      target: string;
+      /** Fixture change needed to make the call happen at all. */
+      arm?: () => void;
+      disarm?: () => void;
+    }
+
+    const analyzeUpstreamCases: AnalyzeUpstreamCase[] = [
+      {
+        key: 'session lookup',
+        stallTable: 'onboarding_sessions',
+        target: 'session_lookup (onboarding_sessions)',
+      },
+      {
+        key: 'reusable scan lookup',
+        stallTable: 'onboarding_site_intelligence',
+        target: 'reusable_scan_lookup (onboarding_site_intelligence)',
+        // findReusableScan returns null WITHOUT a query when the session has no
+        // linked record, so the fixture has to carry one or the case would
+        // measure nothing and still pass.
+        arm: () => {
+          SESSION_ROW.site_intelligence_id = 'si-record-1';
+        },
+        disarm: () => {
+          SESSION_ROW.site_intelligence_id = null;
+        },
+      },
+    ];
+
+    for (const c of analyzeUpstreamCases) {
+      const label = `analyze upstream | ${c.key}`;
+      c.arm?.();
+      stub.readsSeen[c.stallTable] = 0;
+      stub.stallReadTables = [c.stallTable];
+      stub.stallReadSkip = {};
+      const opened = await openWriteWindow(label);
+      const startedAt = Date.now();
+      const outcome = await withCapture(() => driveAnalyze());
+      const elapsedMs = Date.now() - startedAt;
+      closeWriteWindow();
+      stub.stallReadTables = [];
+      c.disarm?.();
+
+      const lines = failureLines(outcome.captured, BOUNDED_STAGE_FAILURE_TAG);
+      const status = outcome.result?.status;
+      const code = (outcome.result?.body as { code?: string } | undefined)?.code;
+      const auditPosts = stub.writes.filter(
+        (w) => w.table === 'onboarding_audit_events' && w.window === label,
+      ).length;
+      out(
+        `    ${pad(c.key, 40)} crossedWire=${stub.readsSeen[c.stallTable] ?? 0} ` +
+          `elapsed=${elapsedMs}ms status=${status} lines=${lines.length} auditPosts=${auditPosts}`,
+      );
+      rows.push({
+        site: `10 analyze upstream ${c.key}`,
+        mode: 'stall',
+        threw: outcome.threw,
+        loggedLines: allLines(outcome.captured),
+        responseStatus: status,
+        reachedWrite: false,
+        writeCount: auditPosts,
+        rowPersisted: 'n/a',
+      });
+
+      assert(
+        opened.empty && (stub.readsSeen[c.stallTable] ?? 0) >= 1,
+        `[${label}] the stalled read really CROSSED THE WIRE: the stub accepted it, read it in full, and never answered`,
+        `windowEmpty=${opened.empty} (${opened.leftovers}) reads=${stub.readsSeen[c.stallTable] ?? 0}`,
+      );
+      assert(
+        outcome.threw === false && elapsedMs < TERMINATION_BUDGET_MS && status === 503,
+        `[${label}] the handler FAILS CLOSED with the same 503 as any other fault instead of freezing: unbounded it never answered at all, and the 503 downstream of it was unreachable`,
+        `threw=${outcome.threw} elapsed=${elapsedMs}ms status=${status}`,
+      );
+      assert(
+        code === 'rate_limit_state_unavailable',
+        `[${label}] and it carries the SAME machine code as every other "cannot establish whether you may run this" answer, so a caller branches on one code rather than three`,
+        `code=${JSON.stringify(code)} body=${JSON.stringify(outcome.result?.body ?? null)}`,
+      );
+      const verdict = verifyUpstreamLine(lines, {
+        tag: BOUNDED_STAGE_FAILURE_TAG,
+        target: c.target,
+        eventType: 'analyze_upstream_read',
+        sessionId: c.key === 'session lookup' ? '' : SESSION_ID,
+        clientId: null,
+        fault: 'timeout',
+        status: 0,
+        code: 'DEADLINE_EXCEEDED',
+      });
+      assert(
+        verdict.ok,
+        `[${label}] and it is LOUD: exactly one ${BOUNDED_STAGE_FAILURE_TAG} line naming the stage "${c.target}", fault=timeout code=DEADLINE_EXCEEDED — a 503 with nothing in the log is a mystery, not a report`,
+        verdict.reason,
+      );
+      assert(
+        auditPosts === 0,
+        `[${label}] and NOTHING was started: no rate-limit row, no analysis record, no Anthropic spend — which is what the line's succeeded field claims`,
+        `auditPosts=${auditPosts}`,
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // 11i. D5 — under AM bypass a failed counter read was COMPLETELY silent.
+    // -----------------------------------------------------------------------
+    //
+    // Both the log and the 503 sat inside `if (rateLimitStateUnknown &&
+    // !isAmBypass)`. The ruling scoped the 503 to the non-bypass branch — an
+    // AM is never counted, so an unknown counter cannot fail their limit open
+    // and must not 503 them — and said nothing about the LOG. Silence there
+    // was an accident of where the braces fell, and it is the worst place for
+    // it: an AM's analyze click is often the first thing that touches a
+    // session, so it is frequently the earliest evidence a Supabase is sick.
+    //
+    // BOTH DIRECTIONS, because a fix that simply always-503s would satisfy
+    // "always logs" while breaking the ruling it was scoped by.
+    out('\n--- analyze route: an unknown rate-limit counter under AM bypass ---');
+    for (const bypass of [true, false]) {
+      const label = `am-bypass counter | ${bypass ? 'bypass' : 'plain'}`;
+      stub.faultCountRead = 'stall';
+      const opened = await openWriteWindow(label);
+      const startedAt = Date.now();
+      const outcome = await withCapture(() => driveAnalyzeAs(bypass));
+      const elapsedMs = Date.now() - startedAt;
+      closeWriteWindow();
+      stub.faultCountRead = false;
+
+      const lines = failureLines(outcome.captured, RATE_LIMIT_READ_FAILURE_TAG);
+      const status = outcome.result?.status;
+      out(
+        `    ${pad(bypass ? 'bypass' : 'plain', 40)} status=${status} ` +
+          `elapsed=${elapsedMs}ms rateLimitLines=${lines.length}`,
+      );
+      rows.push({
+        site: `11 am-bypass counter ${bypass ? 'bypass' : 'plain'}`,
+        mode: 'stall',
+        threw: outcome.threw,
+        loggedLines: allLines(outcome.captured),
+        responseStatus: status,
+        reachedWrite: false,
+        writeCount: lines.length,
+        rowPersisted: 'n/a',
+      });
+
+      const verdict = verifyFailureLine(lines, {
+        tag: RATE_LIMIT_READ_FAILURE_TAG,
+        table: 'onboarding_audit_events',
+        eventType: 'site_intelligence_analyze_requested',
+        sessionId: SESSION_ID,
+        clientId: CLIENT_ID,
+        fault: 'timeout',
+        status: 0,
+        pgCode: null,
+      });
+      assert(
+        verdict.ok && opened.empty,
+        `[${label}] a stalled counter read is REPORTED, bypass or not: the log is not scoped to the branch the 503 is scoped to, because a degraded Supabase is degraded for everyone`,
+        verdict.reason,
+      );
+      if (bypass) {
+        assert(
+          outcome.threw === false && elapsedMs < TERMINATION_BUDGET_MS && status === 200,
+          `[${label}] and the AM is still NOT 503'd: the ruling scoped the STATUS to the non-bypass branch, and separating the two decisions must not quietly widen it`,
+          `threw=${outcome.threw} status=${status} elapsed=${elapsedMs}ms`,
+        );
+      } else {
+        assert(
+          outcome.threw === false && elapsedMs < TERMINATION_BUDGET_MS && status === 503,
+          `[${label}] while a REAL client still gets the fail-closed 503 from the same condition, so separating log from status changed the log only`,
+          `threw=${outcome.threw} status=${status} elapsed=${elapsedMs}ms`,
+        );
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // 11j. D4 — `succeeded` asserted a negative it could not know on a timeout.
+    // -----------------------------------------------------------------------
+    //
+    // The analyze route's WRITE-failure line said "nothing was started: no
+    // analysis record, no Anthropic spend" for EVERY fault kind. On a timeout
+    // that sentence can be false: attemptAuditWrite's own comment records that
+    // aborting does not roll back an INSERT PostgREST may already have
+    // committed, and the row in question IS the rate limiter's state. So an
+    // operator reading a 503 would conclude no slot was spent while each retry
+    // may in fact be spending one.
+    //
+    // BOTH DIRECTIONS again: the sentence must become uncertain on 'timeout'
+    // AND stay definite on a fault that really did refuse the row.
+    out('\n--- analyze route: is `succeeded` honest about a timed-out write? ---');
+    const succeededFor = async (
+      mode: Mode,
+      label: string,
+    ): Promise<{ succeeded: string; fault: unknown; status?: number }> => {
+      stub.mode = mode;
+      stub.faultTable = 'onboarding_audit_events';
+      stub.faultTableSecondary = null;
+      await openWriteWindow(label);
+      const outcome = await withCapture(() => driveAnalyze());
+      closeWriteWindow();
+      stub.mode = 'ok';
+      const line = writeFailureLines(outcome.captured)[0];
+      return {
+        succeeded: String(line?.parsed?.succeeded ?? ''),
+        fault: line?.parsed?.fault,
+        status: outcome.result?.status,
+      };
+    };
+
+    const d4Timeout = await succeededFor('stall', 'd4 | timeout');
+    const d4Refused = await succeededFor('rls_denied', 'd4 | rls');
+    out(`    ${pad('timeout succeeded', 40)} ${JSON.stringify(d4Timeout.succeeded)}`);
+    out(`    ${pad('rls_denied succeeded', 40)} ${JSON.stringify(d4Refused.succeeded)}`);
+    assert(
+      d4Timeout.fault === 'timeout' &&
+        d4Timeout.status === 503 &&
+        /may or may not/i.test(d4Timeout.succeeded) &&
+        /rate-limit row is UNCERTAIN/i.test(d4Timeout.succeeded),
+      `[d4 | timeout] on a TIMEOUT the line says the rate-limit slot MAY OR MAY NOT have been spent: aborting does not roll back a row PostgREST may already have committed, so the old flat "nothing was started" was a claim this code cannot make`,
+      `fault=${JSON.stringify(d4Timeout.fault)} status=${d4Timeout.status} succeeded=${JSON.stringify(d4Timeout.succeeded)}`,
+    );
+    assert(
+      d4Refused.fault === 'postgrest' &&
+        d4Refused.status === 503 &&
+        d4Refused.succeeded === 'nothing was started: no analysis record, no Anthropic spend',
+      `[d4 | refused] and on a fault that DEFINITELY refused the row the sentence stays definite: fault-awareness must not turn every report into a hedge`,
+      `fault=${JSON.stringify(d4Refused.fault)} status=${d4Refused.status} succeeded=${JSON.stringify(d4Refused.succeeded)}`,
+    );
+
+    // -----------------------------------------------------------------------
+    // 11k. D3 — the analyze route's own after() callback.
+    // -----------------------------------------------------------------------
+    //
+    // It held runSiteAnalysis, getSiteIntelligence and
+    // linkSiteIntelligenceToSession with no bound on any of them and, when one
+    // threw, a bare console.error(..., err) — not a tagged line, not JSON, no
+    // session id, no `succeeded`. Under a stall it did not even reach that: it
+    // hung past the response, holding the invocation open, with the 200 long
+    // since delivered.
+    out('\n--- analyze route: the after() callback, bounded per stage ---');
+
+    interface AfterStageCase {
+      key: string;
+      /** Reads of this table are stalled... */
+      stallTable: string;
+      /** ...but only after this many have been served normally. */
+      skip: number;
+      target: (recordId: string) => string;
+      fault: string;
+      code: string | null;
+      /** A second tag this case must ALSO produce, or null. */
+      alsoTag: string | null;
+    }
+
+    const afterStageCases: AfterStageCase[] = [
+      {
+        key: 'runSiteAnalysis record read',
+        stallTable: 'onboarding_site_intelligence',
+        skip: 0,
+        target: (id) => `site_analysis (runSiteAnalysis(${id}))`,
+        // The bounded read inside runSiteAnalysis ends the stall at 5s and
+        // reports it; the analysis then throws its own 'record not found',
+        // which is a plain Error rather than a deadline — so the STAGE line
+        // must classify it honestly as 'unknown' rather than pretending the
+        // stage itself timed out.
+        fault: 'unknown',
+        code: null,
+        alsoTag: READ_FAILURE_TAG,
+      },
+      {
+        key: 'getSiteIntelligence status read',
+        stallTable: 'onboarding_site_intelligence',
+        // runSiteAnalysis reads this table ONCE; serving that read and
+        // stalling the next is the only way to fault the SECOND bounded call
+        // on the same table. Without the skip this case would silently
+        // re-test the first one.
+        skip: 1,
+        target: () => 'analysis_status_read (onboarding_site_intelligence)',
+        fault: 'timeout',
+        code: 'DEADLINE_EXCEEDED',
+        alsoTag: null,
+      },
+    ];
+
+    for (const c of afterStageCases) {
+      const setupLabel = `setup: analyze after | ${c.key}`;
+      stub.stallReadTables = [];
+      stub.stallReadSkip = {};
+      labelWriteWindow(setupLabel);
+      capturedAfterTasks = [];
+      const first = await driveAnalyze();
+      const recordId = String((first.body as { recordId?: string } | undefined)?.recordId ?? '');
+      const tasks = capturedAfterTasks.filter(Boolean);
+      assert(
+        tasks.length === 1 && recordId !== '',
+        `[analyze after | ${c.key}] the analyze route registered exactly 1 after() task and returned a record id — the route-to-after() wiring IS the driver, so deleting the after(...) must fail this`,
+        `tasks=${tasks.length} recordId=${JSON.stringify(recordId)} status=${first.status}`,
+      );
+      const task = tasks[0] ?? makeMissingTaskDriver(`analyze after ${c.key}`);
+
+      stub.readsSeen[c.stallTable] = 0;
+      stub.stallReadTables = [c.stallTable];
+      stub.stallReadSkip = { [c.stallTable]: c.skip };
+      const label = `analyze after | ${c.key}`;
+      const opened = await openWriteWindow(label);
+      const startedAt = Date.now();
+      const outcome = await withCapture(async () => {
+        await task();
+        return {};
+      });
+      const elapsedMs = Date.now() - startedAt;
+      closeWriteWindow();
+      stub.stallReadTables = [];
+      stub.stallReadSkip = {};
+
+      const lines = failureLines(outcome.captured, BOUNDED_STAGE_FAILURE_TAG);
+      out(
+        `    ${pad(c.key, 40)} reads=${stub.readsSeen[c.stallTable] ?? 0} ` +
+          `elapsed=${elapsedMs}ms lines=${lines.length}`,
+      );
+      rows.push({
+        site: `12 analyze after ${c.key}`,
+        mode: 'stall',
+        threw: outcome.threw,
+        loggedLines: allLines(outcome.captured),
+        responseStatus: undefined,
+        reachedWrite: false,
+        writeCount: lines.length,
+        rowPersisted: 'n/a',
+      });
+
+      assert(
+        opened.empty && (stub.readsSeen[c.stallTable] ?? 0) > c.skip,
+        `[${label}] the stalled read really CROSSED THE WIRE past the ${c.skip} read(s) served normally, so this case faults the call it names and not an earlier one on the same table`,
+        `windowEmpty=${opened.empty} (${opened.leftovers}) reads=${stub.readsSeen[c.stallTable] ?? 0} skip=${c.skip}`,
+      );
+      assert(
+        outcome.threw === false && elapsedMs < TERMINATION_BUDGET_MS,
+        `[${label}] the after() callback TERMINATES: unbounded it hung past the response with only a console.error for company, holding the invocation open until the platform killed it`,
+        `threw=${outcome.threw} elapsed=${elapsedMs}ms budget=${TERMINATION_BUDGET_MS}ms`,
+      );
+      const verdict = verifyUpstreamLine(lines, {
+        tag: BOUNDED_STAGE_FAILURE_TAG,
+        target: c.target(recordId),
+        eventType: 'site_intelligence_background_analysis',
+        sessionId: SESSION_ID,
+        clientId: CLIENT_ID,
+        fault: c.fault,
+        status: c.fault === 'timeout' ? 0 : null,
+        code: c.code,
+      });
+      assert(
+        verdict.ok,
+        `[${label}] and the path that had NO failure-reporting write at all now emits one line in the same shape as every other tag, naming the stage that failed`,
+        verdict.reason,
+      );
+      if (c.alsoTag) {
+        const also = failureLines(outcome.captured, c.alsoTag);
+        assert(
+          also.length === 1 &&
+            also[0]?.parsed?.table === 'onboarding_site_intelligence' &&
+            also[0]?.parsed?.event_type === 'analysis_record_lookup' &&
+            also[0]?.parsed?.fault === 'timeout',
+          `[${label}] and the READ inside runSiteAnalysis reports itself too, so an operator learns WHICH await stalled rather than only that the stage did`,
+          `lines=${JSON.stringify(also.map((l) => l.raw))}`,
+        );
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // 11l. D6 — the bridge's own console.error lines.
+    // -----------------------------------------------------------------------
+    //
+    // Two lines CONCATENATED remote text: `body.slice(0, 500)` on the non-2xx
+    // path and a caught `message` in the outer catch. safeField and
+    // JSON.stringify exist precisely so a newline in a value this code did not
+    // author cannot split the record and strand the tag on the half without
+    // the news — and both lines bypassed them.
+    out('\n--- dashboard bridge: remote text through the emitter, not concatenated ---');
+    {
+      // A body shaped like what actually arrives from a sick proxy or an
+      // unhandled framework error: multiple physical lines.
+      const HOSTILE_BODY =
+        'Internal Server Error\nTraceback (most recent call last):\n  File "app.py", line 1\n    boom\r\nRuntimeError: boom';
+      stub.dashboardBody = HOSTILE_BODY;
+      const tasks = await prepareSubmitTasksQuietly('setup: bridge | hostile body');
+      const task = tasks[0] ?? makeMissingTaskDriver('dashboard bridge (hostile body)');
+      const label = 'bridge | hostile body';
+      const opened = await openWriteWindow(label);
+      const outcome = await withCapture(async () => {
+        await task();
+        return {};
+      });
+      closeWriteWindow();
+      stub.dashboardBody = null;
+
+      const lines = failureLines(outcome.captured, UPSTREAM_HTTP_FAILURE_TAG);
+      const transcript = allLines(outcome.captured);
+      out(`    ${pad('hostile dashboard body', 40)} lines=${lines.length} transcript=${transcript.length}`);
+      rows.push({
+        site: '13 bridge hostile body',
+        mode: 'ok',
+        threw: outcome.threw,
+        loggedLines: transcript,
+        responseStatus: undefined,
+        reachedWrite: true,
+        writeCount: lines.length,
+        rowPersisted: 'n/a',
+      });
+
+      const verdict = verifyUpstreamLine(lines, {
+        tag: UPSTREAM_HTTP_FAILURE_TAG,
+        target: `${origin}/api/clients`,
+        eventType: 'dashboard_client_sync',
+        sessionId: SESSION_ID,
+        clientId: CLIENT_ID,
+        fault: 'gateway',
+        status: 500,
+        code: null,
+      });
+      assert(
+        verdict.ok && opened.empty,
+        `[${label}] the dashboard's non-2xx goes through the SAME emitter as everything else: ONE physical line, tag then JSON, with the multi-line remote body ESCAPED rather than concatenated — the old line fragmented here and stranded the tag`,
+        verdict.reason,
+      );
+      assert(
+        String(lines[0]?.parsed?.message ?? '').includes('RuntimeError: boom') &&
+          !transcript.some((l) => l.includes('[dashboard-bridge] dashboard POST')),
+        `[${label}] and nothing is lost by routing it: the whole remote body still reaches the operator inside the record, and the hand-built concatenating line is GONE rather than duplicated alongside it`,
+        `message=${JSON.stringify(lines[0]?.parsed?.message ?? null)} transcript=${JSON.stringify(transcript)}`,
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // 11m. R4 — the "NEVER throws, under any input" claim, made true.
     // -----------------------------------------------------------------------
     // recordAuditRow's comment claimed it never throws under any input. That
     // was literally false for the two wrappers built on it: auditEventSpec and
@@ -4863,6 +5846,51 @@ const BASE_LABELS: readonly string[] = Object.freeze([
   "[upstream | sheet-export → pm_tracker_pushes seed] the stalled call really CROSSED THE WIRE (sheet-export.ts, the pm_tracker_pushes upsert (which DID read .error, and was still silent)): the stub accepted it, read it in full, and never answered — a fault that was never issued would prove nothing",
   "[upstream | sheet-export → pm_tracker_pushes seed] the after() callback TERMINATES when the call UPSTREAM of the audit write never answers: bounding only the write left this frozen, with the 200 already shipped",
   "[upstream | sheet-export → pm_tracker_pushes seed] and it is LOUD: exactly one [supabase-write][WRITE-FAILURE] line naming pm_tracker_pushes, fault=timeout status=0, in the same shape as the write-side line — terminating quietly would be no better than hanging",
+  "[google | control] the export really REACHES the Google endpoints: one OAuth2 token mint, two values reads and one values append, all on loopback — without this control the stall cases below could not tell \"bounded correctly\" from \"never got there\"",
+  "[google | control] and a HEALTHY Google writes NO sheet_export_failed row: the bound does not manufacture failures out of a working dependency",
+  "[google | token mint stall] the stalled Google call really CROSSED THE WIRE (jwt.authorize() — gtoken/getToken.js GOOGLE_TOKEN_URL, which carries no timeout of its own): the stub accepted it, read it in full, and never answered",
+  "[google | token mint stall] exportSubmissionToSheet TERMINATES: unbounded this await never settled at all, because gaxios arms a signal only under if (opts.timeout) and node:http.ClientRequest has no default timeout — not even undici's 300s floor",
+  "[google | token mint stall] and it is LOUD, naming WHICH of the four Google calls stalled: exactly one [upstream-http][REQUEST-FAILURE] line with target \"google:oauth2 token mint\", fault=timeout — the raw rejection says only \"The operation was aborted.\"",
+  "[google | token mint stall] and the Google stall STILL REACHES the sheet_export_failed audit write downstream of it: bounding is worth nothing if the failure-reporting write is still never issued",
+  "[google | token mint stall] and the existing [sheet-export] failed line names the stalled call too, so the label travels into the audit payload rather than stopping at the tagged line",
+  "[google | values read stall] the stalled Google call really CROSSED THE WIRE (valuesGet A1:O1 — the exact call measured as never settling): the stub accepted it, read it in full, and never answered",
+  "[google | values read stall] exportSubmissionToSheet TERMINATES: unbounded this await never settled at all, because gaxios arms a signal only under if (opts.timeout) and node:http.ClientRequest has no default timeout — not even undici's 300s floor",
+  "[google | values read stall] and it is LOUD, naming WHICH of the four Google calls stalled: exactly one [upstream-http][REQUEST-FAILURE] line with target \"google:values.get A1:O1\", fault=timeout — the raw rejection says only \"The operation was aborted.\"",
+  "[google | values read stall] and the Google stall STILL REACHES the sheet_export_failed audit write downstream of it: bounding is worth nothing if the failure-reporting write is still never issued",
+  "[google | values read stall] and the existing [sheet-export] failed line names the stalled call too, so the label travels into the audit payload rather than stopping at the tagged line",
+  "[google | values write stall] the stalled Google call really CROSSED THE WIRE (valuesAppend — the roster row itself): the stub accepted it, read it in full, and never answered",
+  "[google | values write stall] exportSubmissionToSheet TERMINATES: unbounded this await never settled at all, because gaxios arms a signal only under if (opts.timeout) and node:http.ClientRequest has no default timeout — not even undici's 300s floor",
+  "[google | values write stall] and it is LOUD, naming WHICH of the four Google calls stalled: exactly one [upstream-http][REQUEST-FAILURE] line with target \"google:values.append A1:O\", fault=timeout — the raw rejection says only \"The operation was aborted.\"",
+  "[google | values write stall] and the Google stall STILL REACHES the sheet_export_failed audit write downstream of it: bounding is worth nothing if the failure-reporting write is still never issued",
+  "[google | values write stall] and the existing [sheet-export] failed line names the stalled call too, so the label travels into the audit payload rather than stopping at the tagged line",
+  "[google | guard intact] with the rewrite DISARMED the very same export is blocked at the hermeticity guard: the stub is reachable because requests are REWRITTEN to loopback, not because the guard was opened",
+  "[analyze upstream | session lookup] the stalled read really CROSSED THE WIRE: the stub accepted it, read it in full, and never answered",
+  "[analyze upstream | session lookup] the handler FAILS CLOSED with the same 503 as any other fault instead of freezing: unbounded it never answered at all, and the 503 downstream of it was unreachable",
+  "[analyze upstream | session lookup] and it carries the SAME machine code as every other \"cannot establish whether you may run this\" answer, so a caller branches on one code rather than three",
+  "[analyze upstream | session lookup] and it is LOUD: exactly one [bounded-stage][FAILURE] line naming the stage \"session_lookup (onboarding_sessions)\", fault=timeout code=DEADLINE_EXCEEDED — a 503 with nothing in the log is a mystery, not a report",
+  "[analyze upstream | session lookup] and NOTHING was started: no rate-limit row, no analysis record, no Anthropic spend — which is what the line's succeeded field claims",
+  "[analyze upstream | reusable scan lookup] the stalled read really CROSSED THE WIRE: the stub accepted it, read it in full, and never answered",
+  "[analyze upstream | reusable scan lookup] the handler FAILS CLOSED with the same 503 as any other fault instead of freezing: unbounded it never answered at all, and the 503 downstream of it was unreachable",
+  "[analyze upstream | reusable scan lookup] and it carries the SAME machine code as every other \"cannot establish whether you may run this\" answer, so a caller branches on one code rather than three",
+  "[analyze upstream | reusable scan lookup] and it is LOUD: exactly one [bounded-stage][FAILURE] line naming the stage \"reusable_scan_lookup (onboarding_site_intelligence)\", fault=timeout code=DEADLINE_EXCEEDED — a 503 with nothing in the log is a mystery, not a report",
+  "[analyze upstream | reusable scan lookup] and NOTHING was started: no rate-limit row, no analysis record, no Anthropic spend — which is what the line's succeeded field claims",
+  "[am-bypass counter | bypass] a stalled counter read is REPORTED, bypass or not: the log is not scoped to the branch the 503 is scoped to, because a degraded Supabase is degraded for everyone",
+  "[am-bypass counter | bypass] and the AM is still NOT 503'd: the ruling scoped the STATUS to the non-bypass branch, and separating the two decisions must not quietly widen it",
+  "[am-bypass counter | plain] a stalled counter read is REPORTED, bypass or not: the log is not scoped to the branch the 503 is scoped to, because a degraded Supabase is degraded for everyone",
+  "[am-bypass counter | plain] while a REAL client still gets the fail-closed 503 from the same condition, so separating log from status changed the log only",
+  "[d4 | timeout] on a TIMEOUT the line says the rate-limit slot MAY OR MAY NOT have been spent: aborting does not roll back a row PostgREST may already have committed, so the old flat \"nothing was started\" was a claim this code cannot make",
+  "[d4 | refused] and on a fault that DEFINITELY refused the row the sentence stays definite: fault-awareness must not turn every report into a hedge",
+  "[analyze after | runSiteAnalysis record read] the analyze route registered exactly 1 after() task and returned a record id — the route-to-after() wiring IS the driver, so deleting the after(...) must fail this",
+  "[analyze after | runSiteAnalysis record read] the stalled read really CROSSED THE WIRE past the 0 read(s) served normally, so this case faults the call it names and not an earlier one on the same table",
+  "[analyze after | runSiteAnalysis record read] the after() callback TERMINATES: unbounded it hung past the response with only a console.error for company, holding the invocation open until the platform killed it",
+  "[analyze after | runSiteAnalysis record read] and the path that had NO failure-reporting write at all now emits one line in the same shape as every other tag, naming the stage that failed",
+  "[analyze after | runSiteAnalysis record read] and the READ inside runSiteAnalysis reports itself too, so an operator learns WHICH await stalled rather than only that the stage did",
+  "[analyze after | getSiteIntelligence status read] the analyze route registered exactly 1 after() task and returned a record id — the route-to-after() wiring IS the driver, so deleting the after(...) must fail this",
+  "[analyze after | getSiteIntelligence status read] the stalled read really CROSSED THE WIRE past the 1 read(s) served normally, so this case faults the call it names and not an earlier one on the same table",
+  "[analyze after | getSiteIntelligence status read] the after() callback TERMINATES: unbounded it hung past the response with only a console.error for company, holding the invocation open until the platform killed it",
+  "[analyze after | getSiteIntelligence status read] and the path that had NO failure-reporting write at all now emits one line in the same shape as every other tag, naming the stage that failed",
+  "[bridge | hostile body] the dashboard's non-2xx goes through the SAME emitter as everything else: ONE physical line, tag then JSON, with the multi-line remote body ESCAPED rather than concatenated — the old line fragmented here and stranded the tag",
+  "[bridge | hostile body] and nothing is lost by routing it: the whole remote body still reaches the operator inside the record, and the hand-built concatenating line is GONE rather than duplicated alongside it",
   "[hostile opts | recordAuditEvent] a NULL options object no longer produces a raw TypeError from the spec builder: the call stays total and still emits one line, whose route and succeeded say plainly that the call site supplied neither",
   "[hostile opts | recordAuditEvent] an options object whose every getter THROWS is absorbed too, and the injected Supabase fault is still the one reported — the hostile input does not become the news",
   "[hostile opts | recordOpenEvent] the OTHER wrapper is total in its own right as well, on BOTH of the objects it dereferences: the open-events builder reads a row object and a meta object, and neither was guarded",
