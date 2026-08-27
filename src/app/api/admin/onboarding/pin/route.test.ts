@@ -750,6 +750,20 @@ async function main() {
         assert(out.ok === false && out.status === 503,
           `a token of only ${label} is also 503, not a usable credential`);
       }
+
+      // AN EMBEDDED zero-width, which is the case that distinguishes REFUSING
+      // from SILENTLY CLEANING. An earlier version filtered these characters out
+      // of the value, so this token was accepted and matched against "abcdef":
+      // the environment variable and the token that actually worked were then
+      // invisibly different strings. Mutation testing showed no test could tell
+      // the two designs apart, which is what surfaced the choice. Refusing is
+      // right, so this asserts the refusal rather than the repair.
+      process.env.SHARED_INTEGRATION_BEARER_TOKEN =
+        "abc" + String.fromCharCode(0x200b) + "def";
+      const embedded = requireBearerToken(fakeReq("Bearer abcdef"));
+      assert(embedded.ok === false && embedded.status === 503,
+        "a token with an embedded zero-width is REFUSED, not silently cleaned and accepted");
+
       process.env.SHARED_INTEGRATION_BEARER_TOKEN = savedBearer;
     }
     {
@@ -794,7 +808,7 @@ async function main() {
     }
 
     const total = checks;
-    assert(total === 170, `all 170 checks ran, none skipped (ran ${total})`);
+    assert(total === 171, `all 171 checks ran, none skipped (ran ${total})`);
   } finally {
     process.env.PIN_ENCRYPTION_KEY = saved.key;
     if (saved.bearer === undefined) delete process.env.SHARED_INTEGRATION_BEARER_TOKEN;

@@ -55,27 +55,26 @@ export function requireBearerToken(request: NextRequest): BearerOutcome {
   // string or to whitespace is a misconfiguration that a truthiness test reads
   // as configured, and would then compare against "Bearer " plus nothing.
   //
-  // AND NOT ONLY .trim(), WHICH IS NARROWER THAN IT LOOKS. Its whitespace set is
-  // Unicode White_Space, which EXCLUDES the zero-width characters. Measured: with
-  // SHARED_INTEGRATION_BEARER_TOKEN set to a lone U+200B, the old check read it as
-  // CONFIGURED and then ALLOWED a request presenting "Bearer " plus that same
-  // character, which is an invisible, trivially guessable token where this comment
-  // promises a 503. U+00A0 and U+FEFF were both correctly rejected, so the gap was
+  // AND .trim() IS NARROWER THAN IT LOOKS. Its whitespace set is Unicode
+  // White_Space, which EXCLUDES the zero-width characters, so a lone U+200B once
+  // read as CONFIGURED here. U+00A0 and U+FEFF were both handled, so the gap was
   // specific rather than general, which is the kind a spot check misses.
   //
-  // U+200B ZERO WIDTH SPACE, U+200C/U+200D the joiners, U+2060 WORD JOINER,
-  // U+FEFF BOM. Named by code point and filtered by code point: a regex class
-  // holding the characters themselves works, but it is unreadable in review and
-  // any tool that normalises text can delete them and silently take the guard
-  // with it. This form cannot be damaged without the damage being visible.
-  const ZERO_WIDTH = new Set([0x200b, 0x200c, 0x200d, 0x2060, 0xfeff]);
-  const normalised =
-    typeof expected === "string"
-      ? Array.from(expected)
-          .filter((ch) => !ZERO_WIDTH.has(ch.codePointAt(0) ?? 0))
-          .join("")
-          .trim()
-      : "";
+  // THE FIX FOR THAT IS NOT HERE, and finding that out is why this note is this
+  // long. A first version filtered U+200B/C/D, U+2060 and U+FEFF out of the value
+  // before the emptiness test. Mutation testing then showed that DELETING that
+  // filter changed nothing any test could see, and the reason was not a missing
+  // test: the printable-ASCII check below already rejects every one of those code
+  // points, so the filter was redundant for the outcome.
+  //
+  // The two designs diverge only for a token like "abc<U+200B>def", and there the
+  // filter is actively WORSE: it silently cleans the value and accepts, so the
+  // token in the environment and the token that actually works are invisibly
+  // different strings. The check below refuses it and says why. A guard that
+  // repairs a misconfiguration in silence is not a guard, so the filter is gone
+  // and whitespace handling stays at .trim(), which covers the paste artefact
+  // that actually happens: a trailing newline.
+  const normalised = typeof expected === "string" ? expected.trim() : "";
   if (normalised.length === 0) {
     return { ok: false, status: 503, reason: "bearer_token_not_configured" };
   }
