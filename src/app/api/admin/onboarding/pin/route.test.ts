@@ -208,7 +208,7 @@ async function main() {
       ["an empty actor", { sessionId: SESSION_ID, actingUserEmail: "" }],
       ["a missing sessionId", { actingUserEmail: ACTOR }],
       ["a non-uuid sessionId", { sessionId: "abc", actingUserEmail: ACTOR }],
-      ["an over-long reason", { sessionId: SESSION_ID, actingUserEmail: ACTOR, reason: "x".repeat(501) }],
+      ["an over-long actor (>320)", { sessionId: SESSION_ID, actingUserEmail: "a".repeat(310) + "@example.com" }],
     ] as Array<[string, unknown]>) {
       const r = await callPost(body);
       assert(r.status === 400, `${label} -> 400`);
@@ -316,6 +316,106 @@ async function main() {
     }
 
     // -----------------------------------------------------------------
+    console.log("\n5b. THE AUDIT PAYLOAD IS PIN-FREE. Re-verified under the new shape.");
+    // -----------------------------------------------------------------
+    // An earlier critic verified this payload was provably PIN-free BY TYPE: six
+    // string literals and a boolean, no free-text field for a PIN to reach even
+    // by accident. `actor` is the first free-text value, so that guarantee is now
+    // VALIDATED rather than STRUCTURAL. This section is what replaces it, and it
+    // asserts the property under the shape that actually ships rather than
+    // assuming it carried over.
+    {
+      const captured: Array<{ url: string; body: string }> = [];
+      const goodEnv = envelopeFor("428913");
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : String((input as Request).url ?? input);
+        if (/onboarding_audit_events/.test(url)) {
+          captured.push({ url, body: String(init?.body ?? "") });
+          return new Response("[]", { status: 201, headers: { "content-type": "application/json" } });
+        }
+        return new Response(
+          JSON.stringify([{ id: SESSION_ID, client_id: CLIENT_ID, pin_hash: "scrypt$x", pin_envelope: goodEnv }]),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as typeof fetch;
+
+      const r = await callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR });
+      assert(r.status === 200 && r.json.pin === "428913", "the reveal succeeded, so a row was written");
+      assert(captured.length === 1, "exactly one audit row was written");
+
+      const wire = captured[0]?.body ?? "";
+      assert(!wire.includes("428913"), "the audit row does NOT contain the PIN");
+      assert(!wire.includes(goodEnv), "the audit row does NOT contain the envelope");
+      assert(!wire.includes(VALID_KEY), "the audit row does NOT contain the key");
+
+      // The exact key set, so a future field cannot be added without this failing.
+      // postgrest-js sends a single insert as an OBJECT, not a one-element
+      // array. Both shapes are handled so this does not silently read {} and
+      // pass a key-set assertion against nothing, which is what it did first.
+      const parsedWire = JSON.parse(wire) as
+        | { payload?: Record<string, unknown> }
+        | Array<{ payload?: Record<string, unknown> }>;
+      const first = Array.isArray(parsedWire) ? parsedWire[0] : parsedWire;
+      const payload = first?.payload ?? {};
+      assert(
+        Object.keys(payload).length > 0,
+        "the captured payload is non-empty, so the assertions below are reading something",
+      );
+      const keys = Object.keys(payload).sort();
+      assert(
+        JSON.stringify(keys) === JSON.stringify(["actor", "pin_returned", "state"]),
+        `the payload has EXACTLY actor, pin_returned, state (got ${JSON.stringify(keys)})`,
+      );
+      assert(payload.actor === ACTOR, "actor is the validated email");
+      assert(payload.pin_returned === true, "pin_returned is a boolean, not the PIN");
+      assert(
+        typeof payload.state === "string" &&
+          ["recoverable", "unrecoverable", "no_gate"].includes(payload.state as string),
+        "state is one of the three literals",
+      );
+      // Only ONE free-text value, and it is the email. Anything else non-boolean
+      // and not in the three-literal set would be a second one.
+      const freeText = Object.entries(payload).filter(
+        ([k, v]) => typeof v === "string" && k !== "state",
+      );
+      assert(
+        freeText.length === 1 && freeText[0][0] === "actor",
+        `exactly ONE free-text field, and it is actor (got ${JSON.stringify(freeText.map((f) => f[0]))})`,
+      );
+    }
+    {
+      // And the cap is a REJECTION, not a truncation: a truncated actor in an
+      // audit row looks like a real answer.
+      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: "scrypt$x", pin_envelope: envelopeFor("428913") } });
+      const long = "a".repeat(310) + "@example.com"; // > 320
+      const r = await callPost({ sessionId: SESSION_ID, actingUserEmail: long });
+      assert(r.status === 400, "an over-long actor is REJECTED, not truncated");
+      assert(r.json.reason === "invalid_payload", "and it is a payload error");
+    }
+    {
+      // A `reason` field was dropped from the first draft. If someone re-adds a
+      // second free-text field, Zod's default strip means it silently vanishes
+      // rather than erroring, so this pins that it does NOT reach the row.
+      const captured: string[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : String((input as Request).url ?? input);
+        if (/onboarding_audit_events/.test(url)) {
+          captured.push(String(init?.body ?? ""));
+          return new Response("[]", { status: 201, headers: { "content-type": "application/json" } });
+        }
+        return new Response(
+          JSON.stringify([{ id: SESSION_ID, client_id: CLIENT_ID, pin_hash: "scrypt$x", pin_envelope: envelopeFor("428913") }]),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as typeof fetch;
+      await callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR, reason: "SECRET-428913-LEAK" });
+      assert(
+        captured.length === 1 && !captured[0].includes("SECRET-428913-LEAK"),
+        "an unexpected free-text field in the request does NOT reach the audit row",
+      );
+    }
+
+    // -----------------------------------------------------------------
     console.log("\n6. GET is refused, so a PIN cannot end up in a URL.");
     // -----------------------------------------------------------------
     {
@@ -325,7 +425,7 @@ async function main() {
     }
 
     const total = checks;
-    assert(total === 86, `all 86 checks ran, none skipped (ran ${total})`);
+    assert(total === 100, `all 100 checks ran, none skipped (ran ${total})`);
   } finally {
     process.env.PIN_ENCRYPTION_KEY = saved.key;
     if (saved.bearer === undefined) delete process.env.SHARED_INTEGRATION_BEARER_TOKEN;

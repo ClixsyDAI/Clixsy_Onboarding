@@ -68,15 +68,23 @@ const BodySchema = z.object({
    * bearer token proves WHICH SERVICE is asking and this proves WHO asked it to.
    * The bearer token alone cannot distinguish two admins sharing one dashboard.
    */
+  //
+  // CONSTRAINED, AND REJECTED RATHER THAN TRUNCATED. Validated as an email with
+  // a hard 320-char cap (the RFC 5321 maximum), and a value that fails is a 400,
+  // never a silently shortened string in an audit row. A truncated actor is worse
+  // than a rejected one: it looks like a real answer.
   actingUserEmail: z
     .string()
     .trim()
     .min(3)
     .max(320)
     .email("actingUserEmail must be an email address"),
-  /** Optional free-text reason, surfaced in the audit row. */
-  reason: z.string().trim().max(500).optional(),
 });
+
+// NO OTHER FREE-TEXT FIELD. A `reason` field was in the first draft of this
+// schema and was removed deliberately. See the audit-payload note below: one
+// validated free-text field is a downgrade that has to be argued for, and a
+// second one with no format at all would not survive the same argument.
 
 function jsonError(status: number, reason: string, extra?: Record<string, unknown>) {
   return NextResponse.json({ ok: false, reason, ...extra }, { status });
@@ -118,7 +126,7 @@ export async function POST(request: NextRequest) {
       issues: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
     });
   }
-  const { sessionId, actingUserEmail, reason } = parsed.data;
+  const { sessionId, actingUserEmail } = parsed.data;
 
   // ---- 4. THE ROW. -------------------------------------------------------
   const supabase = createServiceRoleClient();
@@ -189,11 +197,28 @@ export async function POST(request: NextRequest) {
     await insertAuditEventOrThrow(
       sessionId,
       "pin_revealed",
+      // THE AUDIT PAYLOAD, AND A GUARANTEE THAT CHANGED KIND.
+      //
+      // An earlier critic verified this payload was provably PIN-free BY TYPE:
+      // every value was one of six string literals or a boolean, so no free-text
+      // field existed for a PIN to reach even by mistake. `actor` is the first
+      // free-text value here, so that guarantee is now STRUCTURAL NO LONGER. It
+      // rests on Zod's email validation and on the dashboard sending what it
+      // says it is sending.
+      //
+      // That is a real downgrade and it is recorded rather than glossed. What
+      // replaces the type-level guarantee:
+      //   - `actor` is validated as an email, capped at 320, and REJECTED rather
+      //     than truncated, so it cannot be arbitrary text.
+      //   - No second free-text field. `reason` was dropped from the first draft.
+      //   - `state` is one of three literals, `pin_returned` is a boolean.
+      //   - A test asserts the payload's exact key set and that the PIN appears
+      //     nowhere in the serialised row, so the property is checked rather than
+      //     merely intended.
       {
         actor: actingUserEmail,
         state,
         pin_returned: pin !== null,
-        ...(reason ? { reason } : {}),
       },
       {
         route: "POST /api/admin/onboarding/pin",
@@ -204,6 +229,48 @@ export async function POST(request: NextRequest) {
       },
     );
   } catch (err) {
+    // WHY THIS ROUTE IS CLEAR OF THE AUDIT BRANCH'S TWO KNOWN LIMITATIONS, and
+    // it is an enumeration rather than one lucky path.
+    //
+    // Those limitations are: normaliseAuditFault can throw on an exotic error
+    // object, and safeField's catch uses instanceof so a throwing
+    // getPrototypeOf trap makes the floor emit nothing. Neither can bite here.
+    //
+    // First, safeField and logAuditWriteFailure are unreachable: they are called
+    // only from recordAuditRow, the DEGRADE entry point. This route uses
+    // insertAuditEventOrThrow, which by design does not log at all. The line
+    // below is ours.
+    //
+    // Second, EVERY WAY an error object reaches normaliseAuditFault on this
+    // route was enumerated against the installed postgrest-js 2.89.0, not
+    // inferred from the one path that was driven:
+    //
+    //   PostgrestBuilder.ts:161  plain object literal (PGRST116). Only reachable
+    //                            for maybeSingle() on a GET; this is an INSERT.
+    //   PostgrestBuilder.ts:182  JSON.parse(body). Own data properties only;
+    //                            JSON.parse cannot create an accessor, and no
+    //                            reviver is passed. A "__proto__" key becomes an
+    //                            own property, not a prototype write.
+    //   PostgrestBuilder.ts:197  plain object literal { message: body } where
+    //                            body is a string from res.text(). This is the
+    //                            non-JSON path, exercised with an HTML body.
+    //   PostgrestBuilder.ts:251  plain object literal, fetch-layer failure and
+    //                            abort/timeout. Message is a template string.
+    //
+    // All four are plain objects with own data properties. None can carry a
+    // throwing getter or an exotic prototype, because none of them is
+    // caller-supplied: postgrest-js builds all of them.
+    //
+    // Third, even if one could, attemptAuditWrite wraps the normalise call in
+    // its own try whose catch returns { kind: 'unknown' }. That containment is
+    // demonstrated rather than assumed: a wire body with a NUMBER message makes
+    // normaliseAuditFault throw, and what comes out here is still a proper
+    // AuditWriteError with kind 'unknown'. The route's tests drive it.
+    //
+    // If a future change makes an error object on this route caller-supplied,
+    // this enumeration stops holding and those two limitations stop being
+    // follow-ups.
+
     // OWNED LOG LINE. A fixed literal tag first so it is greppable, then one
     // line of JSON. This is the only record that an attempt happened, so it is
     // emitted before anything else can fail.
