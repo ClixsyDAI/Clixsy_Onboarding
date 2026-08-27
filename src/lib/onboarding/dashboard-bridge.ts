@@ -21,9 +21,26 @@
 
 import {
   createServiceRoleClient,
-  createAuditEvent,
+  recordAuditEvent,
+  logSupabaseFailure,
+  logUpstreamFailure,
+  normaliseAuditFault,
+  normaliseHttpResponseFault,
+  normaliseThrownFault,
+  SUPABASE_READ_FAILURE_TAG,
+  SUPABASE_READ_TIMEOUT_MS_AFTER,
+  UPSTREAM_HTTP_FAILURE_TAG,
   type OnboardingSession,
 } from "@/lib/supabase/server";
+
+const BRIDGE_ROUTE = "after(POST /api/public/onboarding/submit) → dashboard-bridge";
+
+/**
+ * What survived a bridge failure. One string, so the HTTP line and the audit
+ * line below cannot drift into saying different things about the same event.
+ */
+const BRIDGE_SUCCEEDED =
+  "the submission itself is committed; the dashboard sync did not land, so re-fire the bridge for this session";
 
 // The dashboard's canonical production origin. Bearer-authed, so it must
 // target the canonical domain directly (a cross-origin redirect would
@@ -31,22 +48,19 @@ import {
 const DASHBOARD_BASE_URL =
   process.env.DASHBOARD_BASE_URL ?? "https://workbooks.clixsy.co";
 
-async function safeAudit(
-  sessionId: string,
-  eventType: string,
-  payload: Record<string, unknown>,
-): Promise<void> {
-  try {
-    await createAuditEvent(sessionId, eventType, payload);
-  } catch (err) {
-    // The bridge must never throw into the submit path, even if auditing fails.
-    console.error(
-      `[dashboard-bridge] audit write failed (non-fatal): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}
+// The `safeAudit` wrapper that used to live here is GONE. Its inner catch was
+// not fully dead — createServiceRoleClient() genuinely throws when the env is
+// missing, which is why the outer catch at the bottom of this file could reach
+// it and it could throw a second time from the same cause — but it was the
+// wrong shape for the fault that actually happens: postgrest-js RESOLVES both
+// an RLS refusal and a transport failure, so the overwhelmingly common case
+// never reached that catch at all. `recordAuditEvent` is total (it absorbs the
+// client-init throw as fault kind 'client_init') AND loud, so the wrapper has
+// nothing left to add.
+//
+// The OUTER catch below stays. It is live for reasons that have nothing to do
+// with auditing: fetch(), AbortSignal.timeout(15000) and res.json() all
+// genuinely reject.
 
 export async function fireDashboardClientBridge(
   session: OnboardingSession,
@@ -63,20 +77,56 @@ export async function fireDashboardClientBridge(
     // workbook_id + website_url live in `clients` columns not declared on
     // the Client TS type — query them directly.
     const supabase = createServiceRoleClient();
-    const { data: client, error } = await supabase
+    // BOUNDED, and the bound is the point.
+    //
+    // Reading `.error` is NECESSARY BUT NOT SUFFICIENT: a call that never
+    // settles has no `.error` to read. This read sits immediately UPSTREAM of
+    // the audit write below, inside the same after() callback, so a Supabase
+    // that accepts the connection and never answers used to freeze the
+    // callback HERE — the audit write was never issued, logAuditWriteFailure
+    // never ran, and the operator got nothing at all, with the submit's 200
+    // long since shipped. `.abortSignal` must precede `.single()`, which
+    // returns a PostgrestBuilder and no longer carries it.
+    const {
+      data: client,
+      error,
+      status,
+    } = await supabase
       .from("clients")
       .select("client_name, workbook_id, website_url")
       .eq("id", session.client_id)
+      .abortSignal(AbortSignal.timeout(SUPABASE_READ_TIMEOUT_MS_AFTER))
       .single();
 
     if (error) {
-      console.error(
-        `[dashboard-bridge] client lookup failed session=${session.id}: ${error.message}`,
+      logSupabaseFailure(
+        SUPABASE_READ_FAILURE_TAG,
+        {
+          route: BRIDGE_ROUTE,
+          table: "clients",
+          eventType: "client_lookup",
+          sessionId: session.id,
+          clientId: session.client_id,
+          succeeded:
+            "the submission itself is committed; the dashboard sync did not run, so re-fire the bridge for this session",
+        },
+        normaliseAuditFault(
+          status,
+          error,
+          "the client lookup was refused with no error body",
+        ),
       );
-      await safeAudit(session.id, "dashboard_sync_failed", {
-        stage: "client_lookup",
-        error: error.message,
-      });
+      await recordAuditEvent(
+        session.id,
+        "dashboard_sync_failed",
+        { stage: "client_lookup", error: error.message },
+        {
+          clientId: session.client_id,
+          route: BRIDGE_ROUTE,
+          succeeded:
+            "the submission itself is committed; the dashboard sync failure on the line above is now unrecorded too, so re-fire the bridge for this session",
+        },
+      );
       return;
     }
 
@@ -90,9 +140,17 @@ export async function fireDashboardClientBridge(
       console.warn(
         `[dashboard-bridge] session ${session.id} has no workbook_id — dashboard sync deferred (pending backfill)`,
       );
-      await safeAudit(session.id, "dashboard_sync_deferred", {
-        reason: "no_workbook_id",
-      });
+      await recordAuditEvent(
+        session.id,
+        "dashboard_sync_deferred",
+        { reason: "no_workbook_id" },
+        {
+          clientId: session.client_id,
+          route: BRIDGE_ROUTE,
+          succeeded:
+            "the submission itself is committed; the deferral on the line above is now unrecorded too, so re-fire the bridge once workbook_id is backfilled",
+        },
+      );
       return;
     }
 
@@ -129,14 +187,39 @@ export async function fireDashboardClientBridge(
       } catch {
         /* swallow */
       }
-      console.error(
-        `[dashboard-bridge] dashboard POST /api/clients failed status=${res.status} session=${session.id} body=${body.slice(0, 500)}`,
+      // D6. This used to be a hand-built console.error that CONCATENATED
+      // `body.slice(0, 500)` — remote text, unescaped — straight into the
+      // record. A single newline anywhere in the dashboard's answer (an HTML
+      // error page, a stack trace, a proxy interstitial) split the line in two
+      // and stranded the tag on the half without the news, which is the exact
+      // hazard the JSON emitter and safeField exist to remove. The 500-char
+      // hand-clip is gone too: `normaliseHttpResponseFault` applies the SAME
+      // 300-char bound with the SAME "[truncated: N chars total]" marker as
+      // every other message, so a clipped body reads as clipped instead of as
+      // a complete sentence that happens to stop.
+      logUpstreamFailure(
+        UPSTREAM_HTTP_FAILURE_TAG,
+        {
+          route: BRIDGE_ROUTE,
+          target: `${DASHBOARD_BASE_URL}/api/clients`,
+          eventType: "dashboard_client_sync",
+          sessionId: session.id,
+          clientId: session.client_id,
+          succeeded: BRIDGE_SUCCEEDED,
+        },
+        normaliseHttpResponseFault(res.status, body),
       );
-      await safeAudit(session.id, "dashboard_sync_failed", {
-        status: res.status,
-        body: body.slice(0, 500),
-        workbookId,
-      });
+      await recordAuditEvent(
+        session.id,
+        "dashboard_sync_failed",
+        { status: res.status, body: body.slice(0, 500), workbookId },
+        {
+          clientId: session.client_id,
+          route: BRIDGE_ROUTE,
+          succeeded:
+            "the submission itself is committed; the dashboard sync failure on the line above is now unrecorded too, so re-fire the bridge for this session",
+        },
+      );
       return;
     }
 
@@ -149,9 +232,34 @@ export async function fireDashboardClientBridge(
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(
-      `[dashboard-bridge] error session=${session.id}: ${message}`,
+    // D6, the second half. `message` here is whatever fetch(), res.json() or
+    // an aborted AbortSignal.timeout(15000) produced — a value this code did
+    // not author — so it goes through the same emitter, the same bound and the
+    // same fault vocabulary as everything else rather than being concatenated.
+    // normaliseThrownFault is what makes the 15s abort report as fault
+    // 'timeout' instead of disappearing into an untyped string.
+    logUpstreamFailure(
+      UPSTREAM_HTTP_FAILURE_TAG,
+      {
+        route: BRIDGE_ROUTE,
+        target: `${DASHBOARD_BASE_URL}/api/clients`,
+        eventType: "dashboard_client_sync",
+        sessionId: session.id,
+        clientId: session.client_id,
+        succeeded: BRIDGE_SUCCEEDED,
+      },
+      normaliseThrownFault(err),
     );
-    await safeAudit(session.id, "dashboard_sync_failed", { error: message });
+    await recordAuditEvent(
+      session.id,
+      "dashboard_sync_failed",
+      { error: message },
+      {
+        clientId: session.client_id,
+        route: BRIDGE_ROUTE,
+        succeeded:
+          "the submission itself is committed; the dashboard sync failure on the line above is now unrecorded too, so re-fire the bridge for this session",
+      },
+    );
   }
 }

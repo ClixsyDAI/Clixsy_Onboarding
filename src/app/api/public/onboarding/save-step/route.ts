@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSessionByToken, upsertAnswer, updateSessionStep, createAuditEvent } from '@/lib/supabase/server';
+import { getSessionByToken, upsertAnswer, updateSessionStep, recordAuditEvent } from '@/lib/supabase/server';
 import { validateStepDataForVersion } from '@/lib/onboarding/flow-version';
 import { resolveSessionAccess } from '@/lib/onboarding/session-guard';
 import { normaliseSeoTargetingAnswers } from '@/lib/onboarding/gbp-normalise';
@@ -94,13 +94,28 @@ export async function POST(request: NextRequest) {
     // Create audit event — suppressed for AM-bypass saves (#4): the
     // data write above is real, but the activity must not register as
     // client engagement.
+    //
+    // LOG AND CONTINUE. The answers are already persisted, so a lost audit
+    // row degrades the workbook's activity view and nothing else; failing the
+    // save because its bookkeeping failed would be strictly worse for the
+    // client. `recordAuditEvent` never throws and logs its own failure, so
+    // the loudness does not depend on this call site.
     if (!isAmBypass) {
-      await createAuditEvent(session.id, 'step_saved', {
-        stepKey,
-        stepIndex,
-        completed,
-        answersCount: Object.keys(effectiveAnswers).length,
-      });
+      await recordAuditEvent(
+        session.id,
+        'step_saved',
+        {
+          stepKey,
+          stepIndex,
+          completed,
+          answersCount: Object.keys(effectiveAnswers).length,
+        },
+        {
+          clientId: session.client_id,
+          route: 'POST /api/public/onboarding/save-step',
+          succeeded: 'the step answers were persisted and the session step advanced; only the audit row was lost',
+        },
+      );
     }
 
     return NextResponse.json({

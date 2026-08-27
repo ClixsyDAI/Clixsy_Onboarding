@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { after } from 'next/server';
-import { getSessionByToken, getSessionAnswers, getSignedLogoUrl, createAuditEvent, createOpenEvent, getClientById } from '@/lib/supabase/server';
+import { getSessionByToken, getSessionAnswers, getSignedLogoUrl, recordAuditEvent, recordOpenEvent, getClientById } from '@/lib/supabase/server';
 import { getStepsForVersion } from '@/lib/onboarding/flow-version';
 import { getSiteIntelligenceSnapshots } from '@/lib/supabase/server';
 import { getSiteIntelligence } from '@/lib/siteIntelligence/analyze';
@@ -118,42 +118,81 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Create audit event for session access. Sprint 2 / #4: suppressed
-    // entirely for AM-bypass opens — an AM preparing the form must not
-    // look like client activity in the audit trail.
-    if (!isAmBypass) {
-      await createAuditEvent(session.id, 'session_accessed', {
-        ip: request.headers.get('x-forwarded-for') || 'unknown',
-        userAgent: request.headers.get('user-agent') || 'unknown',
-      });
-    }
-
-    // Phase 1 of the workbook Onboarding tab (migration 008): append a
-    // row to `onboarding_open_events` for the workbook's Open History
-    // modal (Phase 6.1 of the spec). IP is hashed (sha256(ip || salt))
-    // before storage; raw IP never lands in the DB.
+    // BOTH tracking writes for this page-load, in ONE after() registration.
+    // Sprint 2 / #4: suppressed entirely for AM-bypass opens — an AM
+    // preparing the form must not look like client activity, and the
+    // workbook's Open History must only count real client opens.
     //
-    // Emitted only after `guard.kind === 'ok'` (i.e. the caller has
-    // passed PIN verification when one is configured). Locked /
-    // needs_pin responses are not counted as opens.
+    // Phase 1 of the workbook Onboarding tab (migration 008): the open-event
+    // row feeds the Open History modal (Phase 6.1 of the spec). IP is hashed
+    // (sha256(ip || salt)) before storage; raw IP never lands in the DB.
     //
-    // Use Next.js after() to run the INSERT after the response is sent.
-    // This keeps the serverless function alive on Vercel — a plain
-    // `void ... .catch(log)` fire-and-forget is torn down with the
-    // function when the response ships, so the Supabase HTTP request
-    // never lands (see PR #11 post-merge verification). Same pattern
-    // as src/app/api/admin/site-intelligence/analyze/route.ts.
-    // Sprint 2 / #4: open events are likewise suppressed for AM-bypass —
-    // the workbook's Open History must only count real client opens.
+    // Emitted only after `access.kind === 'ok'` (i.e. the caller has passed
+    // PIN verification when one is configured). Locked / needs_pin responses
+    // are not counted as opens.
+    //
+    // WHY after(), FOR BOTH. The open event already deferred for a documented
+    // reason: a plain `void ... .catch(log)` fire-and-forget is torn down with
+    // the function when the response ships on Vercel, so the Supabase HTTP
+    // request never lands (see PR #11 post-merge verification). The
+    // session_accessed audit is the same kind of write with the same
+    // consequences, so it joins it here. That takes a Supabase round trip off
+    // form-load latency and makes the failure STRUCTURALLY unable to reach the
+    // response, rather than merely handled on the way to it.
+    //
+    // WHAT IS LOST, stated: a hard teardown before after() flushes drops the
+    // row. That is the trade the open event on this same page-load already
+    // accepts, so it costs no new class of loss.
+    //
+    // No try/catch here: recordAuditEvent and recordOpenEvent are total and
+    // log their own failures. A catch would only be able to swallow.
+    //
+    // THE TWO WRITES ARE INDEPENDENT, AND THAT IS LOAD-BEARING.
+    // Sharing one after() registration must not make them share a FATE. They
+    // were briefly sequenced as `await audit; await open;`, which reintroduced
+    // exactly the class of bug this whole change exists to remove: a first
+    // write that does not settle means the second is never even ATTEMPTED, so
+    // the open-history row is lost AND nothing is logged about its absence,
+    // at HTTP 200. Measured on the pre-fix revision against a stalling
+    // PostgREST: the only request issued was
+    // POST /rest/v1/onboarding_audit_events, and the open event never went out.
+    // (The write bound in server.ts stops the freeze; this stops the coupling.
+    // Both are needed — a bounded first write still delays the second by the
+    // whole bound, and a slow write is not a reason to skip an unrelated one.)
+    //
+    // So both are ISSUED before either is awaited, and settled with
+    // allSettled rather than all: both primitives are total today, and this
+    // does not quietly depend on their staying that way. Each still emits its
+    // OWN [audit-write][WRITE-FAILURE] line, naming its own table.
     if (!isAmBypass) {
+      const ip = request.headers.get('x-forwarded-for') || 'unknown';
+      const rawUserAgent = request.headers.get('user-agent') || 'unknown';
       const userAgent = capUserAgent(request.headers.get('user-agent'));
       const ipHash = hashRequestIp(request.headers.get('x-forwarded-for'));
       after(async () => {
-        try {
-          await createOpenEvent(session.id, { userAgent, ipHash });
-        } catch (err) {
-          console.warn('[session.GET] onboarding_open_events insert failed:', err);
-        }
+        await Promise.allSettled([
+          recordAuditEvent(
+            session.id,
+            'session_accessed',
+            { ip, userAgent: rawUserAgent },
+            {
+              clientId: session.client_id,
+              route: 'GET /api/public/onboarding/session',
+              succeeded:
+                'the session payload was returned to the client; only the audit row was lost',
+            },
+          ),
+          recordOpenEvent(
+            session.id,
+            { userAgent, ipHash },
+            {
+              clientId: session.client_id,
+              route: 'GET /api/public/onboarding/session',
+              succeeded:
+                'the session payload was returned to the client; only the open-history row was lost',
+            },
+          ),
+        ]);
       });
     }
 
