@@ -338,6 +338,20 @@ function loadPinEncryptionKey(): Buffer {
  * declines a shape CHECK on the grounds that this module validates every field.
  * That is only true if this module is actually asked, which is what the fourth
  * state guarantees.
+ *
+ * KNOWN AND ACCEPTED DISAGREEMENT, for one value. A blank envelope ("" or a
+ * whitespace-only string) is classified `unrecoverable` here, while migration
+ * 011's census counts it as state (c) because it IS NOT NULL. That divergence is
+ * deliberate and this side is the useful one: there is no envelope in a blank
+ * column by any reading, so the remedy really is to regenerate, and routing it to
+ * `envelope_unreadable` would tell an operator NOT to regenerate the one row
+ * where regenerating is exactly right. The cost is that the migration's own state
+ * census over-counts (c) by however many blank rows exist. Reproduce with:
+ *   select count(*) from onboarding_sessions
+ *    where pin_hash is not null and pin_envelope is not null
+ *      and btrim(pin_envelope) = '';
+ * If that count is ever non-zero, the census in 011 is wrong by that much and
+ * this comment is why.
  */
 export type PinState =
   | "no_gate"

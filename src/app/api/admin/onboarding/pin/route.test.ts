@@ -217,7 +217,14 @@ async function main() {
       assert(r.json.reason === "invalid_bearer_token", "and says the token is invalid");
     }
     {
-      // A prefix of the real token must not be accepted by a length-blind compare.
+      // A prefix of the real token is rejected. AND THAT IS ALL THIS PROVES: it
+      // does NOT establish the comparison is timing-safe, which is what the
+      // previous version of this comment implied by invoking "a length-blind
+      // compare". Plain `===` on strings is not length-blind either, so `!==`
+      // satisfies this assertion exactly as well as timingSafeEqual does;
+      // measured, swapping in `===` leaves the whole suite green. Timing safety
+      // is not assertable from this suite and require-bearer-token.ts now says so
+      // in its own header. Keep this test, drop the claim it was carrying.
       const r = await callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR }, { bearer: BEARER.slice(0, 10) });
       assert(r.status === 401, "a PREFIX of the real token -> 401");
     }

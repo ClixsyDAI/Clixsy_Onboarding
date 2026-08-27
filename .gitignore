@@ -43,3 +43,8 @@ next-env.d.ts
 
 .vercel
 supabase/migration-snapshot/
+
+# Throwaway probe/verification scratch files (critic agents, mutation harnesses).
+# These got swept into a commit once by `git add -A`; the pattern stops a repeat.
+__probe*.ts
+__verify*.ts
