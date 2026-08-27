@@ -306,15 +306,44 @@ function loadPinEncryptionKey(): Buffer {
  * three it was.
  */
 /**
- * The three states a session's PIN can be in, from the caller's point of view.
+ * The states a session's PIN can be in, from the caller's point of view.
  *
- * `no_gate`      no PIN protects this session at all. pin_hash is absent.
- * `recoverable`  a PIN exists AND a decryptable copy is stored.
- * `unrecoverable` a PIN exists but no recoverable copy: written before this
- *                feature, or written while the key was unset or bad. The remedy
- *                is to regenerate, which changes the PIN the client holds.
+ * `no_gate`             no PIN protects this session at all. pin_hash is absent.
+ * `recoverable`         a PIN exists AND a structurally valid copy is stored.
+ * `unrecoverable`       a PIN exists and there is NO envelope at all: the column
+ *                       is NULL, absent, or blank. Written before this feature,
+ *                       or written while the key was unset. The remedy is to
+ *                       regenerate, which changes the PIN the client holds.
+ * `envelope_unreadable` a PIN exists and SOMETHING is stored, but it is not a
+ *                       well-formed envelope. This is corrupt or foreign data,
+ *                       NOT a missing copy, and regenerating would destroy
+ *                       whatever it is before anyone looked at it.
+ *
+ * WHY THE FOURTH STATE EXISTS, since three would look tidier. A critic found
+ * that folding it into `unrecoverable` made this endpoint tell an operator that
+ * a corrupt row "predates this feature" and should be regenerated. Both halves
+ * were false and the advice was the destructive one. Measured, every one of
+ * these landed on `unrecoverable` with no log line: a bumped version prefix, a
+ * 4-byte auth tag, a wrong-length IV, non-hex fields, and the strings "hello"
+ * and "   ".
+ *
+ * The sharpest way in is a rolling deploy after an ENVELOPE_VERSION bump. Old
+ * instances would report every row the new instances minted as "predates this
+ * feature, regenerate", silently and at scale, while `decryptPin` would have
+ * rejected the unknown version correctly if it had ever been asked.
+ *
+ * Note the migration disagrees with the old taxonomy too, in the same place.
+ * 011_pin_envelope.sql defines its state (c) as `pin_envelope IS NOT NULL`, so
+ * its own census counts a corrupt row as recoverable, and it deliberately
+ * declines a shape CHECK on the grounds that this module validates every field.
+ * That is only true if this module is actually asked, which is what the fourth
+ * state guarantees.
  */
-export type PinState = "no_gate" | "recoverable" | "unrecoverable";
+export type PinState =
+  | "no_gate"
+  | "recoverable"
+  | "unrecoverable"
+  | "envelope_unreadable";
 
 /**
  * Classify a session row's PIN state in ONE place.
@@ -328,16 +357,22 @@ export type PinState = "no_gate" | "recoverable" | "unrecoverable";
  * THE INTERFACE IS KNOWN-STALE AND THAT IS WHY THIS TAKES A LOOSE SHAPE.
  * `OnboardingSession` is hand-maintained and has lagged the real schema since
  * before this feature; the standing instruction on this repo is to trust
- * supabase/migrations over the interface. Concretely: against a database where
- * migration 011 has not been applied, `pin_envelope` is ABSENT from the row, so
- * it arrives as `undefined` while the declared type promises `string | null`.
+ * supabase/migrations over the interface. So the parameter is widened to
+ * `string | null | undefined` rather than narrowed to match the interface, and
+ * undefined and null are treated IDENTICALLY: both mean "no envelope here". DO
+ * NOT narrow this back to `string | null`. The looser type is the accurate one,
+ * and narrowing it reintroduces the `!== null` bug that reports an absent
+ * envelope as recoverable.
  *
- * So the parameter is deliberately widened to `string | null | undefined` rather
- * than narrowed to match the interface, and undefined and null are treated
- * IDENTICALLY: both mean "no recoverable copy here". DO NOT narrow this back to
- * `string | null` to match `OnboardingSession`. The looser type is the accurate
- * one, and narrowing it reintroduces the `!== null` bug that reports an
- * unmigrated row as recoverable.
+ * ONE THING THIS COMMENT USED TO CLAIM AND SHOULD NOT HAVE. It said the
+ * `undefined` arrives from a database where migration 011 has not been applied.
+ * That is wrong for the caller that matters: the reveal endpoint selects
+ * `pin_envelope` by name, and PostgREST answers a missing column with 400 /
+ * 42703, so the route returns `session_read_failed` and never reaches this
+ * function. Measured against a simulated 42703. The widening is still correct,
+ * because a caller with a `select("*")` or a hand-built row object CAN deliver
+ * `undefined`, but the specific provenance named here was not verified and was
+ * not real. Keep the defence, drop the story.
  *
  * Structural only. It does NOT decrypt and does not touch the key, so it is safe
  * to call before the configuration gate and says nothing about whether this
@@ -349,8 +384,21 @@ export function classifyPinState(row: {
 }): PinState {
   const hash = typeof row?.pin_hash === "string" ? row.pin_hash.trim() : "";
   if (hash.length === 0) return "no_gate";
+
   // A positive test on the VALUE, never `!== null`: undefined must not pass.
-  return isPinEnvelope(row?.pin_envelope) ? "recoverable" : "unrecoverable";
+  if (isPinEnvelope(row?.pin_envelope)) return "recoverable";
+
+  // NOTHING THERE vs SOMETHING BROKEN. These have opposite remedies, so the
+  // absence test is explicit rather than "whatever did not parse".
+  //
+  // Blank counts as absent, matching the pin_hash trim above: a column holding
+  // "" or "   " has no envelope in it by any reading, and regenerating IS the
+  // right remedy. Anything else that is present and does not parse is corrupt,
+  // including a non-string, which means something wrote a shape nobody expected.
+  const env = row?.pin_envelope;
+  const absent = env === null || env === undefined ||
+    (typeof env === "string" && env.trim().length === 0);
+  return absent ? "unrecoverable" : "envelope_unreadable";
 }
 
 export function isPinEncryptionConfigured(): boolean {

@@ -396,13 +396,53 @@ function main() {
         ["hash set, envelope UNDEFINED (unmigrated db)", { pin_hash: "scrypt$x" }, "unrecoverable"],
         ["hash set, envelope null", { pin_hash: "scrypt$x", pin_envelope: null }, "unrecoverable"],
         ["hash set, envelope empty string", { pin_hash: "scrypt$x", pin_envelope: "" }, "unrecoverable"],
-        ["hash set, envelope garbage", { pin_hash: "scrypt$x", pin_envelope: "nope" }, "unrecoverable"],
+        ["hash set, envelope whitespace only", { pin_hash: "scrypt$x", pin_envelope: "   " }, "unrecoverable"],
         ["hash set, envelope valid", { pin_hash: "scrypt$x", pin_envelope: valid }, "recoverable"],
         ["no gate but an envelope present", { pin_envelope: valid }, "no_gate"],
+
+        // THE FOURTH STATE. Every row below used to classify as "unrecoverable",
+        // which made the reveal endpoint answer 200 and tell an operator the row
+        // "predates this feature" and should be regenerated. Both halves false,
+        // and the advice destructive. These are PRESENT and BROKEN, which is a
+        // different fact with a different remedy.
+        ["envelope: version bumped", { pin_hash: "scrypt$x", pin_envelope: "aes-256-gcm$2$" + "0".repeat(24) + "$" + "0".repeat(32) + "$" + "0".repeat(32) }, "envelope_unreadable"],
+        ["envelope: auth tag too short", { pin_hash: "scrypt$x", pin_envelope: "aes-256-gcm$1$" + "0".repeat(24) + "$" + "0".repeat(8) + "$" + "0".repeat(32) }, "envelope_unreadable"],
+        ["envelope: iv wrong length", { pin_hash: "scrypt$x", pin_envelope: "aes-256-gcm$1$" + "0".repeat(10) + "$" + "0".repeat(32) + "$" + "0".repeat(32) }, "envelope_unreadable"],
+        ["envelope: non-hex fields", { pin_hash: "scrypt$x", pin_envelope: "aes-256-gcm$1$" + "z".repeat(24) + "$" + "z".repeat(32) + "$" + "z".repeat(32) }, "envelope_unreadable"],
+        ["envelope: wrong algorithm name", { pin_hash: "scrypt$x", pin_envelope: "aes-128-gcm$1$" + "0".repeat(24) + "$" + "0".repeat(32) + "$" + "0".repeat(32) }, "envelope_unreadable"],
+        ["envelope: too few fields", { pin_hash: "scrypt$x", pin_envelope: "aes-256-gcm$1$abc" }, "envelope_unreadable"],
+        ["envelope: the string 'hello'", { pin_hash: "scrypt$x", pin_envelope: "hello" }, "envelope_unreadable"],
+        ["envelope: a number", { pin_hash: "scrypt$x", pin_envelope: 12345 as unknown as string }, "envelope_unreadable"],
+        ["envelope: an object", { pin_hash: "scrypt$x", pin_envelope: {} as unknown as string }, "envelope_unreadable"],
+        ["envelope: an array", { pin_hash: "scrypt$x", pin_envelope: [] as unknown as string }, "envelope_unreadable"],
       ];
       for (const [label, row, want] of cases) {
         assert(classifyPinState(row) === want, `classifyPinState: ${label} -> ${want}`);
       }
+
+      // THE SPLIT ITSELF, asserted as a property rather than only per-case, so a
+      // future change that folds the two back together fails here even if
+      // someone updates the table above to match the new behaviour.
+      const absentRows = [
+        { pin_hash: "scrypt$x", pin_envelope: null },
+        { pin_hash: "scrypt$x", pin_envelope: "" },
+        { pin_hash: "scrypt$x" },
+      ];
+      const corruptRows = [
+        { pin_hash: "scrypt$x", pin_envelope: "hello" },
+        { pin_hash: "scrypt$x", pin_envelope: "aes-256-gcm$2$" + "0".repeat(24) + "$" + "0".repeat(32) + "$" + "0".repeat(32) },
+      ];
+      const absentStates = new Set(absentRows.map((r) => classifyPinState(r)));
+      const corruptStates = new Set(corruptRows.map((r) => classifyPinState(r)));
+      assert(
+        absentStates.size === 1 && corruptStates.size === 1,
+        "each group classifies consistently within itself",
+      );
+      assert(
+        [...absentStates][0] !== [...corruptStates][0],
+        "AN ABSENT ENVELOPE AND A CORRUPT ONE MUST NOT SHARE A STATE: they carry " +
+          "opposite remedies and one of them is destructive",
+      );
       // The specific bug the helper exists to prevent.
       assert(
         classifyPinState({ pin_hash: "scrypt$x" }) ===
@@ -549,7 +589,7 @@ function main() {
     // Self-denominator. A silently dropped assertion is a failure, not a pass.
     // ---------------------------------------------------------------
     const total = checks;
-    assert(total === 137, `all 137 checks ran, none skipped (ran ${total})`);
+    assert(total === 149, `all 149 checks ran, none skipped (ran ${total})`);
   } finally {
     setKey(originalKey);
   }

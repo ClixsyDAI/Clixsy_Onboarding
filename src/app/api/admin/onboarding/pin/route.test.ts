@@ -25,6 +25,61 @@
 // Everything is hermetic. global fetch is stubbed, so no Supabase, no network.
 
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
+// hashPin, not a hand-written string. Every fixture below used pin_hash
+// "scrypt$x", which verifyPin rejects on sight (it wants 6 dollar-separated
+// fields), so the step-5b cross-check would have failed on EVERY recoverable
+// fixture and the guard could never have been exercised. A placeholder that
+// cannot pass the real function is not a fixture, it is a blind spot.
+import { hashPin } from "@/lib/onboarding/pin";
+
+// ---------------------------------------------------------------------------
+// CHILD MODE, for the one fault that cannot be injected in-process.
+//
+// server.ts captures its config at MODULE SCOPE:
+//     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+// so deleting the variable after the module has been imported changes nothing,
+// and the first import happens in section 1. The fault is real but it is a
+// COLD-START fault: it needs a process that never had the variable. Deleting it
+// mid-suite produced a passing reveal, which is exactly the false negative that
+// would have let this go unnoticed.
+//
+// So section 5e re-runs THIS FILE as a child with the variable absent from the
+// start. One assertion, one real process, no mocking of the thing under test.
+if (process.env.PIN_ROUTE_D2_CHILD === "1") {
+  (async () => {
+    const lines: string[] = [];
+    const origError = console.error;
+    console.error = ((...a: unknown[]) => { lines.push(a.map(String).join(" ")); }) as typeof console.error;
+    globalThis.fetch = (async () =>
+      new Response("[]", { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+    let out: Record<string, unknown> = {};
+    try {
+      const { POST } = await import("./route");
+      const res = await POST(
+        new Request("http://localhost/api/admin/onboarding/pin", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${process.env.SHARED_INTEGRATION_BEARER_TOKEN}`,
+          },
+          body: JSON.stringify({
+            sessionId: "3f6b1a2c-0000-4000-8000-000000000001",
+            actingUserEmail: "johan@clixsy.com",
+          }),
+        }) as unknown as Parameters<typeof import("./route").POST>[0],
+      );
+      out = { threw: false, status: res.status, json: await res.json() };
+    } catch (err) {
+      // An unhandled throw here IS the defect, so it is reported rather than
+      // crashing the child: the parent asserts on threw === false.
+      out = { threw: true, message: String(err instanceof Error ? err.message : err) };
+    }
+    console.error = origError;
+    out.lines = lines;
+    process.stdout.write("__D2__" + JSON.stringify(out) + "__D2__");
+  })();
+} else {
 
 let checks = 0;
 function assert(cond: boolean, label: string) {
@@ -127,11 +182,16 @@ async function main() {
   process.env.NEXT_PUBLIC_SUPABASE_URL = "http://127.0.0.1:9/";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "stub-role-key";
 
+  // The real scrypt hash of the fixture PIN, so `recoverable` fixtures satisfy
+  // the gate cross-check the same way a live row does.
+  const REAL_HASH = await hashPin("428913");
+  const OTHER_HASH = await hashPin("999111");
+
   try {
     // -----------------------------------------------------------------
     console.log("\n1. AUTH fails closed, and 503 is not 401.");
     // -----------------------------------------------------------------
-    installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: "scrypt$x", pin_envelope: envelopeFor("428913") } });
+    installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelopeFor("428913") } });
     {
       delete process.env.SHARED_INTEGRATION_BEARER_TOKEN;
       const r = await callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR });
@@ -173,6 +233,16 @@ async function main() {
       assert(r.json.state === undefined,
         "and NO state field: outcome 4 must not be reported as a state of the session");
       assert(!("pin" in r.json), "and no pin key at all");
+      // THE SENTENCE THAT STOPS THE DESTRUCTIVE ACTION. Outcome 2's equivalent
+      // warning is asserted and its removal is caught; this one was not asserted
+      // at all, so emptying it stayed green. It is the more dangerous of the two:
+      // a 503 misread as "no PIN stored" is what sends someone to regenerate a
+      // PIN the client is currently using.
+      assert(
+        typeof r.json.detail === "string" &&
+          /regenerating will not help/i.test(String(r.json.detail)),
+        "outcome 4 says explicitly that regenerating will NOT help",
+      );
       process.env.PIN_ENCRYPTION_KEY = VALID_KEY;
     }
     {
@@ -223,13 +293,13 @@ async function main() {
     console.log("\n4. THE FOUR OUTCOMES, distinguishable.");
     // -----------------------------------------------------------------
     {
-      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: "scrypt$x", pin_envelope: envelopeFor("428913") } });
+      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelopeFor("428913") } });
       const r = await callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR });
       assert(r.status === 200 && r.json.state === "recoverable", "outcome 1: recoverable -> 200");
       assert(r.json.pin === "428913", "outcome 1 returns the actual PIN");
     }
     {
-      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: "scrypt$x", pin_envelope: null } });
+      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: null } });
       const r = await callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR });
       assert(r.status === 200 && r.json.state === "unrecoverable", "outcome 2: gated, no envelope -> 200 unrecoverable");
       assert(r.json.pin === null, "outcome 2 returns pin: null");
@@ -238,7 +308,7 @@ async function main() {
     }
     {
       // The unmigrated-database shape: the column is absent, so undefined.
-      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: "scrypt$x" } });
+      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH } });
       const r = await callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR });
       assert(r.status === 200 && r.json.state === "unrecoverable",
         "an ABSENT pin_envelope column classifies as unrecoverable, not recoverable");
@@ -265,7 +335,7 @@ async function main() {
     }
     {
       // A broken envelope is NOT outcome 2. It is a data fault worth investigating.
-      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: "scrypt$x", pin_envelope: "aes-256-gcm$1$" + "aa".repeat(12) + "$" + "bb".repeat(16) + "$aabb" } });
+      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: "aes-256-gcm$1$" + "aa".repeat(12) + "$" + "bb".repeat(16) + "$aabb" } });
       const { result, lines } = await withCapture(() => callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR }));
       assert(result.status === 500 && result.json.reason === "pin_envelope_unreadable",
         "a parseable-but-undecryptable envelope is 500, distinct from unrecoverable");
@@ -277,7 +347,7 @@ async function main() {
     // -----------------------------------------------------------------
     console.log("\n5. THE AUDIT PATH FAILS CLOSED, and says why. Driven with real faults.");
     // -----------------------------------------------------------------
-    const goodRow = { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: "scrypt$x", pin_envelope: envelopeFor("428913") };
+    const goodRow = { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelopeFor("428913") };
     const auditFaults: Array<[string, { status: number; body: string }]> = [
       ["an RLS refusal (42501)", { status: 403, body: JSON.stringify({ message: 'new row violates row-level security policy for table "onboarding_audit_events"', code: "42501" }) }],
       // The two faults the audit branch documents as Known limitations.
@@ -299,7 +369,11 @@ async function main() {
       // The line must be actionable without a second query, and must not carry the PIN.
       assert(tagged[0]?.includes(SESSION_ID) && tagged[0]?.includes(ACTOR),
         `${label}: the line names the session and the actor`);
-      assert(!tagged[0]?.includes("428913"),
+      // NOT `!tagged[0]?.includes(...)`. With `tagged` empty that is
+      // `!undefined`, which PASSES while no line exists at all: under a mutation
+      // that deletes the log line its three siblings went red and this one stayed
+      // green. The nullish default makes the empty case a real failure.
+      assert(tagged.length === 1 && !(tagged[0] ?? "").includes("428913"),
         `${label}: the line does NOT contain the PIN`);
       assert(tagged.length === 1 && tagged[0].split("\n").length === 1,
         `${label}: the line is a single physical line, so it stays greppable`);
@@ -334,7 +408,7 @@ async function main() {
           return new Response("[]", { status: 201, headers: { "content-type": "application/json" } });
         }
         return new Response(
-          JSON.stringify([{ id: SESSION_ID, client_id: CLIENT_ID, pin_hash: "scrypt$x", pin_envelope: goodEnv }]),
+          JSON.stringify([{ id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: goodEnv }]),
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }) as typeof fetch;
@@ -366,6 +440,16 @@ async function main() {
         JSON.stringify(keys) === JSON.stringify(["actor", "pin_returned", "state"]),
         `the payload has EXACTLY actor, pin_returned, state (got ${JSON.stringify(keys)})`,
       );
+      // THE ROW'S IDENTITY, not just its payload. A row written against the
+      // wrong session id, or with a mistyped event_type, is worse than no row:
+      // it looks like a complete audit trail and attributes the reveal to the
+      // wrong session. Both mutations previously survived green.
+      const rowTop = (first ?? {}) as Record<string, unknown>;
+      assert(rowTop.session_id === SESSION_ID,
+        "the audit row is written against THIS session id");
+      assert(rowTop.event_type === "pin_revealed",
+        "the audit row's event_type is exactly pin_revealed");
+
       assert(payload.actor === ACTOR, "actor is the validated email");
       assert(payload.pin_returned === true, "pin_returned is a boolean, not the PIN");
       assert(
@@ -386,7 +470,7 @@ async function main() {
     {
       // And the cap is a REJECTION, not a truncation: a truncated actor in an
       // audit row looks like a real answer.
-      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: "scrypt$x", pin_envelope: envelopeFor("428913") } });
+      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelopeFor("428913") } });
       const long = "a".repeat(310) + "@example.com"; // > 320
       const r = await callPost({ sessionId: SESSION_ID, actingUserEmail: long });
       assert(r.status === 400, "an over-long actor is REJECTED, not truncated");
@@ -404,7 +488,7 @@ async function main() {
           return new Response("[]", { status: 201, headers: { "content-type": "application/json" } });
         }
         return new Response(
-          JSON.stringify([{ id: SESSION_ID, client_id: CLIENT_ID, pin_hash: "scrypt$x", pin_envelope: envelopeFor("428913") }]),
+          JSON.stringify([{ id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelopeFor("428913") }]),
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }) as typeof fetch;
@@ -413,6 +497,291 @@ async function main() {
         captured.length === 1 && !captured[0].includes("SECRET-428913-LEAK"),
         "an unexpected free-text field in the request does NOT reach the audit row",
       );
+    }
+
+    // -----------------------------------------------------------------
+    console.log("\n5c. A STORED VALUE THAT IS NOT AN ENVELOPE is not outcome 2.");
+    // -----------------------------------------------------------------
+    // THE DEFECT THIS SECTION EXISTS FOR. Every row below used to come back
+    // 200 "unrecoverable" with the response telling the operator the session
+    // "predates this feature" and inviting a regeneration that CHANGES the
+    // client's PIN. Both stated causes were false for a corrupt row, and the
+    // advice was the destructive one. The sharpest way in is a rolling deploy
+    // after an ENVELOPE_VERSION bump: old instances would say that about every
+    // row the new instances minted, silently and at scale.
+    {
+      const corrupt: Array<[string, unknown]> = [
+        ["a bumped version prefix", "aes-256-gcm$2$" + "0".repeat(24) + "$" + "0".repeat(32) + "$" + "0".repeat(32)],
+        ["a 4-byte auth tag", "aes-256-gcm$1$" + "0".repeat(24) + "$" + "0".repeat(8) + "$" + "0".repeat(32)],
+        ["a wrong-length IV", "aes-256-gcm$1$" + "0".repeat(10) + "$" + "0".repeat(32) + "$" + "0".repeat(32)],
+        ["non-hex fields", "aes-256-gcm$1$" + "z".repeat(24) + "$" + "z".repeat(32) + "$" + "z".repeat(32)],
+        ["the string 'hello'", "hello"],
+        ["a number", 12345],
+        ["an object", {}],
+      ];
+      for (const [label, envelope] of corrupt) {
+        installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelope as string } });
+        const { result, lines } = await withCapture(() =>
+          callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR }),
+        );
+        assert(result.status === 500 && result.json.reason === "pin_envelope_unreadable",
+          `${label} -> 500 pin_envelope_unreadable, NOT 200 unrecoverable`);
+        assert(result.json.state === undefined,
+          `${label}: no state field, so no UI can render the regenerate copy`);
+        assert(!("pin" in result.json), `${label}: no pin field at all`);
+        assert(/do not regenerate yet/i.test(String(result.json.detail ?? "")),
+          `${label}: the response says NOT to regenerate`);
+        assert(lines.some((l) => l.includes("[pin-reveal][ENVELOPE-MALFORMED]")),
+          `${label}: emits a greppable ENVELOPE-MALFORMED line (it emitted NOTHING before)`);
+      }
+    }
+    {
+      // The boundary: genuinely absent stays outcome 2, so the split above did
+      // not simply move every row into the 500. Without this the section could
+      // pass on an endpoint that 500s for everything.
+      for (const [label, envelope] of [["null", null], ["empty string", ""], ["whitespace", "   "]] as Array<[string, unknown]>) {
+        installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelope as string | null } });
+        const r = await callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR });
+        assert(r.status === 200 && r.json.state === "unrecoverable",
+          `CONTROL: an envelope that is ${label} IS outcome 2`);
+      }
+    }
+
+    // -----------------------------------------------------------------
+    console.log("\n5d. THE DECRYPTED PIN MUST MATCH THE GATE.");
+    // -----------------------------------------------------------------
+    // encryptPin binds no AAD and no session id, so an envelope minted for
+    // another session decrypts perfectly here. Before the cross-check that
+    // produced 200 recoverable with a PIN belonging to a different client: the
+    // wrong six digits, full confidence, no warning, read out over the phone.
+    {
+      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: OTHER_HASH, pin_envelope: envelopeFor("428913") } });
+      const { result, lines } = await withCapture(() =>
+        callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR }),
+      );
+      assert(result.status === 500 && result.json.reason === "pin_envelope_mismatch",
+        "an envelope that does not match pin_hash is 500, not a confident 200");
+      assert(!("pin" in result.json), "and the wrong PIN is NOT returned");
+      assert(lines.some((l) => l.includes("[pin-reveal][PIN-HASH-MISMATCH]")),
+        "and it emits a greppable PIN-HASH-MISMATCH line");
+      assert(!lines.some((l) => l.includes("428913")),
+        "and the withheld PIN does not appear in the log either");
+    }
+    {
+      // The control that makes the assertion above mean something: with the
+      // hash matching, the same envelope IS revealed. If this failed, 5d would
+      // pass on an endpoint that rejects every reveal.
+      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelopeFor("428913") } });
+      const r = await callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR });
+      assert(r.status === 200 && r.json.pin === "428913",
+        "CONTROL: a matching hash still reveals the PIN");
+    }
+
+    // -----------------------------------------------------------------
+    console.log("\n5e. THE DEPLOYMENT FAULTS THAT USED TO BE A BARE 500.");
+    // -----------------------------------------------------------------
+    {
+      // D2: createServiceRoleClient throws on missing env. Unwrapped, the
+      // handler rejected: Next's generic 500, no reason, no state, and NOTHING
+      // logged. Same fault class as outcome 4, so it must be as legible.
+      //
+      // Run as a CHILD with the variable absent from the start, because server.ts
+      // captures it at module scope. Deleting it in-process here produced a
+      // successful reveal, so the in-process version of this test would have been
+      // a false negative dressed as coverage. See the child block at the top.
+      // Cast because spreading process.env DROPS its index signature, so the
+      // result type has only the explicitly declared keys and `delete env.X`
+      // does not compile for anything else. Reading process.env.X still works,
+      // which is why this only bites here.
+      const env = { ...process.env, PIN_ROUTE_D2_CHILD: "1" } as Record<
+        string,
+        string | undefined
+      >;
+      delete env.NEXT_PUBLIC_SUPABASE_URL;
+      // execArgv AND argv, not argv alone. Under tsx, argv[1] is this .ts file
+      // and the loader lives entirely in execArgv (--require preflight.cjs,
+      // --import loader.mjs), so `node <argv.slice(1)>` spawns a plain Node with
+      // no TypeScript support and dies before reaching the child block. Measured:
+      // the child produced no output at all until execArgv was included.
+      // Also not require.resolve("tsx/cli") or __filename: this file runs as ESM,
+      // where neither exists.
+      const child = spawnSync(
+        process.execPath,
+        [...process.execArgv, ...process.argv.slice(1)],
+        {
+          // Cast back on the way in: this project declares NODE_ENV as required
+          // on ProcessEnv, and the widened record above has lost that.
+          env: env as unknown as NodeJS.ProcessEnv,
+          encoding: "utf8",
+          timeout: 120_000,
+        },
+      );
+      const raw = child.stdout ?? "";
+      const m = raw.match(/__D2__([\s\S]*?)__D2__/);
+      assert(m !== null, "the cold-start child produced a result at all");
+      const got = m ? (JSON.parse(m[1]) as Record<string, unknown>) : {};
+      const childJson = (got.json ?? {}) as Record<string, unknown>;
+      const childLines = (got.lines ?? []) as string[];
+      assert(got.threw === false,
+        "a cold start with no Supabase config does NOT throw out of the handler");
+      assert(got.status === 500 && childJson.reason === "supabase_client_unavailable",
+        "missing Supabase config is a NAMED 500, not a bare unhandled rejection");
+      assert(childJson.state === undefined, "and carries no state");
+      assert(!("pin" in childJson), "and no pin");
+      assert(childLines.some((l) => l.includes("[pin-reveal][CLIENT-UNAVAILABLE]")),
+        "and emits a greppable line, where it previously emitted none");
+      assert(/regenerating will not help/i.test(String(childJson.detail ?? "")),
+        "and says regenerating will not help, because this is not the row's fault");
+    }
+    {
+      // D3: the session read was unbounded. A call that never settles has no
+      // .error to read, which is the sibling audit branch's rule verbatim. The
+      // stub IGNORES the abort signal on purpose: that is the harder case, and
+      // it proves the deadline holds even against a callee that will not stop.
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : String((input as Request).url ?? input);
+        if (/onboarding_sessions/.test(url)) {
+          return await new Promise<Response>(() => { /* never settles, never aborts */ });
+        }
+        return new Response("[]", { status: 201, headers: { "content-type": "application/json" } });
+      }) as typeof fetch;
+      // A REF'D KEEP-ALIVE, and it is load-bearing. withDeadline calls .unref()
+      // on its timer (server.ts "Detail 2"), so an unref'd timer plus a promise
+      // that never settles leaves NOTHING keeping the event loop alive: Node
+      // exits, cleanly, with code 0, before the deadline can fire. Measured: the
+      // suite silently stopped here and sections 5f and 6 never ran, and because
+      // the process exited rather than failing, the run reported exit 0 and even
+      // the ran-N denominator check was skipped. A denominator cannot catch a
+      // process that leaves early.
+      //
+      // Under a real request there is always a live handle (the HTTP socket), so
+      // .unref() is correct in production. It is only a test artefact, but the
+      // artefact hides tests rather than failing them, which is worse.
+      const keepAlive = setInterval(() => {}, 250);
+      const started = process.hrtime.bigint();
+      const { result, lines } = await withCapture(() =>
+        callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR }),
+      );
+      const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+      clearInterval(keepAlive);
+      assert(result.status === 504 && result.json.reason === "session_read_timeout",
+        "a session read that never settles is a bounded 504, not a platform hang");
+      assert(!("pin" in result.json), "and returns no pin");
+      assert(lines.some((l) => l.includes("[pin-reveal][READ-TIMEOUT]")),
+        "and emits a greppable READ-TIMEOUT line");
+      // The bound is real rather than an accident of the stub resolving fast.
+      assert(elapsedMs >= 4000 && elapsedMs < 20000,
+        `and it returned on the deadline rather than hanging (${Math.round(elapsedMs)}ms)`);
+    }
+
+    // -----------------------------------------------------------------
+    console.log("\n5f. THE BEARER GUARD'S CONFIGURATION EDGES.");
+    // -----------------------------------------------------------------
+    // WHAT A REAL REQUEST CANNOT DO, established before asserting anything.
+    // undici refuses to build a Request whose header value holds a character
+    // above U+00FF: "Cannot convert argument to a ByteString because the
+    // character at index 7 has a value of 8203 which is greater than 255."
+    //
+    // That matters because it CORRECTS the finding this section came from. The
+    // report said an env token of U+200B was read as configured and then ALLOWED
+    // "a request presenting Bearer + U+200B". No such request can exist. The
+    // allow is real, but only for the FUNCTION called with a synthetic headers
+    // object; through the HTTP layer the same misconfiguration produced a
+    // permanent 401 instead, blaming the integrator for the server's fault.
+    //
+    // Both outcomes are wrong and 503 fixes both, so the fix stands. The claim
+    // did not, so both layers are asserted separately below rather than one
+    // being described as the other.
+    {
+      const savedBearer = process.env.SHARED_INTEGRATION_BEARER_TOKEN;
+      const ZWSP = String.fromCharCode(0x200b);
+
+      // Layer 1: the HTTP layer cannot even carry it. Asserted, not assumed,
+      // because it is the reason layer 2 is tested the way it is.
+      let headerConstructionFailed = false;
+      try {
+        new Request("http://localhost/x", { headers: { Authorization: `Bearer ${ZWSP}` } });
+      } catch {
+        headerConstructionFailed = true;
+      }
+      assert(headerConstructionFailed,
+        "a header value holding U+200B cannot be constructed at all, so no real caller can present one");
+
+      // Layer 2: the function, driven with a synthetic headers object, which is
+      // the only way that path is reachable. This is where the old code allowed.
+      const { requireBearerToken } = await import("@/lib/onboarding/require-bearer-token");
+      const fakeReq = (value: string | null) =>
+        ({ headers: { get: (n: string) => (n.toLowerCase() === "authorization" ? value : null) } }) as unknown as Parameters<typeof requireBearerToken>[0];
+
+      process.env.SHARED_INTEGRATION_BEARER_TOKEN = ZWSP;
+      const zw = requireBearerToken(fakeReq(`Bearer ${ZWSP}`));
+      assert(zw.ok === false && zw.status === 503,
+        "a zero-width-only token is UNCONFIGURED (503), where it previously ALLOWED");
+
+      // And the same misconfiguration through the route, with a header a real
+      // caller could actually send: still 503, never a 401 blaming the caller.
+      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelopeFor("428913") } });
+      const r = await callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR }, { bearer: "anything-ascii" });
+      assert(r.status === 503 && r.json.reason === "bearer_token_not_configured",
+        "and through the route it is 503, not the 401 it used to be");
+      assert(!("pin" in r.json), "and no PIN is revealed");
+
+      process.env.SHARED_INTEGRATION_BEARER_TOKEN = savedBearer;
+    }
+    {
+      // The neighbours, so the fix is not just the one character. U+00A0 and
+      // U+FEFF were already handled by .trim(); keeping them here means a future
+      // change to the normaliser has to keep all of them.
+      const savedBearer = process.env.SHARED_INTEGRATION_BEARER_TOKEN;
+      const { requireBearerToken } = await import("@/lib/onboarding/require-bearer-token");
+      const fakeReq = (value: string | null) =>
+        ({ headers: { get: (n: string) => (n.toLowerCase() === "authorization" ? value : null) } }) as unknown as Parameters<typeof requireBearerToken>[0];
+      const edges: Array<[string, number]> = [
+        ["U+00A0 NBSP", 0x00a0],
+        ["U+FEFF BOM", 0xfeff],
+        ["U+2060 WORD JOINER", 0x2060],
+        ["U+200C ZWNJ", 0x200c],
+        ["U+200D ZWJ", 0x200d],
+      ];
+      for (const [label, cp] of edges) {
+        const ch = String.fromCharCode(cp);
+        process.env.SHARED_INTEGRATION_BEARER_TOKEN = ch;
+        const out = requireBearerToken(fakeReq(`Bearer ${ch}`));
+        assert(out.ok === false && out.status === 503,
+          `a token of only ${label} is also 503, not a usable credential`);
+      }
+      process.env.SHARED_INTEGRATION_BEARER_TOKEN = savedBearer;
+    }
+    {
+      // D11: a non-ASCII token can never match any header, so EVERY request
+      // 401s including the correct one. Reported as 401 that blames the
+      // integrator for the server's misconfiguration, which is the exact
+      // misdiagnosis this module exists to prevent.
+      const savedBearer = process.env.SHARED_INTEGRATION_BEARER_TOKEN;
+      const NON_ASCII = "tok-caf" + String.fromCharCode(0x00e9) + "-123";
+      process.env.SHARED_INTEGRATION_BEARER_TOKEN = NON_ASCII;
+      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelopeFor("428913") } });
+      const { result, lines } = await withCapture(() =>
+        // A header a real caller CAN send. U+00E9 is inside latin-1 so this one
+        // would construct, but the point is the server side: the env value is
+        // unusable regardless of what arrives.
+        callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR }, { bearer: "tok-cafe-123" }),
+      );
+      assert(result.status === 503 && result.json.reason === "bearer_token_not_configured",
+        "a non-ASCII token is a 503 deployment fault, not a 401 blaming the caller");
+      assert(lines.some((l) => l.includes("[bearer-auth][TOKEN-NOT-USABLE]")),
+        "and it names the real cause in a greppable line");
+      assert(!lines.some((l) => l.includes(NON_ASCII)),
+        "and no token material is logged");
+      process.env.SHARED_INTEGRATION_BEARER_TOKEN = savedBearer;
+    }
+    {
+      // The control: the ordinary token still works after all of the above, so
+      // 5f cannot pass by having broken the guard into refusing everything.
+      installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelopeFor("428913") } });
+      const r = await callPost({ sessionId: SESSION_ID, actingUserEmail: ACTOR });
+      assert(r.status === 200 && r.json.pin === "428913",
+        "CONTROL: the ordinary bearer token still authenticates");
     }
 
     // -----------------------------------------------------------------
@@ -425,7 +794,7 @@ async function main() {
     }
 
     const total = checks;
-    assert(total === 100, `all 100 checks ran, none skipped (ran ${total})`);
+    assert(total === 170, `all 170 checks ran, none skipped (ran ${total})`);
   } finally {
     process.env.PIN_ENCRYPTION_KEY = saved.key;
     if (saved.bearer === undefined) delete process.env.SHARED_INTEGRATION_BEARER_TOKEN;
@@ -441,3 +810,5 @@ async function main() {
 }
 
 main();
+
+} // end of the non-child branch

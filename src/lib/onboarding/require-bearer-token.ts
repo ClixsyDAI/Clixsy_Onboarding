@@ -33,6 +33,15 @@ import type { NextRequest } from "next/server";
  * and there is no reason to leak a prefix-match oracle when the fix is three
  * lines. Length is compared first because timingSafeEqual throws on a length
  * mismatch, and length is not a secret.
+ *
+ * WHAT THE TESTS DO NOT COVER, stated because the alternative is implying they
+ * do. Timing safety is NOT asserted anywhere and cannot be from a unit test in
+ * this suite. The test that looks like it covers it ("a PREFIX of the real token
+ * -> 401") protects nothing that plain `!==` would not also satisfy, because
+ * `===` on strings is not length-blind either; a critic confirmed that replacing
+ * timingSafeEqual with `===` leaves the whole suite green. The property here
+ * rests on reading this function, not on a green assertion. If you change this
+ * comparison, no test will stop you.
  */
 export type BearerOutcome =
   | { ok: true }
@@ -45,7 +54,56 @@ export function requireBearerToken(request: NextRequest): BearerOutcome {
   // Trimmed and length-checked, not just truthy: an env var set to an empty
   // string or to whitespace is a misconfiguration that a truthiness test reads
   // as configured, and would then compare against "Bearer " plus nothing.
-  if (typeof expected !== "string" || expected.trim().length === 0) {
+  //
+  // AND NOT ONLY .trim(), WHICH IS NARROWER THAN IT LOOKS. Its whitespace set is
+  // Unicode White_Space, which EXCLUDES the zero-width characters. Measured: with
+  // SHARED_INTEGRATION_BEARER_TOKEN set to a lone U+200B, the old check read it as
+  // CONFIGURED and then ALLOWED a request presenting "Bearer " plus that same
+  // character, which is an invisible, trivially guessable token where this comment
+  // promises a 503. U+00A0 and U+FEFF were both correctly rejected, so the gap was
+  // specific rather than general, which is the kind a spot check misses.
+  //
+  // U+200B ZERO WIDTH SPACE, U+200C/U+200D the joiners, U+2060 WORD JOINER,
+  // U+FEFF BOM. Named by code point and filtered by code point: a regex class
+  // holding the characters themselves works, but it is unreadable in review and
+  // any tool that normalises text can delete them and silently take the guard
+  // with it. This form cannot be damaged without the damage being visible.
+  const ZERO_WIDTH = new Set([0x200b, 0x200c, 0x200d, 0x2060, 0xfeff]);
+  const normalised =
+    typeof expected === "string"
+      ? Array.from(expected)
+          .filter((ch) => !ZERO_WIDTH.has(ch.codePointAt(0) ?? 0))
+          .join("")
+          .trim()
+      : "";
+  if (normalised.length === 0) {
+    return { ok: false, status: 503, reason: "bearer_token_not_configured" };
+  }
+
+  // A NON-ASCII TOKEN CANNOT EVER MATCH, so it is a configuration fault and not
+  // the caller's. HTTP header values are ByteStrings: `headers.get()` yields the
+  // latin-1 reading of the wire bytes, while Buffer.from(env, "utf8") encodes
+  // the env value as UTF-8, so the two can never be equal for any character
+  // above U+007F. Measured: a token containing "é" produced a permanent 401 on
+  // every request, including the correct one. Reported as 401 that is a deployment
+  // that blames the integrator for the server's own misconfiguration, which is
+  // the misdiagnosis this whole module exists to prevent.
+  //
+  // The RESPONSE reason stays `bearer_token_not_configured`, deliberately: the
+  // contract has one 503 and widening it would make the outcome set a
+  // configuration oracle. The specific cause goes to the log, where the operator
+  // who can fix it will be looking.
+  const printableAscii = Array.from(normalised).every((ch) => {
+    const cp = ch.codePointAt(0) ?? 0;
+    return cp >= 0x21 && cp <= 0x7e;
+  });
+  if (!printableAscii) {
+    console.error(
+      "[bearer-auth][TOKEN-NOT-USABLE] SHARED_INTEGRATION_BEARER_TOKEN contains " +
+        "characters outside printable ASCII, so it can never match an HTTP header " +
+        "value and EVERY request will 401. Re-set it to printable ASCII. " +
+        "No token material is logged.",
+    );
     return { ok: false, status: 503, reason: "bearer_token_not_configured" };
   }
 
@@ -55,7 +113,7 @@ export function requireBearerToken(request: NextRequest): BearerOutcome {
   }
 
   const presented = Buffer.from(header, "utf8");
-  const wanted = Buffer.from(`Bearer ${expected.trim()}`, "utf8");
+  const wanted = Buffer.from(`Bearer ${normalised}`, "utf8");
   if (presented.length !== wanted.length) {
     return { ok: false, status: 401, reason: "invalid_bearer_token" };
   }

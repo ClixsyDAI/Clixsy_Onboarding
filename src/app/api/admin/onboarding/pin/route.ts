@@ -7,10 +7,17 @@ import {
   isPinEncryptionConfigured,
   isPinEncryptionError,
 } from "@/lib/onboarding/pin-encryption";
+// verifyPin is imported, never reimplemented. It is the SAME function the gate
+// uses, which is the entire value of the cross-check at step 5b: a local
+// reimplementation could agree with the envelope and disagree with the gate,
+// which is the failure it exists to catch. pin.ts is unchanged by this branch.
+import { verifyPin } from "@/lib/onboarding/pin";
 import {
   createServiceRoleClient,
   insertAuditEventOrThrow,
   AuditWriteError,
+  withDeadline,
+  SUPABASE_READ_TIMEOUT_MS_AFTER,
 } from "@/lib/supabase/server";
 
 /**
@@ -129,16 +136,89 @@ export async function POST(request: NextRequest) {
   const { sessionId, actingUserEmail } = parsed.data;
 
   // ---- 4. THE ROW. -------------------------------------------------------
-  const supabase = createServiceRoleClient();
-  const { data: row, error: readError } = await supabase
-    .from("onboarding_sessions")
-    .select("id, client_id, pin_hash, pin_envelope")
-    .eq("id", sessionId)
-    .maybeSingle();
+  // createServiceRoleClient THROWS on missing Supabase env vars (server.ts:10).
+  // Unwrapped, that was a fifth outcome nobody designed: the handler rejected,
+  // Next answered a generic 500 with no `reason` and no `state`, and NOTHING was
+  // logged. Measured with both vars unset: 0 fetches, 0 [pin-reveal] lines. It is
+  // the same fault class as outcome 4, a deployment that cannot do this job, so
+  // it gets the same treatment: named, logged, and explicitly not the session's
+  // fault.
+  let supabase: ReturnType<typeof createServiceRoleClient>;
+  try {
+    supabase = createServiceRoleClient();
+  } catch (err) {
+    console.error(
+      `[pin-reveal][CLIENT-UNAVAILABLE] ${JSON.stringify({
+        session_id: sessionId,
+        actor: actingUserEmail,
+        message: String(err instanceof Error ? err.message : err).slice(0, 300),
+        succeeded: "nothing was revealed; this deployment cannot reach Supabase",
+      })}`,
+    );
+    return jsonError(500, "supabase_client_unavailable", {
+      detail:
+        "This deployment is missing its Supabase configuration. This says nothing " +
+        "about the session, and regenerating will not help.",
+    });
+  }
+
+  // BOUNDED. Reading .error is necessary but NOT sufficient, which is the whole
+  // subject of the sibling audit branch: a call that never settles has no .error
+  // to read, and this route's own comment below used to claim the .error half
+  // while skipping the deadline half. An unbounded read against a stalled
+  // Supabase yields a platform timeout with no log line and no response contract
+  // at all. withDeadline and the budget both come from the audit branch.
+  type SessionRow = {
+    id: string;
+    client_id: string | null;
+    pin_hash: string | null;
+    pin_envelope?: string | null;
+  };
+  let row: SessionRow | null;
+  let readError: { code?: string; message?: string } | null = null;
+  try {
+    // The signal is threaded into .abortSignal() rather than only raced against.
+    // Racing alone would return control while the request stayed in flight; the
+    // signal makes the deadline actually cancel it.
+    // `async (signal) => await builder`, not `(signal) => builder`. A
+    // PostgrestBuilder is a THENABLE, not a Promise: it has .then but no .catch
+    // or .finally, so withDeadline's `Promise<T>` parameter rejects it and its
+    // own `work.catch(() => {})` would throw on it. Awaiting inside an async
+    // runner converts it to a real promise. tsc caught this, not a test.
+    const res = await withDeadline(
+      "pin-reveal session read",
+      SUPABASE_READ_TIMEOUT_MS_AFTER,
+      async (signal) =>
+        await supabase
+          .from("onboarding_sessions")
+          .select("id, client_id, pin_hash, pin_envelope")
+          .eq("id", sessionId)
+          .abortSignal(signal)
+          .maybeSingle(),
+    );
+    row = (res.data as SessionRow | null) ?? null;
+    readError = res.error ?? null;
+  } catch (err) {
+    // The deadline fired, or the promise rejected outright. Either way there is
+    // no row and no .error, so this must not fall through to the checks below.
+    console.error(
+      `[pin-reveal][READ-TIMEOUT] ${JSON.stringify({
+        session_id: sessionId,
+        actor: actingUserEmail,
+        budget_ms: SUPABASE_READ_TIMEOUT_MS_AFTER,
+        message: String(err instanceof Error ? err.message : err).slice(0, 300),
+        succeeded: "nothing was revealed; the session read did not settle",
+      })}`,
+    );
+    return jsonError(504, "session_read_timeout", {
+      detail: "The database did not answer in time. Nothing was revealed. Retry.",
+    });
+  }
 
   if (readError) {
-    // .error is checked rather than discarded, which is the whole subject of the
-    // sibling audit branch. A read failure is NOT "no such session".
+    // .error is checked rather than discarded AND the call above is bounded,
+    // which are the two halves of the sibling audit branch's rule. A read
+    // failure is NOT "no such session".
     console.error(
       `[pin-reveal][READ-FAILURE] ${JSON.stringify({
         session_id: sessionId,
@@ -153,6 +233,35 @@ export async function POST(request: NextRequest) {
 
   const state = classifyPinState(row);
 
+  // ---- 4b. A STORED VALUE THAT IS NOT AN ENVELOPE. ------------------------
+  // Same 500 as a decrypt failure, deliberately, because it is the same fact:
+  // something is in that column and this endpoint cannot read it.
+  //
+  // What it must NOT do is fall through to outcome 2. A critic found that it did:
+  // a bumped version prefix, a short auth tag, non-hex fields and the string
+  // "hello" all came back 200 "unrecoverable" with the response telling the
+  // operator the row "predates this feature" and inviting a regeneration that
+  // overwrites corrupt data before anyone has looked at it. See PinState.
+  if (state === "envelope_unreadable") {
+    console.error(
+      `[pin-reveal][ENVELOPE-MALFORMED] ${JSON.stringify({
+        session_id: sessionId,
+        client_id: row.client_id ?? null,
+        actor: actingUserEmail,
+        fault: "structure",
+        envelope_type: typeof row.pin_envelope,
+        succeeded:
+          "nothing was revealed; the column holds something that is not an envelope",
+      })}`,
+    );
+    return jsonError(500, "pin_envelope_unreadable", {
+      detail:
+        "This session is PIN-gated and the stored copy is not readable by this " +
+        "endpoint. Do NOT regenerate yet: regenerating overwrites what is there " +
+        "and changes the PIN the client holds. Investigate the row first.",
+    });
+  }
+
   // ---- 5. DECRYPT, only when there is something to decrypt. ---------------
   let pin: string | null = null;
   if (state === "recoverable") {
@@ -165,6 +274,18 @@ export async function POST(request: NextRequest) {
       // outcome 4 becomes indistinguishable from a server error again.
       const code = isPinEncryptionError(err) ? err.code : "unknown";
       if (code === "configuration") {
+        // LOGGED, because "the environment changed between the gate and the
+        // decrypt" is the kind of thing that leaves no other trace. Without this
+        // line the only record was a 503 indistinguishable from the gate's own.
+        console.error(
+          `[pin-reveal][CONFIG-CHANGED-MID-REQUEST] ${JSON.stringify({
+            session_id: sessionId,
+            client_id: row.client_id ?? null,
+            actor: actingUserEmail,
+            succeeded:
+              "nothing was revealed; the key stopped being usable after the gate passed",
+          })}`,
+        );
         return jsonError(503, "pin_encryption_not_configured", {
           detail: "PIN_ENCRYPTION_KEY became unusable between the check and the read.",
         });
@@ -181,7 +302,53 @@ export async function POST(request: NextRequest) {
       // NOT outcome 2. The envelope exists and is broken, which is a different
       // fact from "there is no envelope", and only this one warrants
       // investigating the data.
-      return jsonError(500, "pin_envelope_unreadable", { fault: code });
+      //
+      // `fault` is in the LOG LINE above and deliberately NOT in the body. It is
+      // an internal taxonomy (encoding / integrity / decryption / input /
+      // unknown) and anything in a response body eventually reaches a screen.
+      // The response says what to do; the log says what broke.
+      return jsonError(500, "pin_envelope_unreadable", {
+        detail:
+          "This session is PIN-gated and the stored copy could not be decrypted. " +
+          "Do NOT regenerate yet: regenerating changes the PIN the client holds. " +
+          "Investigate the row first.",
+      });
+    }
+  }
+
+  // ---- 5b. THE DECRYPTED PIN MUST BE THE PIN THE GATE ACTUALLY ACCEPTS. ---
+  // Without this, `recoverable` means only "an envelope decrypted", and the
+  // endpoint would hand over a six-digit number with full confidence and no
+  // warning even when it is the wrong one. encryptPin binds no AAD and no session
+  // id, so an envelope minted for another session decrypts perfectly here:
+  // measured, that produced 200 recoverable with a PIN belonging to a different
+  // client. pin_hash is already selected, and verifyPin is the same function the
+  // gate uses, so checking costs one scrypt and upgrades the claim from "this
+  // decrypted" to "this is the PIN the client can log in with".
+  //
+  // Both writers (rotate-pin.ts and the create route) write pin_hash and
+  // pin_envelope in ONE statement, so a mismatch is not reachable through the
+  // application today. It is reachable through a partial restore, a hand-edited
+  // row, or a future writer that updates one column, and the failure it prevents
+  // is an admin reading a wrong PIN aloud to a client.
+  if (pin !== null) {
+    const matchesGate = await verifyPin(pin, row.pin_hash ?? "");
+    if (!matchesGate) {
+      console.error(
+        `[pin-reveal][PIN-HASH-MISMATCH] ${JSON.stringify({
+          session_id: sessionId,
+          client_id: row.client_id ?? null,
+          actor: actingUserEmail,
+          succeeded:
+            "nothing was revealed; the envelope decrypted but does not match pin_hash",
+        })}`,
+      );
+      return jsonError(500, "pin_envelope_mismatch", {
+        detail:
+          "The stored copy decrypted but is NOT the PIN this session's gate " +
+          "accepts, so it was withheld rather than read out. The two columns " +
+          "disagree. Do NOT regenerate before investigating.",
+      });
     }
   }
 
@@ -211,7 +378,7 @@ export async function POST(request: NextRequest) {
       //   - `actor` is validated as an email, capped at 320, and REJECTED rather
       //     than truncated, so it cannot be arbitrary text.
       //   - No second free-text field. `reason` was dropped from the first draft.
-      //   - `state` is one of three literals, `pin_returned` is a boolean.
+      //   - `state` is one of the PinState literals, `pin_returned` a boolean.
       //   - A test asserts the payload's exact key set and that the PIN appears
       //     nowhere in the serialised row, so the property is checked rather than
       //     merely intended.
@@ -302,9 +469,9 @@ export async function POST(request: NextRequest) {
     ...(state === "unrecoverable"
       ? {
           detail:
-            "This session is PIN-gated but holds no readable copy, either because it " +
-            "predates this feature or because the key was unset when it was minted. " +
-            "Regenerating will populate one, and will CHANGE the PIN the client holds.",
+            "This session is PIN-gated and stores NO copy of the PIN at all, so it " +
+            "cannot be read back. Regenerating will populate one, and will CHANGE " +
+            "the PIN the client holds.",
         }
       : {}),
     ...(state === "no_gate"
