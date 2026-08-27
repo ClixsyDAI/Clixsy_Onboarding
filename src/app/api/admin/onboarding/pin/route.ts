@@ -469,9 +469,21 @@ export async function POST(request: NextRequest) {
     ...(state === "unrecoverable"
       ? {
           detail:
-            "This session is PIN-gated and stores NO copy of the PIN at all, so it " +
-            "cannot be read back. Regenerating will populate one, and will CHANGE " +
-            "the PIN the client holds.",
+            // DESCRIBES THE STATE, DOES NOT DIAGNOSE A CAUSE, and the tone is
+            // deliberate. Every one of the 82 sessions that predate the
+            // pin_envelope column reads this, so an operator will see it many
+            // times in a row for rows where nothing has gone wrong. An earlier
+            // version said the row "predates this feature or the key was unset
+            // when it was minted", which guessed at a cause and was false for a
+            // corrupt row; the version after that said it stores "NO copy of the
+            // PIN at all", which is true but reads like a fault. This one states
+            // the fact and the consequence and nothing else.
+            //
+            // The last sentence stays, in caps, because it is the load-bearing
+            // part: this is the one outcome that offers the destructive action,
+            // and the client's PIN really does change.
+            "No readable copy of this PIN is stored, so it cannot be shown. " +
+            "Regenerating will create one, and will CHANGE the PIN the client holds.",
         }
       : {}),
     ...(state === "no_gate"
