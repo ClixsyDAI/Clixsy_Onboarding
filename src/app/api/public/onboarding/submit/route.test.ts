@@ -78,6 +78,7 @@ function buildSession(overrides: Partial<OnboardingSession> = {}): OnboardingSes
     pin_attempts: 0,
     pin_lockout_until: null,
     pin_locked_at: null,
+    pin_envelope: null,
     welcome_wizard_seen: false,
     site_intelligence_id: null,
     ...overrides,

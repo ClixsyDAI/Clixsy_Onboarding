@@ -43,3 +43,20 @@ next-env.d.ts
 
 .vercel
 supabase/migration-snapshot/
+
+# Throwaway probe/verification scratch files (critic agents, mutation harnesses).
+# These got swept into a commit once by `git add -A`; the pattern stops a repeat.
+__probe*.ts
+__verify*.ts
+
+# Loose credential files. A valid production SHARED_INTEGRATION_BEARER_TOKEN was
+# found sitting in a bearer.txt in the shared working directory on 2026-08-27,
+# one directory above every repo root. History and object stores in all six
+# repos were pickaxe-searched (git log --all -S<value>) and it had NEVER been
+# committed, verified against a control string that returned 14 hits, so no
+# rotation was needed. It now lives outside the working tree entirely. These
+# patterns exist so the next one cannot be staged by a `git add .`.
+bearer.txt
+*bearer*.txt
+*.token
+*secret*.txt

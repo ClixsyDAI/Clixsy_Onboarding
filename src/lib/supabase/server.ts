@@ -38,6 +38,33 @@ export interface OnboardingSession {
   pin_attempts: number;
   pin_lockout_until: string | null;
   pin_locked_at: string | null;
+  // Migration 011: reversible AES-256-GCM copy of the same PIN that
+  // pin_hash hashes, so an admin can be shown an existing PIN rather
+  // than rotating it. Recovery only, NEVER a verification path.
+  // NULL means "PIN gated but unrecoverable, regenerate to populate",
+  // NOT "no PIN gate": a session with no gate has pin_hash NULL
+  // instead. Testing this field alone cannot tell those two apart.
+  //
+  // OPTIONAL, AND DELIBERATELY WIDER THAN THE SCHEMA. Do not narrow this to
+  // `string | null` to "match the column". An earlier version did exactly that,
+  // on the reasoning that migration 011 is applied before this code deploys, and
+  // it was an ASSERTION about the database dressed as a type.
+  //
+  // THIS INTERFACE IS KNOWN-STALE. It is hand-maintained, the readers below cast
+  // a select('*') row straight to it, and it has lagged the real schema since
+  // before this feature existed. The standing rule on this repo is to trust
+  // supabase/migrations over this file. Against a database where 011 has NOT been
+  // applied the column is absent, so the field arrives as `undefined` while a
+  // non-optional type promises otherwise, and every consumer silently inherits a
+  // lie.
+  //
+  // Which is why the three states must never be classified with
+  // `pin_envelope !== null`: undefined passes that test and an unmigrated row is
+  // reported as recoverable. Use classifyPinState() from
+  // @/lib/onboarding/pin-encryption, which treats undefined and null identically
+  // and needs pin_hash as well to tell "no PIN gate" from "gated but
+  // unrecoverable". Those two have opposite remedies.
+  pin_envelope?: string | null;
   // Stage 7 (migration 006) — first-login welcome modal flag.
   welcome_wizard_seen: boolean;
   // Site-intelligence link — points to onboarding_site_intelligence.id
