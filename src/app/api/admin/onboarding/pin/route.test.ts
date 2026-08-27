@@ -81,6 +81,19 @@ if (process.env.PIN_ROUTE_D2_CHILD === "1") {
   })();
 } else {
 
+// ---- the completion contract, enforced by test/run-all.mjs from OUTSIDE ----
+// SECTIONS_EXPECTED is checked by the runner, not only here, because a check
+// inside this process shares this process's fate: when the suite exited early
+// and cleanly (withDeadline's .unref() left nothing holding the event loop),
+// every in-process assertion including the ran-N denominator left with it and
+// the run reported PASS. section() derives the count from what actually ran.
+const SECTIONS_EXPECTED = 11;
+let sectionsRun = 0;
+function section(title: string) {
+  sectionsRun++;
+  console.log("\n" + title);
+}
+
 let checks = 0;
 function assert(cond: boolean, label: string) {
   checks++;
@@ -177,6 +190,10 @@ function envelopeFor(pin: string) {
 }
 
 async function main() {
+  // FIRST output, so the runner sees the promise even if everything after it
+  // fails or the process dies.
+  console.log(`[[SUITE-CONTRACT]] sections=${SECTIONS_EXPECTED}`);
+
   process.env.PIN_ENCRYPTION_KEY = VALID_KEY;
   process.env.SHARED_INTEGRATION_BEARER_TOKEN = BEARER;
   process.env.NEXT_PUBLIC_SUPABASE_URL = "http://127.0.0.1:9/";
@@ -189,7 +206,7 @@ async function main() {
 
   try {
     // -----------------------------------------------------------------
-    console.log("\n1. AUTH fails closed, and 503 is not 401.");
+    section("1. AUTH fails closed, and 503 is not 401.");
     // -----------------------------------------------------------------
     installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelopeFor("428913") } });
     {
@@ -230,7 +247,7 @@ async function main() {
     }
 
     // -----------------------------------------------------------------
-    console.log("\n2. THE CONFIGURATION GATE. 503 must never read as unrecoverable.");
+    section("2. THE CONFIGURATION GATE. 503 must never read as unrecoverable.");
     // -----------------------------------------------------------------
     {
       delete process.env.PIN_ENCRYPTION_KEY;
@@ -277,7 +294,7 @@ async function main() {
     }
 
     // -----------------------------------------------------------------
-    console.log("\n3. ZOD, including the acting user's email.");
+    section("3. ZOD, including the acting user's email.");
     // -----------------------------------------------------------------
     for (const [label, body] of [
       ["a missing actingUserEmail", { sessionId: SESSION_ID }],
@@ -297,7 +314,7 @@ async function main() {
     }
 
     // -----------------------------------------------------------------
-    console.log("\n4. THE FOUR OUTCOMES, distinguishable.");
+    section("4. THE FOUR OUTCOMES, distinguishable.");
     // -----------------------------------------------------------------
     {
       installStub({ sessionRow: { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelopeFor("428913") } });
@@ -352,7 +369,7 @@ async function main() {
     }
 
     // -----------------------------------------------------------------
-    console.log("\n5. THE AUDIT PATH FAILS CLOSED, and says why. Driven with real faults.");
+    section("5. THE AUDIT PATH FAILS CLOSED, and says why. Driven with real faults.");
     // -----------------------------------------------------------------
     const goodRow = { id: SESSION_ID, client_id: CLIENT_ID, pin_hash: REAL_HASH, pin_envelope: envelopeFor("428913") };
     const auditFaults: Array<[string, { status: number; body: string }]> = [
@@ -397,7 +414,7 @@ async function main() {
     }
 
     // -----------------------------------------------------------------
-    console.log("\n5b. THE AUDIT PAYLOAD IS PIN-FREE. Re-verified under the new shape.");
+    section("5b. THE AUDIT PAYLOAD IS PIN-FREE. Re-verified under the new shape.");
     // -----------------------------------------------------------------
     // An earlier critic verified this payload was provably PIN-free BY TYPE: six
     // string literals and a boolean, no free-text field for a PIN to reach even
@@ -507,7 +524,7 @@ async function main() {
     }
 
     // -----------------------------------------------------------------
-    console.log("\n5c. A STORED VALUE THAT IS NOT AN ENVELOPE is not outcome 2.");
+    section("5c. A STORED VALUE THAT IS NOT AN ENVELOPE is not outcome 2.");
     // -----------------------------------------------------------------
     // THE DEFECT THIS SECTION EXISTS FOR. Every row below used to come back
     // 200 "unrecoverable" with the response telling the operator the session
@@ -555,7 +572,7 @@ async function main() {
     }
 
     // -----------------------------------------------------------------
-    console.log("\n5d. THE DECRYPTED PIN MUST MATCH THE GATE.");
+    section("5d. THE DECRYPTED PIN MUST MATCH THE GATE.");
     // -----------------------------------------------------------------
     // encryptPin binds no AAD and no session id, so an envelope minted for
     // another session decrypts perfectly here. Before the cross-check that
@@ -585,7 +602,7 @@ async function main() {
     }
 
     // -----------------------------------------------------------------
-    console.log("\n5e. THE DEPLOYMENT FAULTS THAT USED TO BE A BARE 500.");
+    section("5e. THE DEPLOYMENT FAULTS THAT USED TO BE A BARE 500.");
     // -----------------------------------------------------------------
     {
       // D2: createServiceRoleClient throws on missing env. Unwrapped, the
@@ -682,7 +699,7 @@ async function main() {
     }
 
     // -----------------------------------------------------------------
-    console.log("\n5f. THE BEARER GUARD'S CONFIGURATION EDGES.");
+    section("5f. THE BEARER GUARD'S CONFIGURATION EDGES.");
     // -----------------------------------------------------------------
     // WHAT A REAL REQUEST CANNOT DO, established before asserting anything.
     // undici refuses to build a Request whose header value holds a character
@@ -806,7 +823,7 @@ async function main() {
     }
 
     // -----------------------------------------------------------------
-    console.log("\n6. GET is refused, so a PIN cannot end up in a URL.");
+    section("6. GET is refused, so a PIN cannot end up in a URL.");
     // -----------------------------------------------------------------
     {
       const { GET } = await import("./route");
@@ -816,6 +833,13 @@ async function main() {
 
     const total = checks;
     assert(total === 171, `all 171 checks ran, none skipped (ran ${total})`);
+    assert(
+      sectionsRun === SECTIONS_EXPECTED,
+      `all ${SECTIONS_EXPECTED} sections ran (ran ${sectionsRun})`,
+    );
+    // The line the runner looks for. Inside the try, after the assertions, so
+    // it cannot be printed by a run that threw or left early.
+    console.log(`[[SUITE-END]] sections=${sectionsRun}`);
   } finally {
     process.env.PIN_ENCRYPTION_KEY = saved.key;
     if (saved.bearer === undefined) delete process.env.SHARED_INTEGRATION_BEARER_TOKEN;
