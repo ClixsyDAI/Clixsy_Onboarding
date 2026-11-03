@@ -421,7 +421,8 @@ export async function POST(request: NextRequest) {
         sessionId,
         'primary_contact',
         seedAnswers,
-        false
+        false,
+        'session_created'
       );
       if (!seeded) {
         console.warn(

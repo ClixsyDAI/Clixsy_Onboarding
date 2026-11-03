@@ -6,7 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
-export function createServiceRoleClient() {
+export function createServiceRoleClient(extraHeaders?: Record<string, string>) {
   if (!supabaseUrl || !supabaseServiceRoleKey) {
     throw new Error('Missing Supabase environment variables');
   }
@@ -16,6 +16,7 @@ export function createServiceRoleClient() {
       autoRefreshToken: false,
       persistSession: false,
     },
+    ...(extraHeaders ? { global: { headers: extraHeaders } } : {}),
   });
 }
 
@@ -204,9 +205,12 @@ export async function upsertAnswer(
   sessionId: string,
   stepKey: string,
   answers: Record<string, unknown>,
-  completed: boolean
+  completed: boolean,
+  source?: 'onboarding_save' | 'onboarding_submit' | 'session_created'
 ): Promise<OnboardingAnswer | null> {
-  const supabase = createServiceRoleClient();
+  const supabase = createServiceRoleClient(
+    source ? { 'x-clixsy-brief-source': source } : undefined
+  );
 
   const { data, error } = await supabase
     .from('onboarding_answers')

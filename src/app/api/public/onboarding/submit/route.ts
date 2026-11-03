@@ -160,7 +160,7 @@ export async function POST(request: NextRequest) {
     // where autosave could clobber the submit row's completed flag (see fix/onboarding-submit-race PR).
     const existingSubmitAnswer = answers.find(a => a.step_key === 'submit');
     const submitPayload = (existingSubmitAnswer?.answers as Record<string, unknown> | undefined) ?? {};
-    const healed = await upsertAnswer(session.id, 'submit', submitPayload, true);
+    const healed = await upsertAnswer(session.id, 'submit', submitPayload, true, 'onboarding_submit');
     if (!healed) {
       return NextResponse.json(
         { error: 'Failed to mark submit step complete', details: 'upsertAnswer returned null' },
