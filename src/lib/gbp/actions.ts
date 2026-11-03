@@ -140,6 +140,7 @@ export async function applyGbpLocationsAction(
     stepKey,
     merged,
     existingRow?.completed ?? false,
+    'onboarding_save',
   );
 
   if (!result) {

@@ -74,7 +74,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Upsert the answer
-    const savedAnswer = await upsertAnswer(session.id, stepKey, effectiveAnswers, completed || false);
+    const savedAnswer = await upsertAnswer(session.id, stepKey, effectiveAnswers, completed || false, 'onboarding_save');
 
     if (!savedAnswer) {
       return NextResponse.json(
