@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import PinEntry from './PinEntry';
 import Wizard from './Wizard';
+import PostSubmitAccessView from './PostSubmitAccessView';
 
 /**
  * Client-side shell for /onboarding/[token]. Handles the three states
@@ -72,6 +73,7 @@ const CLIXSY_LOGO_URL = 'https://res.cloudinary.com/dovgh19xr/image/upload/v1766
 export default function OnboardingShell({
   token,
   amToken = null,
+  view = null,
 }: {
   token: string;
   /**
@@ -80,6 +82,11 @@ export default function OnboardingShell({
    * and down to the Wizard so mutating calls can attach it as a header.
    */
   amToken?: string | null;
+  /**
+   * Step 3: the `view` query param. When 'access' on a submitted session,
+   * render the post-submit access-update view instead of the wizard.
+   */
+  view?: string | null;
 }) {
   const [loading, setLoading] = useState(true);
   const [payload, setPayload] = useState<SessionPayload | null>(null);
@@ -260,6 +267,20 @@ export default function OnboardingShell({
   }
 
   if (payload) {
+    // Step 3: post-submit access-update view. Only for a submitted session
+    // with ?view=access; otherwise fall through to the normal wizard (which
+    // renders the thank-you screen for submitted sessions).
+    if (payload.session.status === 'submitted' && view === 'access') {
+      return (
+        <PostSubmitAccessView
+          token={token}
+          amToken={amToken}
+          isAmBypass={payload.session.isAmBypass ?? false}
+          flowVersion={payload.session.flowVersion}
+          initialAccessAnswers={payload.answers['access_checklist']?.answers ?? {}}
+        />
+      );
+    }
     return (
       <Wizard
         token={token}

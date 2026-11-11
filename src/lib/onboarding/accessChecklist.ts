@@ -11,6 +11,7 @@ export interface AccessItem {
   shortLabel: string;
   description: string;
   whatWeNeed: string;
+  helpText?: string;
 }
 
 export interface AccessItemStatus extends AccessItem {
@@ -90,8 +91,8 @@ export const ACCESS_ITEMS: AccessItem[] = [
     key: 'ga',
     label: 'Google Analytics',
     shortLabel: 'GA',
-    description: 'Google Analytics Owner access',
-    whatWeNeed: 'Add tempclixsyreports@gmail.com as an Owner',
+    description: 'Google Analytics Administrator access',
+    whatWeNeed: 'Add tempclixsyreports@gmail.com as an Administrator',
   },
   {
     key: 'gbp',
@@ -106,6 +107,7 @@ export const ACCESS_ITEMS: AccessItem[] = [
     shortLabel: 'YT',
     description: 'YouTube channel Manager access',
     whatWeNeed: 'Add tempclixsyreports@gmail.com as a Manager',
+    helpText: 'YouTube Studio > Settings > Permissions > Invite, role Manager',
   },
   {
     key: 'lsa',

@@ -1008,7 +1008,7 @@ export default function Wizard({
   if (isSubmitted) {
     const companyName = businessName || clientName || '';
     const amName = accountManager?.trim() || '';
-    return <ThankYou companyName={companyName} accountManagerName={amName} token={token} isAmBypass={isAmBypass} amToken={amToken} />;
+    return <ThankYou companyName={companyName} accountManagerName={amName} token={token} isAmBypass={isAmBypass} amToken={amToken} flowVersion={flowVersion} />;
   }
 
   // Render "Almost There" review step

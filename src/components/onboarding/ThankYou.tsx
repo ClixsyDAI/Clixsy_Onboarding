@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import confetti from 'canvas-confetti';
+import Link from 'next/link';
 
 const CLIXSY_LOGO_URL = 'https://res.cloudinary.com/dovgh19xr/image/upload/v1766427227/new_logo_nvrux0.svg';
 
@@ -22,6 +23,8 @@ interface ThankYouProps {
    */
   amToken?: string | null;
   isAmBypass?: boolean;
+  /** v2 sessions get the post-submit "Update account access" entry. */
+  flowVersion?: 'v1' | 'v2';
 }
 
 /**
@@ -49,7 +52,7 @@ interface ThankYouProps {
  * we avoid an external redirect because there's no guaranteed
  * brand-home URL for every deployment.
  */
-export default function ThankYou({ companyName, accountManagerName, token, amToken = null, isAmBypass = false }: ThankYouProps) {
+export default function ThankYou({ companyName, accountManagerName, token, amToken = null, isAmBypass = false, flowVersion }: ThankYouProps) {
   const [hoveredStar, setHoveredStar] = useState(0);
   const [selectedRating, setSelectedRating] = useState<number>(0);
   const [submittingRating, setSubmittingRating] = useState(false);
@@ -126,7 +129,14 @@ export default function ThankYou({ companyName, accountManagerName, token, amTok
 
   // Friendly fallbacks per the doc.
   const company = companyName?.trim() || 'friend';
-  const am = accountManagerName?.trim() || 'your account manager';
+  const amRaw = accountManagerName?.trim() || '';
+  // Treat the admin placeholder names as "no AM assigned yet" so the client
+  // never sees an internal label like "Auto-created (unassigned)".
+  const amIsPlaceholder =
+    !amRaw ||
+    amRaw.toLowerCase() === 'unassigned' ||
+    amRaw.toLowerCase() === 'auto-created (unassigned)';
+  const am = amIsPlaceholder ? 'your account manager' : amRaw;
 
   return (
     <div className="min-h-screen bg-[var(--bg)]">
@@ -236,6 +246,14 @@ export default function ThankYou({ companyName, accountManagerName, token, amTok
               >
                 Finish onboarding
               </button>
+              {flowVersion === 'v2' && (
+                <Link
+                  href={`/onboarding/${encodeURIComponent(token)}?view=access${amToken ? `&am=${encodeURIComponent(amToken)}` : ''}`}
+                  className="block w-full mt-3 py-3 text-center border border-[var(--border2)] text-[var(--text)] rounded-lg font-semibold hover:bg-[var(--card2)] transition-colors"
+                >
+                  Update account access
+                </Link>
+              )}
             </>
           )}
         </div>

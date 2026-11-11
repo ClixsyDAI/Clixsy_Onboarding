@@ -1061,7 +1061,7 @@ export const onboardingSteps: OnboardingStep[] = [
           { value: 'will_do', label: 'I\'ll do this after' },
           { value: 'need_help', label: 'I need help with this' }
         ],
-        helpText: 'Go to https://analytics.google.com and add tempclixsyreports@gmail.com as OWNER.',
+        helpText: 'Go to https://analytics.google.com and add tempclixsyreports@gmail.com as ADMINISTRATOR.',
         videoUrl: 'https://youtu.be/8nWZRo_l8bs',
         videoTitle: 'Tutorial - How to add admin user to Google Analytics'
       },
@@ -1237,7 +1237,8 @@ export const onboardingSteps: OnboardingStep[] = [
           { value: 'granted', label: 'I\'ve added tempclixsyreports@gmail.com' },
           { value: 'will_do', label: 'I\'ll do this after' },
           { value: 'need_help', label: 'I need help with this' }
-        ]
+        ],
+        helpText: 'YouTube Studio > Settings > Permissions > Invite, role Manager'
       },
       {
         name: 'has_lsa',

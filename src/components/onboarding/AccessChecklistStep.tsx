@@ -62,6 +62,7 @@ const CHECKLIST_ROWS: {
   statusField: string;
   label: string;
   whatWeNeed: string;
+  helpText?: string;
   statusOptions: { value: string; label: string }[];
 }[] = (() => {
   // Filter out LSA (deferred in v2), build from ACCESS_ITEMS
@@ -73,6 +74,7 @@ const CHECKLIST_ROWS: {
       statusField,
       label: item.label,
       whatWeNeed: item.whatWeNeed,
+      helpText: item.helpText,
       statusOptions: item.key === 'youtube' ? YOUTUBE_STATUS_OPTIONS : ACCESS_STATUS_OPTIONS,
     };
   });
@@ -124,6 +126,9 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
                   </div>
                   <div className="text-sm text-[var(--muted)]">
                     {row.whatWeNeed}
+                    {row.helpText && (
+                      <span className="block mt-1 text-xs text-[var(--faint)]">{row.helpText}</span>
+                    )}
                   </div>
                   <div>
                     <select
@@ -175,6 +180,9 @@ export default function AccessChecklistStep({ values, errors, onChange }: Access
                   </div>
                   <div className="text-xs text-[var(--muted)]">
                     {row.whatWeNeed}
+                    {row.helpText && (
+                      <span className="block mt-1 text-[var(--faint)]">{row.helpText}</span>
+                    )}
                   </div>
                   {tutorial && (
                     <button
