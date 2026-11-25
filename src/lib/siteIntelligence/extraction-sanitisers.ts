@@ -277,6 +277,41 @@ export function passesProseShape(candidate: string): boolean {
 }
 
 /**
+ * Decode the handful of HTML entities scraped markdown carries, then
+ * strip any HTML tags. Firecrawl decodes a page's entity-encoded markup
+ * when it builds markdown, so a hero `<video>`/`<source>` embed can
+ * arrive as literal tags inside otherwise-plain prose. Nothing stripped
+ * them before, so they rendered verbatim in the WHAT WE FOUND panel.
+ */
+export function stripHtmlTags(input: string): string {
+  if (!input) return '';
+  return input
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;|&apos;/gi, "'")
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * True when HTML markup survives in a candidate summary: an opening or
+ * closing tag, or a dangling attribute fragment left by a malformed tag
+ * such as `<source src=" type="video/mp4">`, whose unclosed quote defeats
+ * a plain `<[^>]*>` strip. Candidates that still carry markup are bounced
+ * to the generic fallback rather than shipped.
+ */
+export function containsResidualMarkup(input: string | undefined | null): boolean {
+  if (!input) return false;
+  if (/<\/?[a-z]/i.test(input)) return true;
+  if (/\b(?:src|href|class|style|type|controls|autoplay|playsinline|srcset|poster)\s*=\s*["']/i.test(input)) return true;
+  return false;
+}
+
+/**
  * Hygiene check on a candidate business_summary. Returns true if the
  * text reads like a description of what the business does and false if
  * it looks like consent boilerplate, promo-badge noise, or another
@@ -288,6 +323,10 @@ export function passesSummaryHygiene(candidate: string | undefined | null): bool
   if (trimmed.length < MIN_SUMMARY_LENGTH || trimmed.length > MAX_SUMMARY_LENGTH) {
     return false;
   }
+
+  // Markup guard: a scraped <video>/<source> hero embed, or any residual
+  // tag/attribute fragment, must never ship as the summary.
+  if (containsResidualMarkup(trimmed)) return false;
 
   const lc = trimmed.toLowerCase();
   for (const phrase of SUMMARY_REJECT_PHRASES) {

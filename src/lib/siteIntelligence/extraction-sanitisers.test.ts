@@ -20,6 +20,8 @@ import {
   passesServiceHygiene,
   sanitiseServices,
   sanitiseBusinessSummary,
+  stripHtmlTags,
+  containsResidualMarkup,
 } from './extraction-sanitisers';
 
 let passed = 0;
@@ -93,6 +95,38 @@ check(
 check(
   'sanitiseBusinessSummary falls back to generic on badge strip',
   sanitiseBusinessSummary(BADGE_STRIP, 'The 4x4 Store') === 'The 4x4 Store is a local business.',
+);
+
+// Synthetic reproduction of the video-hero markup bug: a WordPress hero
+// <video> embed that Firecrawl decoded from entity-encoded page markup and
+// shipped as business_summary. The bare-structure HTML5 embed below carries
+// no client HTML or URL — only the pattern that broke the WHAT WE FOUND panel.
+console.log('--- markup stripping (video-embed bug) ---');
+const VIDEO_EMBED =
+  '<video playsinline="" controls="" autoplay="" class="video"><source src=" type="video/mp4"></video>';
+check('raw video embed fails summary hygiene', !passesSummaryHygiene(VIDEO_EMBED));
+check('containsResidualMarkup flags the video embed', containsResidualMarkup(VIDEO_EMBED));
+check(
+  'stripHtmlTags removes the video embed entirely',
+  stripHtmlTags(VIDEO_EMBED).replace(/\s/g, '').length === 0,
+);
+check(
+  'entity-encoded embed decodes then strips to nothing',
+  stripHtmlTags('&lt;video class="video"&gt;&lt;source type="video/mp4"&gt;&lt;/video&gt;')
+    .replace(/\s/g, '').length === 0,
+);
+check(
+  'sanitiseBusinessSummary falls back to generic on a video embed',
+  sanitiseBusinessSummary(VIDEO_EMBED, 'Acme Law', 'law_firm') === 'Acme Law is a law firm.',
+);
+check(
+  'mixed prose+markup keeps the prose after stripping',
+  stripHtmlTags('Acme Law helps injured people. <video class="video"></video>').trim() ===
+    'Acme Law helps injured people.',
+);
+check(
+  'clean summary carries no residual markup (regression)',
+  !containsResidualMarkup('Midwest Express Clinic provides urgent care services across the Chicagoland area.'),
 );
 
 console.log('--- service hygiene ---');

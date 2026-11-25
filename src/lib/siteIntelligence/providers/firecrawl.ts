@@ -10,6 +10,7 @@ import {
   passesSummaryHygiene,
   passesProseShape,
   passesServiceHygiene,
+  stripHtmlTags,
 } from '../extraction-sanitisers';
 import { parse as parseHtml } from 'node-html-parser';
 
@@ -61,7 +62,10 @@ const PRIORITY_PATTERNS = [
  * renderer as a backstop).
  */
 export function cleanProseForDisplay(input: string): string {
-  return input
+  // Strip HTML tags FIRST: a scraped <video><source src="…mp4"> embed must
+  // go whole, before the URL rule below can chew the .mp4 out of the src
+  // attribute and leave a mangled `src="` fragment behind.
+  return stripHtmlTags(input)
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')              // ![](url)
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')           // [text](url) -> text
     .replace(/https?:\/\/\S+/g, '')                    // bare URLs

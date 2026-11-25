@@ -12,11 +12,25 @@ import { useState } from 'react';
 function cleanBusinessSummary(raw: string | undefined): string | null {
   if (!raw) return null;
   const cleaned = raw
+    // Decode the entities scraped markup carries, then drop any HTML tags.
+    // Pre-fix scans stored a raw <video> hero embed here; strip it so the
+    // panel never renders tags as literal text.
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/<[^>]*>/g, ' ')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     .replace(/https?:\/\/\S+/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+  // If a malformed tag or dangling attribute fragment survived, drop the
+  // whole summary rather than render junk.
+  if (/<\/?[a-z]|\b(?:src|href|class|style|type|controls|autoplay|playsinline)\s*=\s*["']/i.test(cleaned)) {
+    return null;
+  }
   // If cleaning leaves us with too little real prose, treat it as no summary.
   return cleaned.replace(/\s/g, '').length >= 30 ? cleaned : null;
 }
